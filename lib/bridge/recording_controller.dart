@@ -180,7 +180,7 @@ class RecordingController extends ChangeNotifier {
       await _bridge.configure(
         ObdBridgeConfigMessage(
           activityClassName: 'de.noctunix.didscout_app.MainActivity',
-          smallIconResourceName: 'ic_launcher',
+          smallIconResourceName: 'ic_stat_didscout',
           sharedPreferencesName: 'didscout_bridge',
           bufferFormatId: 'didscout-buffer',
         ),

@@ -116,7 +116,7 @@ void main() {
     final config = fakeNative.lastConfig;
     expect(config, isNotNull);
     expect(config!.activityClassName, 'de.noctunix.didscout_app.MainActivity');
-    expect(config.smallIconResourceName, 'ic_launcher');
+    expect(config.smallIconResourceName, 'ic_stat_didscout');
     expect(config.sharedPreferencesName, 'didscout_bridge');
     expect(config.bufferFormatId, 'didscout-buffer');
   });
