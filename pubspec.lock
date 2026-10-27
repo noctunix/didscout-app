@@ -235,10 +235,12 @@ packages:
   obdbridge:
     dependency: "direct main"
     description:
-      path: "../obdbridge"
-      relative: true
-    source: path
-    version: "0.1.0"
+      path: "."
+      ref: "v0.1.1"
+      resolved-ref: "49ea05767856625007ec15ecb5e9ce2d5ebe127b"
+      url: "https://github.com/noctunix/obdbridge.git"
+    source: git
+    version: "0.1.1"
   objective_c:
     dependency: transitive
     description:
