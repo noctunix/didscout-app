@@ -236,9 +236,9 @@ void main() {
       final markersFile = File(controller.markersFilePath!);
       final lines = await markersFile.readAsLines();
       expect(lines, hasLength(2));
-      expect(jsonDecode(lines[0])['kind'], 'phase');
+      expect(jsonDecode(lines[0])['type'], 'phase');
       expect(jsonDecode(lines[0])['phase'], 'drive');
-      expect(jsonDecode(lines[1])['kind'], 'note');
+      expect(jsonDecode(lines[1])['type'], 'note');
       expect(jsonDecode(lines[1])['text'], 'voltage reads 402V');
     },
   );

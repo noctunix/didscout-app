@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:didscout_app/capture/readings.dart';
 import 'package:didscout_app/session/session_markers.dart';
 
 void main() {
@@ -15,11 +16,11 @@ void main() {
       log.addPhase(MarkerPhase.charge);
 
       expect(log.markers, hasLength(3));
-      expect(log.markers[0].kind, MarkerKind.phase);
-      expect(log.markers[0].phase, MarkerPhase.drive);
-      expect(log.markers[1].kind, MarkerKind.note);
-      expect(log.markers[1].text, 'battery at 80%');
-      expect(log.markers[2].phase, MarkerPhase.charge);
+      expect(log.markers[0], isA<PhaseMarker>());
+      expect((log.markers[0] as PhaseMarker).phase, MarkerPhase.drive);
+      expect(log.markers[1], isA<NoteMarker>());
+      expect((log.markers[1] as NoteMarker).text, 'battery at 80%');
+      expect((log.markers[2] as PhaseMarker).phase, MarkerPhase.charge);
       expect(
         log.markers[0].timestamp.isBefore(log.markers[1].timestamp),
         isTrue,
@@ -75,6 +76,152 @@ void main() {
       log.addPhase(MarkerPhase.stand);
 
       expect(log.markers.single.timestamp.isUtc, isTrue);
+    });
+
+    test('addEvent records an event marker', () {
+      final log = SessionMarkerLog(clock: () => DateTime.utc(2026, 1, 1));
+      log.addEvent('climate on');
+
+      expect(log.markers.single, isA<EventMarker>());
+      expect((log.markers.single as EventMarker).label, 'climate on');
+    });
+
+    test('addReading records read_at separately from saved_at', () {
+      final savedAt = DateTime.utc(2026, 1, 1, 10, 5);
+      final readAt = DateTime.utc(2026, 1, 1, 10, 0);
+      final log = SessionMarkerLog(clock: () => savedAt);
+
+      log.addReading(
+        quantity: ReadingQuantity.soc,
+        value: 80,
+        unit: '%',
+        readAt: readAt,
+        source: ReadingSource.typed,
+      );
+
+      final marker = log.markers.single as ReadingMarker;
+      expect(marker.readAt, readAt);
+      expect(marker.savedAt, savedAt);
+      expect(marker.timestamp, readAt);
+    });
+
+    test('lastValueFor returns the most recent reading for that quantity', () {
+      final log = SessionMarkerLog(clock: () => DateTime.utc(2026, 1, 1));
+
+      expect(log.lastValueFor(ReadingQuantity.soc), isNull);
+
+      log.addReading(
+        quantity: ReadingQuantity.soc,
+        value: 70,
+        unit: '%',
+        readAt: DateTime.utc(2026, 1, 1),
+        source: ReadingSource.typed,
+      );
+      log.addReading(
+        quantity: ReadingQuantity.range,
+        value: 150,
+        unit: 'km',
+        readAt: DateTime.utc(2026, 1, 1),
+        source: ReadingSource.confirmed,
+      );
+      log.addReading(
+        quantity: ReadingQuantity.soc,
+        value: 75,
+        unit: '%',
+        readAt: DateTime.utc(2026, 1, 1),
+        source: ReadingSource.stepped,
+      );
+
+      expect(log.lastValueFor(ReadingQuantity.soc), 75);
+      expect(log.lastValueFor(ReadingQuantity.range), 150);
+      expect(log.lastValueFor(ReadingQuantity.batteryTemp), isNull);
+    });
+  });
+
+  group('marker sidecar JSON', () {
+    test('phase marker', () {
+      final marker = PhaseMarker(
+        at: DateTime.utc(2026, 1, 1, 10, 0),
+        phase: MarkerPhase.drive,
+      );
+      expect(marker.toJson(), {
+        'type': 'phase',
+        'phase': 'drive',
+        'at': '2026-01-01T10:00:00.000Z',
+      });
+    });
+
+    test('note marker', () {
+      final marker = NoteMarker(
+        at: DateTime.utc(2026, 1, 1, 10, 0),
+        text: 'voltage reads 402V',
+      );
+      expect(marker.toJson(), {
+        'type': 'note',
+        'text': 'voltage reads 402V',
+        'at': '2026-01-01T10:00:00.000Z',
+      });
+    });
+
+    test('event marker', () {
+      final marker = EventMarker(
+        at: DateTime.utc(2026, 1, 1, 10, 0),
+        label: 'climate on',
+      );
+      expect(marker.toJson(), {
+        'type': 'event',
+        'label': 'climate on',
+        'at': '2026-01-01T10:00:00.000Z',
+      });
+    });
+
+    test('reading marker, every field present', () {
+      final marker = ReadingMarker(
+        quantity: ReadingQuantity.outsideTemp,
+        value: 12,
+        unit: '°C',
+        readAt: DateTime.utc(2026, 1, 1, 10, 0),
+        savedAt: DateTime.utc(2026, 1, 1, 10, 0, 3),
+        source: ReadingSource.confirmed,
+        prefill: 10,
+        liveValue: 12,
+        speedKmh: 0,
+      );
+      expect(marker.toJson(), {
+        'type': 'reading',
+        'quantity': 'outside_temp',
+        'value': 12,
+        'unit': '°C',
+        'read_at': '2026-01-01T10:00:00.000Z',
+        'saved_at': '2026-01-01T10:00:03.000Z',
+        'source': 'confirmed',
+        'prefill': 10,
+        'live_value': 12,
+        'speed_kmh': 0,
+      });
+    });
+
+    test('reading marker, optional fields null', () {
+      final marker = ReadingMarker(
+        quantity: ReadingQuantity.soc,
+        value: 80,
+        unit: '%',
+        readAt: DateTime.utc(2026, 1, 1, 10, 0),
+        savedAt: DateTime.utc(2026, 1, 1, 10, 0),
+        source: ReadingSource.typed,
+      );
+      expect(marker.toJson(), {
+        'type': 'reading',
+        'quantity': 'soc',
+        'value': 80,
+        'unit': '%',
+        'read_at': '2026-01-01T10:00:00.000Z',
+        'saved_at': '2026-01-01T10:00:00.000Z',
+        'source': 'typed',
+        'prefill': null,
+        'live_value': null,
+        'speed_kmh': null,
+      });
     });
   });
 }
