@@ -8,6 +8,9 @@ import 'package:path_provider/path_provider.dart' as path_provider;
 import 'package:permission_handler/permission_handler.dart' as ph;
 import 'package:uuid/uuid.dart';
 
+import '../capture/isotp.dart';
+import '../capture/readings.dart';
+import '../session/charge_reminder.dart';
 import '../session/session_markers.dart';
 import 'didscout_policy.dart';
 
@@ -15,9 +18,30 @@ import 'didscout_policy.dart';
 const String _module7RequestHeader = '18DA04F1';
 const String _module7ResponseHeader = '18DAF104';
 
+/// The 29-bit module carrying the odometer DID: ECU address `06`.
+const String _module8RequestHeader = '18DA06F1';
+const String _module8ResponseHeader = '18DAF106';
+
 /// The 11-bit module this app's fixed plan reads.
 const String _module6RequestHeader = '710';
 const String _module6ResponseHeader = '77A';
+
+/// A step's command and expected response header, keyed by its own
+/// [ObdStepMessage.signalId] — used to decode [ObdBridge.liveState]'s cached
+/// attempts back into a [LiveVehicleInfo] during a recording.
+class _LiveSignalSpec {
+  const _LiveSignalSpec(this.command, this.responseHeader);
+  final String command;
+  final String responseHeader;
+}
+
+const Map<String, _LiveSignalSpec> _liveSignalSpecs = {
+  'module7_22f40d': _LiveSignalSpec('22F40D', _module7ResponseHeader),
+  'module7_22f446': _LiveSignalSpec('22F446', _module7ResponseHeader),
+  'module8_22f4a6': _LiveSignalSpec('22F4A6', _module8ResponseHeader),
+  'module6_222ab6': _LiveSignalSpec('222AB6', _module6ResponseHeader),
+  'module6_222ab8': _LiveSignalSpec('222AB8', _module6ResponseHeader),
+};
 
 const List<String> _adapterInitCommands = [
   'ATZ',
@@ -60,6 +84,7 @@ class RecordingController extends ChangeNotifier {
     String Function()? sessionIdFactory,
     DateTime Function()? clock,
     this._scanDurationMs = 8000,
+    Duration tickInterval = const Duration(seconds: 5),
     Future<void> Function(List<ph.Permission>)? requestRuntimePermissions,
   }) : _bridge = bridge ?? ObdBridge(DidscoutPolicy()),
        _requestRuntimePermissions =
@@ -67,15 +92,44 @@ class RecordingController extends ChangeNotifier {
        _recordingsDirectory =
            recordingsDirectory ?? _defaultRecordingsDirectory,
        _sessionIdFactory = sessionIdFactory ?? (() => const Uuid().v7()),
-       markers = SessionMarkerLog(clock: clock);
+       // Can't be `this._tickInterval` — the field is private but the
+       // constructor parameter name must stay public for tests to pass it.
+       // ignore: prefer_initializing_formals
+       _tickInterval = tickInterval,
+       markers = SessionMarkerLog(clock: clock),
+       _chargeReminder = ChargeReminderScheduler(clock: clock);
 
   final ObdBridge _bridge;
   final Future<void> Function(List<ph.Permission>) _requestRuntimePermissions;
   final Future<Directory> Function() _recordingsDirectory;
   final String Function() _sessionIdFactory;
   final int _scanDurationMs;
+  final Duration _tickInterval;
 
   final SessionMarkerLog markers;
+  final ChargeReminderScheduler _chargeReminder;
+  Timer? _tickTimer;
+
+  LiveVehicleInfo _liveInfo = LiveVehicleInfo.empty;
+
+  /// The vehicle's own live values, polled from [ObdBridge.liveState] while
+  /// recording. Stays [LiveVehicleInfo.empty] whenever no live source is
+  /// available (not recording, or the query failed) — tiles then simply
+  /// show no live info.
+  LiveVehicleInfo get liveInfo => _liveInfo;
+
+  bool _chargeReminderVisible = false;
+
+  /// Whether the charging-round reminder banner should be shown right now.
+  bool get chargeReminderVisible => _chargeReminderVisible;
+
+  /// Dismisses the current reminder banner; the next one still fires on
+  /// schedule, [ChargeReminderScheduler.interval] after the last one.
+  void dismissChargeReminder() {
+    if (!_chargeReminderVisible) return;
+    _chargeReminderVisible = false;
+    notifyListeners();
+  }
 
   static const _blePermissions = [
     ph.Permission.bluetoothScan,
@@ -134,9 +188,14 @@ class RecordingController extends ChangeNotifier {
   }
 
   /// Records a phase marker, mirroring [SessionMarkerLog.addPhase]; appended
-  /// to the session's marker sidecar file once one exists.
+  /// to the session's marker sidecar file once one exists. Entering or
+  /// leaving [MarkerPhase.charge] arms/disarms the charging-round reminder.
   void addPhase(MarkerPhase phase) {
     markers.addPhase(phase);
+    _chargeReminder.phaseChanged(phase);
+    if (phase != MarkerPhase.charge) {
+      _chargeReminderVisible = false;
+    }
     unawaited(_appendLatestMarker());
   }
 
@@ -144,6 +203,35 @@ class RecordingController extends ChangeNotifier {
   /// appended to the session's marker sidecar file once one exists.
   void addNote(String text) {
     markers.addNote(text);
+    unawaited(_appendLatestMarker());
+  }
+
+  /// Records a short-label event marker, mirroring [SessionMarkerLog.addEvent].
+  void addEvent(String label) {
+    markers.addEvent(label);
+    unawaited(_appendLatestMarker());
+  }
+
+  /// Records a tile reading, mirroring [SessionMarkerLog.addReading]; the
+  /// vehicle's live speed at read time, if any, is attached automatically.
+  void addReading({
+    required ReadingQuantity quantity,
+    required num value,
+    required DateTime readAt,
+    required ReadingSource source,
+    num? prefill,
+    num? liveValue,
+  }) {
+    markers.addReading(
+      quantity: quantity,
+      value: value,
+      unit: quantity.unit,
+      readAt: readAt,
+      source: source,
+      prefill: prefill,
+      liveValue: liveValue,
+      speedKmh: _liveInfo.speedKmh,
+    );
     unawaited(_appendLatestMarker());
   }
 
@@ -255,6 +343,7 @@ class RecordingController extends ChangeNotifier {
         RecordingPhase.recording,
         adapter.advertisedName ?? adapter.handle,
       );
+      _startTicking();
     } catch (error) {
       _setPhase(RecordingPhase.error, error.toString());
     }
@@ -269,6 +358,7 @@ class RecordingController extends ChangeNotifier {
       _setPhase(RecordingPhase.error, 'no active session');
       return;
     }
+    _stopTicking();
     _setPhase(RecordingPhase.stopping);
     try {
       await _bridge.stopRecording(sessionId);
@@ -276,6 +366,82 @@ class RecordingController extends ChangeNotifier {
     } catch (error) {
       _setPhase(RecordingPhase.error, error.toString());
     }
+  }
+
+  @override
+  void dispose() {
+    _stopTicking();
+    super.dispose();
+  }
+
+  void _startTicking() {
+    _tickTimer?.cancel();
+    _tickTimer = Timer.periodic(_tickInterval, (_) => unawaited(_tick()));
+  }
+
+  void _stopTicking() {
+    _tickTimer?.cancel();
+    _tickTimer = null;
+    _liveInfo = LiveVehicleInfo.empty;
+  }
+
+  Future<void> _tick() async {
+    await _pollLiveState();
+    if (_chargeReminder.checkDue()) {
+      _chargeReminderVisible = true;
+      notifyListeners();
+    }
+  }
+
+  /// Queries [ObdBridge.liveState] for this plan's signals and decodes
+  /// whatever answered into [_liveInfo]. Any failure (no live-state support,
+  /// transport error, …) leaves [_liveInfo] at [LiveVehicleInfo.empty] — the
+  /// tiles then simply show no live info, never a stale or fabricated one.
+  Future<void> _pollLiveState() async {
+    try {
+      final state = await _bridge.liveState(_liveSignalSpecs.keys.toList());
+      int? speedKmh;
+      double? odometerKm;
+      int? outsideTempC;
+      int? rangeKm;
+      int? storedEnergyWh;
+      for (final exchange in state.exchanges) {
+        if (exchange.transport != ObdTransportStatusMessage.ok ||
+            exchange.rawResponseText == null) {
+          continue;
+        }
+        final spec = _liveSignalSpecs[exchange.signalId];
+        if (spec == null) continue;
+        final payload = decodePositivePayload(
+          spec.command,
+          exchange.rawResponseText!,
+          spec.responseHeader,
+        );
+        if (payload == null) continue;
+        switch (exchange.signalId) {
+          case 'module7_22f40d':
+            speedKmh = decodeSpeedKmh(payload);
+          case 'module7_22f446':
+            outsideTempC = decodeOutsideTempC(payload);
+          case 'module8_22f4a6':
+            odometerKm = decodeOdometerKm(payload);
+          case 'module6_222ab6':
+            rangeKm = decodeRangeKm(payload);
+          case 'module6_222ab8':
+            storedEnergyWh = decodeStoredEnergyWh(payload);
+        }
+      }
+      _liveInfo = LiveVehicleInfo(
+        speedKmh: speedKmh,
+        odometerKm: odometerKm,
+        outsideTempC: outsideTempC,
+        rangeKm: rangeKm,
+        storedEnergyWh: storedEnergyWh,
+      );
+    } catch (_) {
+      _liveInfo = LiveVehicleInfo.empty;
+    }
+    notifyListeners();
   }
 
   static ObdAdapterMessage? _strongestAdapter(
@@ -303,6 +469,15 @@ class RecordingController extends ChangeNotifier {
         responseHeader: _module7ResponseHeader,
       ),
     );
+    final module8 = ObdModuleMessage(
+      moduleId: 'module8',
+      protocol: ObdProtocol.twentyNineBitCan.wireValue,
+      setup: buildModuleSetupCommands(
+        protocol: ObdProtocol.twentyNineBitCan,
+        requestHeader: _module8RequestHeader,
+        responseHeader: _module8ResponseHeader,
+      ),
+    );
     final module6 = ObdModuleMessage(
       moduleId: 'module6',
       protocol: ObdProtocol.elevenBitCan.wireValue,
@@ -319,7 +494,7 @@ class RecordingController extends ChangeNotifier {
       formatVersion: 1,
       init: _adapterInitCommands,
       resync: _adapterInitCommands,
-      modules: [module7, module6],
+      modules: [module7, module8, module6],
       steps: [
         ObdStepMessage(
           signalId: 'module7_22f40d',
@@ -340,6 +515,20 @@ class RecordingController extends ChangeNotifier {
           moduleId: 'module6',
           command: '222AB6',
           responseHeader: _module6ResponseHeader,
+          intervalMs: 60000,
+        ),
+        ObdStepMessage(
+          signalId: 'module7_22f446',
+          moduleId: 'module7',
+          command: '22F446',
+          responseHeader: _module7ResponseHeader,
+          intervalMs: 60000,
+        ),
+        ObdStepMessage(
+          signalId: 'module8_22f4a6',
+          moduleId: 'module8',
+          command: '22F4A6',
+          responseHeader: _module8ResponseHeader,
           intervalMs: 60000,
         ),
       ],
