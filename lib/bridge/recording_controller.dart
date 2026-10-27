@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:obdbridge/obdbridge.dart';
 import 'package:path_provider/path_provider.dart' as path_provider;
+import 'package:permission_handler/permission_handler.dart' as ph;
 import 'package:uuid/uuid.dart';
 
 import '../session/session_markers.dart';
@@ -18,7 +19,13 @@ const String _module7ResponseHeader = '18DAF104';
 const String _module6RequestHeader = '710';
 const String _module6ResponseHeader = '77A';
 
-const List<String> _adapterInitCommands = ['ATZ', 'ATE0', 'ATL0', 'ATS0', 'ATH1'];
+const List<String> _adapterInitCommands = [
+  'ATZ',
+  'ATE0',
+  'ATL0',
+  'ATS0',
+  'ATH1',
+];
 
 /// [RecordingController]'s state machine. UI code decides what to show and
 /// which buttons to enable purely from [RecordingController.phase] (plus
@@ -53,18 +60,34 @@ class RecordingController extends ChangeNotifier {
     String Function()? sessionIdFactory,
     DateTime Function()? clock,
     this._scanDurationMs = 8000,
+    Future<void> Function(List<ph.Permission>)? requestRuntimePermissions,
   }) : _bridge = bridge ?? ObdBridge(DidscoutPolicy()),
+       _requestRuntimePermissions =
+           requestRuntimePermissions ?? _defaultRequestRuntimePermissions,
        _recordingsDirectory =
            recordingsDirectory ?? _defaultRecordingsDirectory,
        _sessionIdFactory = sessionIdFactory ?? (() => const Uuid().v7()),
        markers = SessionMarkerLog(clock: clock);
 
   final ObdBridge _bridge;
+  final Future<void> Function(List<ph.Permission>) _requestRuntimePermissions;
   final Future<Directory> Function() _recordingsDirectory;
   final String Function() _sessionIdFactory;
   final int _scanDurationMs;
 
   final SessionMarkerLog markers;
+
+  static const _blePermissions = [
+    ph.Permission.bluetoothScan,
+    ph.Permission.bluetoothConnect,
+    ph.Permission.notification,
+  ];
+
+  static Future<void> _defaultRequestRuntimePermissions(
+    List<ph.Permission> permissions,
+  ) async {
+    await permissions.request();
+  }
 
   RecordingPhase _phase = RecordingPhase.idle;
   RecordingPhase get phase => _phase;
@@ -136,10 +159,9 @@ class RecordingController extends ChangeNotifier {
   }
 
   Future<void> _appendMarkerLine(SessionMarker marker) {
-    return File('${_bufferFilePath!}.markers.jsonl').writeAsString(
-      '${jsonEncode(marker.toJson())}\n',
-      mode: FileMode.append,
-    );
+    return File(
+      '${_bufferFilePath!}.markers.jsonl',
+    ).writeAsString('${jsonEncode(marker.toJson())}\n', mode: FileMode.append);
   }
 
   /// Runs the whole connect-and-record flow. A no-op unless [canStart].
@@ -151,7 +173,17 @@ class RecordingController extends ChangeNotifier {
     try {
       _setPhase(RecordingPhase.requestingPermissions);
       var permission = await _bridge.permissionStatus();
-      if (permission != ObdPermissionStatusMessage.granted) {
+      if (permission == ObdPermissionStatusMessage.denied) {
+        // The plugin only reports the current state; the system dialogs have to
+        // come from the app.
+        await _requestRuntimePermissions(_blePermissions);
+        permission = await _bridge.requestPermissions();
+      }
+      if (permission == ObdPermissionStatusMessage.denied) {
+        // Android 11 and older need location for BLE scanning.
+        await _requestRuntimePermissions(const [
+          ph.Permission.locationWhenInUse,
+        ]);
         permission = await _bridge.requestPermissions();
       }
       if (permission != ObdPermissionStatusMessage.granted) {

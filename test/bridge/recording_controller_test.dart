@@ -10,6 +10,7 @@ import 'package:obdbridge/src/obdbridge_api.g.dart' show NativeObdApi;
 import 'package:didscout_app/bridge/didscout_policy.dart';
 import 'package:didscout_app/bridge/recording_controller.dart';
 import 'package:didscout_app/session/session_markers.dart';
+import 'package:permission_handler/permission_handler.dart' as ph;
 
 /// Records every call made through it instead of ever reaching a real
 /// native channel. All results are the "everything works" case unless a
@@ -21,11 +22,7 @@ class _FakeNativeObdApi extends NativeObdApi {
       ObdPermissionStatusMessage.granted;
   List<ObdAdapterMessage> scanResult = [
     ObdAdapterMessage(handle: 'weak', advertisedName: 'weak CX', rssi: -80),
-    ObdAdapterMessage(
-      handle: 'strong',
-      advertisedName: 'strong CX',
-      rssi: -40,
-    ),
+    ObdAdapterMessage(handle: 'strong', advertisedName: 'strong CX', rssi: -40),
   ];
   ObdLinkStateValueMessage connectResult = ObdLinkStateValueMessage.connected;
   bool startRecordingResult = true;
@@ -74,11 +71,15 @@ void main() {
   late Directory tempDir;
   late _FakeNativeObdApi fakeNative;
   late RecordingController controller;
+  late List<List<ph.Permission>> requestedPermissions;
 
   setUp(() async {
     tempDir = await Directory.systemTemp.createTemp('didscout_test_');
     fakeNative = _FakeNativeObdApi();
+    requestedPermissions = [];
     controller = RecordingController(
+      requestRuntimePermissions: (permissions) async =>
+          requestedPermissions.add(permissions),
       bridge: ObdBridge(DidscoutPolicy(), nativeApi: fakeNative),
       recordingsDirectory: () async => tempDir,
       sessionIdFactory: () => 'fixed-session-id',
@@ -148,10 +149,7 @@ void main() {
   test('holds the wake lock for the duration of the recording', () async {
     await controller.start();
 
-    expect(
-      fakeNative.lastStartRecordingRequest!.options.holdWakeLock,
-      isTrue,
-    );
+    expect(fakeNative.lastStartRecordingRequest!.options.holdWakeLock, isTrue);
   });
 
   test('stop → finished, shareable buffer file', () async {
@@ -189,6 +187,33 @@ void main() {
 
     expect(controller.phase, RecordingPhase.permissionDenied);
     expect(controller.canStart, isTrue);
+    expect(requestedPermissions, [
+      [
+        ph.Permission.bluetoothScan,
+        ph.Permission.bluetoothConnect,
+        ph.Permission.notification,
+      ],
+      [ph.Permission.locationWhenInUse],
+    ]);
+  });
+
+  test(
+    'granting nearby devices at the prompt lets the recording start',
+    () async {
+      fakeNative.permissionStatusResult = ObdPermissionStatusMessage.denied;
+      fakeNative.requestPermissionsResult = ObdPermissionStatusMessage.granted;
+
+      await controller.start();
+
+      expect(requestedPermissions, hasLength(1));
+      expect(controller.phase, isNot(RecordingPhase.permissionDenied));
+    },
+  );
+
+  test('already granted permissions show no prompt', () async {
+    await controller.start();
+
+    expect(requestedPermissions, isEmpty);
   });
 
   test('a connect failure leaves the controller startable again', () async {
@@ -200,20 +225,23 @@ void main() {
     expect(controller.canStart, isTrue);
   });
 
-  test('markers added before a session starts are flushed to the sidecar', () async {
-    controller.addPhase(MarkerPhase.drive);
-    controller.addNote('voltage reads 402V');
+  test(
+    'markers added before a session starts are flushed to the sidecar',
+    () async {
+      controller.addPhase(MarkerPhase.drive);
+      controller.addNote('voltage reads 402V');
 
-    await controller.start();
+      await controller.start();
 
-    final markersFile = File(controller.markersFilePath!);
-    final lines = await markersFile.readAsLines();
-    expect(lines, hasLength(2));
-    expect(jsonDecode(lines[0])['kind'], 'phase');
-    expect(jsonDecode(lines[0])['phase'], 'drive');
-    expect(jsonDecode(lines[1])['kind'], 'note');
-    expect(jsonDecode(lines[1])['text'], 'voltage reads 402V');
-  });
+      final markersFile = File(controller.markersFilePath!);
+      final lines = await markersFile.readAsLines();
+      expect(lines, hasLength(2));
+      expect(jsonDecode(lines[0])['kind'], 'phase');
+      expect(jsonDecode(lines[0])['phase'], 'drive');
+      expect(jsonDecode(lines[1])['kind'], 'note');
+      expect(jsonDecode(lines[1])['text'], 'voltage reads 402V');
+    },
+  );
 
   test('markers added while recording are appended live', () async {
     await controller.start();

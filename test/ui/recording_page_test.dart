@@ -50,6 +50,7 @@ RecordingController _fakeController() => RecordingController(
   bridge: ObdBridge(DidscoutPolicy(), nativeApi: _FakeNativeObdApi()),
   recordingsDirectory: () async => Directory.systemTemp,
   sessionIdFactory: () => 'test-session',
+  requestRuntimePermissions: (_) async {},
 );
 
 void main() {
@@ -77,9 +78,7 @@ void main() {
     );
   }
 
-  testWidgets('start recording button is enabled while idle', (
-    tester,
-  ) async {
+  testWidgets('start recording button is enabled while idle', (tester) async {
     await pumpPage(tester);
 
     final button = tester.widget<ElevatedButton>(
