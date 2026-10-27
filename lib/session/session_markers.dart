@@ -30,6 +30,15 @@ class SessionMarker {
 
   /// Set when [kind] is [MarkerKind.note], null otherwise.
   final String? text;
+
+  /// JSON representation for the session's marker sidecar file: one object
+  /// per line, `phase`/`text` set according to [kind].
+  Map<String, dynamic> toJson() => {
+    'timestamp': timestamp.toIso8601String(),
+    'kind': kind.name,
+    if (phase != null) 'phase': phase!.name,
+    if (text != null) 'text': text,
+  };
 }
 
 /// An in-memory, append-only, time-ordered log of markers for the current
