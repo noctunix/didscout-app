@@ -33,6 +33,12 @@ Every command sent to the adapter passes an allow-list before it leaves the devi
 
 Skeleton only - no BLE connection, no recording, no UI beyond a placeholder screen.
 
+## Release build
+
+An arm64-only signed release APK is built with `scripts/build-release-arm64.sh` (or the
+"Release APK (arm64)" run configuration in Android Studio), which also installs it if
+exactly one device is connected. One-time key setup is in `keystore.properties.example`.
+
 ## License
 
 AGPL-3.0-or-later. See `LICENSE`.
