@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import 'ui/recording_page.dart';
+
 void main() {
   runApp(const DidscoutApp());
 }
@@ -12,29 +14,18 @@ class DidscoutApp extends StatelessWidget {
     return MaterialApp(
       title: 'didscout',
       theme: ThemeData(
+        useMaterial3: true,
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.teal),
       ),
-      home: const HomePage(),
-    );
-  }
-}
-
-class HomePage extends StatelessWidget {
-  const HomePage({super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('didscout')),
-      body: const Center(
-        child: Padding(
-          padding: EdgeInsets.all(24),
-          child: Text(
-            'Recording is not implemented yet.',
-            textAlign: TextAlign.center,
-          ),
+      darkTheme: ThemeData(
+        useMaterial3: true,
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: Colors.teal,
+          brightness: Brightness.dark,
         ),
       ),
+      themeMode: ThemeMode.system,
+      home: const RecordingPage(),
     );
   }
 }
