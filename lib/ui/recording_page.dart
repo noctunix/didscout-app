@@ -1,7 +1,11 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../bridge/recording_controller.dart';
+import '../capture/readings.dart';
 import '../session/session_markers.dart';
 
 /// The default [RecordingPage.onShare]: hands [paths] to the platform share
@@ -10,12 +14,31 @@ Future<void> _shareFiles(List<String> paths) async {
   await Share.shareXFiles([for (final path in paths) XFile(path)]);
 }
 
+/// The default [RecordingPage.onReminderVibration]: a short haptic buzz.
+Future<void> _vibrate() => HapticFeedback.vibrate();
+
+/// Every reading tile shown on the page, in display order.
+const List<ReadingQuantity> _tileQuantities = [
+  ReadingQuantity.soc,
+  ReadingQuantity.batteryTemp,
+  ReadingQuantity.outsideTemp,
+  ReadingQuantity.range,
+  ReadingQuantity.chargePower,
+  ReadingQuantity.odometer,
+];
+
 /// The main (and currently only) screen: adapter connection/recording
-/// status, phase buttons, a note field, the session's marker log, and
-/// start/stop/share controls for the recording itself.
+/// status, phase buttons, the reading tile grid (with a bottom-sheet entry
+/// per tile), live vehicle info with one-tap confirmation, a free-text note
+/// and event quick entry, the session's marker log, and start/stop/share
+/// controls for the recording itself.
 class RecordingPage extends StatefulWidget {
-  RecordingPage({super.key, RecordingController? controller, this.onShare})
-    : controller = controller ?? RecordingController();
+  RecordingPage({
+    super.key,
+    RecordingController? controller,
+    this.onShare,
+    this.onReminderVibration,
+  }) : controller = controller ?? RecordingController();
 
   final RecordingController controller;
 
@@ -23,34 +46,79 @@ class RecordingPage extends StatefulWidget {
   /// have to go through the real platform share sheet.
   final Future<void> Function(List<String> paths)? onShare;
 
+  /// Fires the charging-round reminder's short vibration; overridable so
+  /// tests don't have to go through the real haptics channel.
+  final Future<void> Function()? onReminderVibration;
+
   @override
   State<RecordingPage> createState() => _RecordingPageState();
 }
 
 class _RecordingPageState extends State<RecordingPage> {
-  final TextEditingController _noteController = TextEditingController();
-
   RecordingController get _controller => widget.controller;
+
+  bool _lastReminderVisible = false;
 
   @override
   void dispose() {
     _controller.dispose();
-    _noteController.dispose();
     super.dispose();
-  }
-
-  void _addNote() {
-    final text = _noteController.text.trim();
-    if (text.isEmpty) {
-      return;
-    }
-    _controller.addNote(text);
-    _noteController.clear();
   }
 
   Future<void> _share() async {
     final share = widget.onShare ?? _shareFiles;
     await share(_controller.shareableFiles);
+  }
+
+  Future<void> _openTileSheet(ReadingQuantity quantity) async {
+    final readAt = DateTime.now();
+    final prefill = _controller.markers.lastValueFor(quantity);
+    final liveValue = _liveValueFor(quantity, _controller.liveInfo);
+    final result = await showModalBottomSheet<_TileEntryResult>(
+      context: context,
+      isScrollControlled: true,
+      builder: (context) =>
+          _TileEntrySheet(quantity: quantity, prefill: prefill),
+    );
+    if (result == null) return;
+    _controller.addReading(
+      quantity: quantity,
+      value: result.value,
+      readAt: readAt,
+      source: result.source,
+      prefill: prefill,
+      liveValue: liveValue,
+    );
+  }
+
+  Future<void> _confirmLive(ReadingQuantity quantity, num liveValue) async {
+    _controller.addReading(
+      quantity: quantity,
+      value: liveValue,
+      readAt: DateTime.now(),
+      source: ReadingSource.confirmed,
+      liveValue: liveValue,
+    );
+  }
+
+  Future<void> _addNote() async {
+    final text = await showModalBottomSheet<String>(
+      context: context,
+      isScrollControlled: true,
+      builder: (context) => const _NoteEntrySheet(),
+    );
+    if (text == null || text.trim().isEmpty) return;
+    _controller.addNote(text.trim());
+  }
+
+  Future<void> _addEvent() async {
+    final label = await showModalBottomSheet<String>(
+      context: context,
+      isScrollControlled: true,
+      builder: (context) => const _EventEntrySheet(),
+    );
+    if (label == null || label.trim().isEmpty) return;
+    _controller.addEvent(label.trim());
   }
 
   @override
@@ -60,6 +128,14 @@ class _RecordingPageState extends State<RecordingPage> {
       body: AnimatedBuilder(
         animation: Listenable.merge([_controller, _controller.markers]),
         builder: (context, _) {
+          final reminderVisible = _controller.chargeReminderVisible;
+          if (reminderVisible && !_lastReminderVisible) {
+            final vibrate = widget.onReminderVibration ?? _vibrate;
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              unawaited(vibrate());
+            });
+          }
+          _lastReminderVisible = reminderVisible;
           return SafeArea(
             child: ListView(
               padding: const EdgeInsets.all(16),
@@ -67,8 +143,39 @@ class _RecordingPageState extends State<RecordingPage> {
                 _StatusCard(controller: _controller, onShare: _share),
                 const SizedBox(height: 16),
                 _PhaseButtonGrid(controller: _controller),
+                if (reminderVisible) ...[
+                  const SizedBox(height: 16),
+                  _ChargeReminderBanner(
+                    onDismiss: _controller.dismissChargeReminder,
+                  ),
+                ],
                 const SizedBox(height: 16),
-                _NoteInput(controller: _noteController, onSubmit: _addNote),
+                _LiveInfoCard(
+                  liveInfo: _controller.liveInfo,
+                  onConfirm: _confirmLive,
+                ),
+                const SizedBox(height: 16),
+                _ReadingTileGrid(onTap: _openTileSheet),
+                const SizedBox(height: 16),
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        onPressed: _addNote,
+                        icon: const Icon(Icons.sticky_note_2_outlined),
+                        label: const Text('Note'),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        onPressed: _addEvent,
+                        icon: const Icon(Icons.bolt_outlined),
+                        label: const Text('Event'),
+                      ),
+                    ),
+                  ],
+                ),
                 const SizedBox(height: 16),
                 Text('Markers', style: Theme.of(context).textTheme.titleMedium),
                 const SizedBox(height: 8),
@@ -81,6 +188,16 @@ class _RecordingPageState extends State<RecordingPage> {
     );
   }
 }
+
+num? _liveValueFor(ReadingQuantity quantity, LiveVehicleInfo info) =>
+    switch (quantity) {
+      ReadingQuantity.outsideTemp => info.outsideTempC,
+      ReadingQuantity.range => info.rangeKm,
+      ReadingQuantity.odometer => info.odometerKm,
+      ReadingQuantity.soc ||
+      ReadingQuantity.batteryTemp ||
+      ReadingQuantity.chargePower => null,
+    };
 
 /// Human-readable status line and icon for [RecordingPhase].
 String _statusText(RecordingController controller) {
@@ -140,7 +257,8 @@ class _StatusCard extends StatelessWidget {
               children: [
                 Icon(
                   recording ? Icons.bluetooth_connected : Icons.bluetooth,
-                  color: controller.phase == RecordingPhase.error ||
+                  color:
+                      controller.phase == RecordingPhase.error ||
                           controller.phase == RecordingPhase.noAdapterFound ||
                           controller.phase == RecordingPhase.permissionDenied
                       ? Theme.of(context).colorScheme.error
@@ -155,6 +273,13 @@ class _StatusCard extends StatelessWidget {
                 ),
               ],
             ),
+            if (recording && controller.liveInfo.speedKmh != null) ...[
+              const SizedBox(height: 8),
+              Text(
+                'Speed: ${controller.liveInfo.speedKmh} km/h',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+            ],
             const SizedBox(height: 12),
             SizedBox(
               width: double.infinity,
@@ -254,40 +379,414 @@ class _PhaseButton extends StatelessWidget {
   }
 }
 
-class _NoteInput extends StatelessWidget {
-  const _NoteInput({required this.controller, required this.onSubmit});
+class _ChargeReminderBanner extends StatelessWidget {
+  const _ChargeReminderBanner({required this.onDismiss});
 
-  final TextEditingController controller;
-  final VoidCallback onSubmit;
+  final VoidCallback onDismiss;
 
   @override
   Widget build(BuildContext context) {
-    return Card(
+    return Material(
+      color: Theme.of(context).colorScheme.secondaryContainer,
+      borderRadius: BorderRadius.circular(12),
       child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        child: Row(
           children: [
-            TextField(
-              controller: controller,
-              decoration: const InputDecoration(
-                labelText: 'Note',
-                helperText: 'Only while stationary or as a passenger',
-                border: OutlineInputBorder(),
-              ),
-              onSubmitted: (_) => onSubmit(),
-            ),
-            const SizedBox(height: 12),
-            SizedBox(
-              width: double.infinity,
-              height: 48,
-              child: FilledButton(
-                onPressed: onSubmit,
-                child: const Text('Add note'),
-              ),
+            const Icon(Icons.notifications_active_outlined),
+            const SizedBox(width: 12),
+            const Expanded(child: Text('How\'s SoC and battery temp. doing?')),
+            IconButton(
+              onPressed: onDismiss,
+              icon: const Icon(Icons.close),
+              tooltip: 'Dismiss',
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+class _LiveInfoCard extends StatelessWidget {
+  const _LiveInfoCard({required this.liveInfo, required this.onConfirm});
+
+  final LiveVehicleInfo liveInfo;
+  final Future<void> Function(ReadingQuantity quantity, num liveValue)
+  onConfirm;
+
+  @override
+  Widget build(BuildContext context) {
+    if (!liveInfo.hasAnyValue) {
+      return const SizedBox.shrink();
+    }
+    final rows = <Widget>[];
+    if (liveInfo.storedEnergyWh != null) {
+      rows.add(
+        _LiveInfoRow(
+          text: 'Vehicle shows stored energy: ${liveInfo.storedEnergyWh} Wh',
+        ),
+      );
+    }
+    if (liveInfo.outsideTempC != null) {
+      rows.add(
+        _LiveInfoRow(
+          text: 'Vehicle shows outside temp.: ${liveInfo.outsideTempC} °C',
+          onConfirm: () =>
+              onConfirm(ReadingQuantity.outsideTemp, liveInfo.outsideTempC!),
+        ),
+      );
+    }
+    if (liveInfo.rangeKm != null) {
+      rows.add(
+        _LiveInfoRow(
+          text: 'Vehicle shows range: ${liveInfo.rangeKm} km',
+          onConfirm: () => onConfirm(ReadingQuantity.range, liveInfo.rangeKm!),
+        ),
+      );
+    }
+    if (liveInfo.odometerKm != null) {
+      rows.add(
+        _LiveInfoRow(
+          text: 'Vehicle shows odometer: ${liveInfo.odometerKm} km',
+          onConfirm: () =>
+              onConfirm(ReadingQuantity.odometer, liveInfo.odometerKm!),
+        ),
+      );
+    }
+    if (rows.isEmpty) {
+      return const SizedBox.shrink();
+    }
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: rows,
+        ),
+      ),
+    );
+  }
+}
+
+class _LiveInfoRow extends StatelessWidget {
+  const _LiveInfoRow({required this.text, this.onConfirm});
+
+  final String text;
+  final VoidCallback? onConfirm;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Row(
+        children: [
+          Expanded(child: Text(text)),
+          if (onConfirm != null)
+            TextButton(
+              onPressed: onConfirm,
+              child: const Text('Matches display'),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ReadingTileGrid extends StatelessWidget {
+  const _ReadingTileGrid({required this.onTap});
+
+  final void Function(ReadingQuantity quantity) onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return GridView.count(
+      crossAxisCount: 2,
+      shrinkWrap: true,
+      physics: const NeverScrollableScrollPhysics(),
+      mainAxisSpacing: 12,
+      crossAxisSpacing: 12,
+      childAspectRatio: 1.6,
+      children: [
+        for (final quantity in _tileQuantities)
+          _ReadingTile(quantity: quantity, onTap: () => onTap(quantity)),
+      ],
+    );
+  }
+}
+
+class _ReadingTile extends StatelessWidget {
+  const _ReadingTile({required this.quantity, required this.onTap});
+
+  final ReadingQuantity quantity;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      label: '${quantity.label}, enter reading',
+      button: true,
+      child: SizedBox(
+        height: 72,
+        child: FilledButton.tonal(
+          onPressed: onTap,
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Text(quantity.label, textAlign: TextAlign.center),
+              const SizedBox(height: 4),
+              Text(quantity.unit, style: Theme.of(context).textTheme.bodySmall),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _TileEntryResult {
+  const _TileEntryResult(this.value, this.source);
+  final num value;
+  final ReadingSource source;
+}
+
+class _TileEntrySheet extends StatefulWidget {
+  const _TileEntrySheet({required this.quantity, required this.prefill});
+
+  final ReadingQuantity quantity;
+  final num? prefill;
+
+  @override
+  State<_TileEntrySheet> createState() => _TileEntrySheetState();
+}
+
+class _TileEntrySheetState extends State<_TileEntrySheet> {
+  late num _value;
+  late final TextEditingController _controller;
+  ReadingSource _source = ReadingSource.typed;
+  bool _ignoreNextChange = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _value = widget.prefill ?? 0;
+    _controller = TextEditingController(text: _formatValue(_value));
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  String _formatValue(num value) => value == value.roundToDouble()
+      ? value.toInt().toString()
+      : value.toString();
+
+  void _step(int delta) {
+    setState(() {
+      _value = _value + delta;
+      _source = ReadingSource.stepped;
+      _ignoreNextChange = true;
+      _controller.text = _formatValue(_value);
+    });
+  }
+
+  void _onChanged(String text) {
+    if (_ignoreNextChange) {
+      _ignoreNextChange = false;
+      return;
+    }
+    final parsed = num.tryParse(text);
+    if (parsed != null) {
+      _source = ReadingSource.typed;
+      _value = parsed;
+    }
+  }
+
+  void _save() {
+    Navigator.of(context).pop(_TileEntryResult(_value, _source));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: EdgeInsets.only(
+        left: 24,
+        right: 24,
+        top: 24,
+        bottom: 24 + MediaQuery.of(context).viewInsets.bottom,
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(
+            widget.quantity.label,
+            style: Theme.of(context).textTheme.titleLarge,
+          ),
+          const SizedBox(height: 16),
+          Row(
+            children: [
+              IconButton(
+                onPressed: () => _step(-1),
+                icon: const Icon(Icons.remove_circle_outline),
+                iconSize: 36,
+                tooltip: 'Decrease by 1',
+              ),
+              Expanded(
+                child: TextField(
+                  controller: _controller,
+                  keyboardType: const TextInputType.numberWithOptions(
+                    decimal: true,
+                  ),
+                  textAlign: TextAlign.center,
+                  style: Theme.of(context).textTheme.headlineMedium,
+                  decoration: InputDecoration(suffixText: widget.quantity.unit),
+                  onChanged: _onChanged,
+                ),
+              ),
+              IconButton(
+                onPressed: () => _step(1),
+                icon: const Icon(Icons.add_circle_outline),
+                iconSize: 36,
+                tooltip: 'Increase by 1',
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          SizedBox(
+            height: 48,
+            child: FilledButton(onPressed: _save, child: const Text('Save')),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _NoteEntrySheet extends StatefulWidget {
+  const _NoteEntrySheet();
+
+  @override
+  State<_NoteEntrySheet> createState() => _NoteEntrySheetState();
+}
+
+class _NoteEntrySheetState extends State<_NoteEntrySheet> {
+  final TextEditingController _controller = TextEditingController();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: EdgeInsets.only(
+        left: 24,
+        right: 24,
+        top: 24,
+        bottom: 24 + MediaQuery.of(context).viewInsets.bottom,
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text('Note', style: Theme.of(context).textTheme.titleLarge),
+          const SizedBox(height: 16),
+          TextField(
+            controller: _controller,
+            autofocus: true,
+            decoration: const InputDecoration(
+              labelText: 'Note',
+              helperText: 'Only while stationary or as a passenger',
+              border: OutlineInputBorder(),
+            ),
+            onSubmitted: (text) => Navigator.of(context).pop(text),
+          ),
+          const SizedBox(height: 16),
+          SizedBox(
+            height: 48,
+            child: FilledButton(
+              onPressed: () => Navigator.of(context).pop(_controller.text),
+              child: const Text('Add note'),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _EventEntrySheet extends StatefulWidget {
+  const _EventEntrySheet();
+
+  @override
+  State<_EventEntrySheet> createState() => _EventEntrySheetState();
+}
+
+class _EventEntrySheetState extends State<_EventEntrySheet> {
+  static const _suggestions = [
+    'climate on',
+    'climate off',
+    'window open',
+    'doors unlocked',
+  ];
+
+  final TextEditingController _controller = TextEditingController();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: EdgeInsets.only(
+        left: 24,
+        right: 24,
+        top: 24,
+        bottom: 24 + MediaQuery.of(context).viewInsets.bottom,
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text('Event', style: Theme.of(context).textTheme.titleLarge),
+          const SizedBox(height: 16),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              for (final suggestion in _suggestions)
+                ActionChip(
+                  label: Text(suggestion),
+                  onPressed: () => Navigator.of(context).pop(suggestion),
+                ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          TextField(
+            controller: _controller,
+            decoration: const InputDecoration(
+              labelText: 'Label',
+              border: OutlineInputBorder(),
+            ),
+            onSubmitted: (text) => Navigator.of(context).pop(text),
+          ),
+          const SizedBox(height: 16),
+          SizedBox(
+            height: 48,
+            child: FilledButton(
+              onPressed: () => Navigator.of(context).pop(_controller.text),
+              child: const Text('Add event'),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -317,6 +816,18 @@ class _MarkerList extends StatelessWidget {
     }
   }
 
+  static (IconData, String) _tileFor(SessionMarker marker) => switch (marker) {
+    PhaseMarker(phase: final phase) => (Icons.flag, _phaseLabel(phase)),
+    NoteMarker(text: final text) => (Icons.sticky_note_2, text),
+    EventMarker(label: final label) => (Icons.bolt, label),
+    ReadingMarker(
+      quantity: final quantity,
+      value: final value,
+      unit: final unit,
+    ) =>
+      (Icons.straighten, '${quantity.label}: $value $unit'),
+  };
+
   @override
   Widget build(BuildContext context) {
     if (markers.isEmpty) {
@@ -329,18 +840,15 @@ class _MarkerList extends StatelessWidget {
     return Column(
       children: [
         for (final marker in newestFirst)
-          ListTile(
-            leading: Icon(
-              marker.kind == MarkerKind.phase
-                  ? Icons.flag
-                  : Icons.sticky_note_2,
-            ),
-            title: Text(
-              marker.kind == MarkerKind.phase
-                  ? _phaseLabel(marker.phase!)
-                  : marker.text!,
-            ),
-            subtitle: Text(_formatTime(marker.timestamp)),
+          Builder(
+            builder: (context) {
+              final (icon, title) = _tileFor(marker);
+              return ListTile(
+                leading: Icon(icon),
+                title: Text(title),
+                subtitle: Text(_formatTime(marker.timestamp)),
+              );
+            },
           ),
       ],
     );

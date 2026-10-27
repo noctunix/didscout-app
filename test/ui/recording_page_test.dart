@@ -9,13 +9,24 @@ import 'package:obdbridge/src/obdbridge_api.g.dart' show NativeObdApi;
 
 import 'package:didscout_app/bridge/didscout_policy.dart';
 import 'package:didscout_app/bridge/recording_controller.dart';
+import 'package:didscout_app/capture/readings.dart';
+import 'package:didscout_app/session/session_markers.dart';
 import 'package:didscout_app/ui/recording_page.dart';
+
+/// The 29-bit module header this app's fixed plan uses for outside temp.;
+/// matches `recording_controller.dart`'s own private constant.
+const String _module7ResponseHeader = '18DAF104';
 
 /// A native API that never actually reaches a channel. Every call resolves
 /// immediately with the "everything works" result; these widget tests only
-/// exercise button enablement, not the controller's own state machine (see
-/// `recording_controller_test.dart` for that).
+/// exercise button enablement and the entry sheets, not the controller's own
+/// state machine (see `recording_controller_test.dart` for that).
 class _FakeNativeObdApi extends NativeObdApi {
+  /// Set by a test that wants [RecordingController.liveInfo] populated: a
+  /// raw adapter response line for the `22F446` (outside temp.) step, as if
+  /// the vehicle just answered it.
+  String? outsideTempResponse;
+
   @override
   Future<void> configure(ObdBridgeConfigMessage config) async {}
 
@@ -44,13 +55,49 @@ class _FakeNativeObdApi extends NativeObdApi {
 
   @override
   Future<void> stopRecording(String sessionId) async {}
+
+  @override
+  Future<ObdLiveStateMessage> liveState(List<String> signalIds) async {
+    final response = outsideTempResponse;
+    if (response == null) {
+      return ObdLiveStateMessage(
+        link: ObdLinkStateMessage(
+          state: ObdLinkStateValueMessage.connected,
+          adapterHandle: 'cx',
+        ),
+        timebaseId: 't1',
+        exchanges: [],
+      );
+    }
+    return ObdLiveStateMessage(
+      link: ObdLinkStateMessage(
+        state: ObdLinkStateValueMessage.connected,
+        adapterHandle: 'cx',
+      ),
+      timebaseId: 't1',
+      exchanges: [
+        ObdSignalExchangeMessage(
+          signalId: 'module7_22f446',
+          transport: ObdTransportStatusMessage.ok,
+          rawResponseText: response,
+        ),
+      ],
+    );
+  }
 }
 
-RecordingController _fakeController() => RecordingController(
-  bridge: ObdBridge(DidscoutPolicy(), nativeApi: _FakeNativeObdApi()),
+RecordingController _fakeController({
+  _FakeNativeObdApi? fakeNative,
+  Duration tickInterval = const Duration(hours: 1),
+}) => RecordingController(
+  bridge: ObdBridge(
+    DidscoutPolicy(),
+    nativeApi: fakeNative ?? _FakeNativeObdApi(),
+  ),
   recordingsDirectory: () async => Directory.systemTemp,
   sessionIdFactory: () => 'test-session',
   requestRuntimePermissions: (_) async {},
+  tickInterval: tickInterval,
 );
 
 void main() {
@@ -59,7 +106,7 @@ void main() {
     RecordingController? controller,
   }) async {
     // The default 800x600 test surface is too short to fit the status card,
-    // phase grid, note input and marker list at once; use a phone-sized
+    // phase grid, tile grid and marker list at once; use a phone-sized
     // surface instead so interacting with later widgets doesn't require
     // scrolling the page's ListView into view first.
     final originalSize = tester.view.physicalSize;
@@ -73,7 +120,10 @@ void main() {
 
     await tester.pumpWidget(
       MaterialApp(
-        home: RecordingPage(controller: controller ?? _fakeController()),
+        home: RecordingPage(
+          controller: controller ?? _fakeController(),
+          onReminderVibration: () async {},
+        ),
       ),
     );
   }
@@ -146,13 +196,142 @@ void main() {
     expect(chargeSemantics.first.properties.label, contains('current phase'));
   });
 
-  testWidgets('adding a note shows it in the marker list', (tester) async {
+  testWidgets('adding a note via its sheet shows it in the marker list', (
+    tester,
+  ) async {
     await pumpPage(tester);
 
+    await tester.tap(find.widgetWithText(OutlinedButton, 'Note'));
+    await tester.pumpAndSettle();
     await tester.enterText(find.byType(TextField), 'voltage reads 402V');
     await tester.tap(find.widgetWithText(FilledButton, 'Add note'));
-    await tester.pump();
+    await tester.pumpAndSettle();
 
     expect(find.text('voltage reads 402V'), findsOneWidget);
+  });
+
+  testWidgets('adding an event via its sheet shows it in the marker list', (
+    tester,
+  ) async {
+    await pumpPage(tester);
+
+    await tester.tap(find.widgetWithText(OutlinedButton, 'Event'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(ActionChip, 'climate on'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('climate on'), findsOneWidget);
+  });
+
+  group('reading tiles', () {
+    testWidgets('tile entry stores read_at as the moment the tile was tapped', (
+      tester,
+    ) async {
+      final controller = _fakeController();
+      await pumpPage(tester, controller: controller);
+
+      final beforeTap = DateTime.now();
+      await tester.tap(find.text('State of charge'));
+      await tester.pumpAndSettle();
+      final afterTap = DateTime.now();
+
+      await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+      await tester.pumpAndSettle();
+
+      final marker = controller.markers.markers.single as ReadingMarker;
+      expect(marker.quantity, ReadingQuantity.soc);
+      expect(
+        marker.readAt.isAfter(beforeTap.subtract(const Duration(seconds: 1))),
+        isTrue,
+      );
+      expect(
+        marker.readAt.isBefore(afterTap.add(const Duration(seconds: 1))),
+        isTrue,
+      );
+    });
+
+    testWidgets('entry sheet prefills with the quantity\'s last entry', (
+      tester,
+    ) async {
+      final controller = _fakeController();
+      controller.addReading(
+        quantity: ReadingQuantity.soc,
+        value: 42,
+        readAt: DateTime.now(),
+        source: ReadingSource.typed,
+      );
+      await pumpPage(tester, controller: controller);
+
+      await tester.tap(find.text('State of charge'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('42'), findsOneWidget);
+    });
+
+    testWidgets('the +1 stepper records source stepped', (tester) async {
+      final controller = _fakeController();
+      await pumpPage(tester, controller: controller);
+
+      await tester.tap(find.text('State of charge'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('Increase by 1'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+      await tester.pumpAndSettle();
+
+      final marker = controller.markers.markers.single as ReadingMarker;
+      expect(marker.source, ReadingSource.stepped);
+      expect(marker.value, 1);
+    });
+
+    testWidgets('typing a value records source typed', (tester) async {
+      final controller = _fakeController();
+      await pumpPage(tester, controller: controller);
+
+      await tester.tap(find.text('State of charge'));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byType(TextField), '55');
+      await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+      await tester.pumpAndSettle();
+
+      final marker = controller.markers.markers.single as ReadingMarker;
+      expect(marker.source, ReadingSource.typed);
+      expect(marker.value, 55);
+    });
+  });
+
+  group('live info confirmation', () {
+    testWidgets('confirming a live value stores source confirmed with it', (
+      tester,
+    ) async {
+      final fakeNative = _FakeNativeObdApi()
+        // Single-frame ISO-TP: 04 (SF, 4 bytes) 62 (positive 22) F446 (DID)
+        // 3C (60 decimal, minus the 40 degC UDS offset -> 20 degC).
+        ..outsideTempResponse = '${_module7ResponseHeader}0462F4463C'
+            .toUpperCase();
+      final controller = _fakeController(
+        fakeNative: fakeNative,
+        tickInterval: const Duration(milliseconds: 1),
+      );
+      await pumpPage(tester, controller: controller);
+
+      await tester.tap(find.widgetWithText(ElevatedButton, 'Start recording'));
+      await tester.pumpAndSettle();
+      // Let the live-state poll land.
+      await tester.pump(const Duration(milliseconds: 5));
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('outside temp.: 20'), findsOneWidget);
+      await tester.tap(find.widgetWithText(TextButton, 'Matches display'));
+      await tester.pumpAndSettle();
+
+      final marker = controller.markers.markers.single as ReadingMarker;
+      expect(marker.quantity, ReadingQuantity.outsideTemp);
+      expect(marker.source, ReadingSource.confirmed);
+      expect(marker.value, 20);
+      expect(marker.liveValue, 20);
+
+      await controller.stop();
+    });
   });
 }
