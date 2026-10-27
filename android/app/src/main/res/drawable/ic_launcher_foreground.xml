@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- OBD-II connector: trapezoid housing outline, two rows of 8 pins, and a
+     small scan-signal accent in the top-right corner. Reused as both the
+     adaptive icon foreground and the monochrome layer. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:pathData="M26,30 L82,30 L76,74 L32,74 Z"
+        android:fillColor="#00000000"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="4"
+        android:strokeLineJoin="round"
+        android:strokeLineCap="round" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="
+            M33.8,44 a2.2,2.2 0 1,0 4.4,0 a2.2,2.2 0 1,0 -4.4,0
+            M38.9,44 a2.2,2.2 0 1,0 4.4,0 a2.2,2.2 0 1,0 -4.4,0
+            M44.1,44 a2.2,2.2 0 1,0 4.4,0 a2.2,2.2 0 1,0 -4.4,0
+            M49.2,44 a2.2,2.2 0 1,0 4.4,0 a2.2,2.2 0 1,0 -4.4,0
+            M54.4,44 a2.2,2.2 0 1,0 4.4,0 a2.2,2.2 0 1,0 -4.4,0
+            M59.5,44 a2.2,2.2 0 1,0 4.4,0 a2.2,2.2 0 1,0 -4.4,0
+            M64.7,44 a2.2,2.2 0 1,0 4.4,0 a2.2,2.2 0 1,0 -4.4,0
+            M69.8,44 a2.2,2.2 0 1,0 4.4,0 a2.2,2.2 0 1,0 -4.4,0
+            M33.8,60 a2.2,2.2 0 1,0 4.4,0 a2.2,2.2 0 1,0 -4.4,0
+            M38.9,60 a2.2,2.2 0 1,0 4.4,0 a2.2,2.2 0 1,0 -4.4,0
+            M44.1,60 a2.2,2.2 0 1,0 4.4,0 a2.2,2.2 0 1,0 -4.4,0
+            M49.2,60 a2.2,2.2 0 1,0 4.4,0 a2.2,2.2 0 1,0 -4.4,0
+            M54.4,60 a2.2,2.2 0 1,0 4.4,0 a2.2,2.2 0 1,0 -4.4,0
+            M59.5,60 a2.2,2.2 0 1,0 4.4,0 a2.2,2.2 0 1,0 -4.4,0
+            M64.7,60 a2.2,2.2 0 1,0 4.4,0 a2.2,2.2 0 1,0 -4.4,0
+            M69.8,60 a2.2,2.2 0 1,0 4.4,0 a2.2,2.2 0 1,0 -4.4,0" />
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="3"
+        android:strokeLineCap="round"
+        android:pathData="M90,24 A8,8 0 0,1 82,16" />
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="3"
+        android:strokeLineCap="round"
+        android:pathData="M90,30 A14,14 0 0,1 76,16" />
+</vector>

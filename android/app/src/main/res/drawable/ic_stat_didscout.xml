@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Status-bar notification icon: same OBD-II connector glyph as the app
+     icon, without the scan-signal accent or a background, as required for
+     single-colour notification icons. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:pathData="M26,30 L82,30 L76,74 L32,74 Z"
+        android:fillColor="#00000000"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="4"
+        android:strokeLineJoin="round"
+        android:strokeLineCap="round" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="
+            M33.8,44 a2.2,2.2 0 1,0 4.4,0 a2.2,2.2 0 1,0 -4.4,0
+            M38.9,44 a2.2,2.2 0 1,0 4.4,0 a2.2,2.2 0 1,0 -4.4,0
+            M44.1,44 a2.2,2.2 0 1,0 4.4,0 a2.2,2.2 0 1,0 -4.4,0
+            M49.2,44 a2.2,2.2 0 1,0 4.4,0 a2.2,2.2 0 1,0 -4.4,0
+            M54.4,44 a2.2,2.2 0 1,0 4.4,0 a2.2,2.2 0 1,0 -4.4,0
+            M59.5,44 a2.2,2.2 0 1,0 4.4,0 a2.2,2.2 0 1,0 -4.4,0
+            M64.7,44 a2.2,2.2 0 1,0 4.4,0 a2.2,2.2 0 1,0 -4.4,0
+            M69.8,44 a2.2,2.2 0 1,0 4.4,0 a2.2,2.2 0 1,0 -4.4,0
+            M33.8,60 a2.2,2.2 0 1,0 4.4,0 a2.2,2.2 0 1,0 -4.4,0
+            M38.9,60 a2.2,2.2 0 1,0 4.4,0 a2.2,2.2 0 1,0 -4.4,0
+            M44.1,60 a2.2,2.2 0 1,0 4.4,0 a2.2,2.2 0 1,0 -4.4,0
+            M49.2,60 a2.2,2.2 0 1,0 4.4,0 a2.2,2.2 0 1,0 -4.4,0
+            M54.4,60 a2.2,2.2 0 1,0 4.4,0 a2.2,2.2 0 1,0 -4.4,0
+            M59.5,60 a2.2,2.2 0 1,0 4.4,0 a2.2,2.2 0 1,0 -4.4,0
+            M64.7,60 a2.2,2.2 0 1,0 4.4,0 a2.2,2.2 0 1,0 -4.4,0
+            M69.8,60 a2.2,2.2 0 1,0 4.4,0 a2.2,2.2 0 1,0 -4.4,0" />
+</vector>
