@@ -36,6 +36,10 @@ migrate_working_dir/
 /build/
 /coverage/
 
+# Local override to develop against a checked-out obdbridge copy instead of
+# the pinned git ref.
+pubspec_overrides.yaml
+
 # Symbolication related
 app.*.symbols
 
