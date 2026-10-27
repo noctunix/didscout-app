@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'ui/recording_page.dart';
+import 'ui/theme.dart';
 
 void main() {
   runApp(const DidscoutApp());
@@ -13,17 +14,8 @@ class DidscoutApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'didscout',
-      theme: ThemeData(
-        useMaterial3: true,
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.teal),
-      ),
-      darkTheme: ThemeData(
-        useMaterial3: true,
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: Colors.teal,
-          brightness: Brightness.dark,
-        ),
-      ),
+      theme: didscoutLightTheme(),
+      darkTheme: didscoutDarkTheme(),
       themeMode: ThemeMode.system,
       home: RecordingPage(),
     );
