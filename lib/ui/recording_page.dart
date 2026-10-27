@@ -1,23 +1,40 @@
 import 'package:flutter/material.dart';
+import 'package:share_plus/share_plus.dart';
 
+import '../bridge/recording_controller.dart';
 import '../session/session_markers.dart';
 
-/// The main (and currently only) screen: phase buttons, a note field, and
-/// the session's marker log. Pure UI - no Bluetooth or platform code.
+/// The default [RecordingPage.onShare]: hands [paths] to the platform share
+/// sheet as files.
+Future<void> _shareFiles(List<String> paths) async {
+  await Share.shareXFiles([for (final path in paths) XFile(path)]);
+}
+
+/// The main (and currently only) screen: adapter connection/recording
+/// status, phase buttons, a note field, the session's marker log, and
+/// start/stop/share controls for the recording itself.
 class RecordingPage extends StatefulWidget {
-  const RecordingPage({super.key});
+  RecordingPage({super.key, RecordingController? controller, this.onShare})
+    : controller = controller ?? RecordingController();
+
+  final RecordingController controller;
+
+  /// Shares [RecordingController.shareableFiles]; overridable so tests don't
+  /// have to go through the real platform share sheet.
+  final Future<void> Function(List<String> paths)? onShare;
 
   @override
   State<RecordingPage> createState() => _RecordingPageState();
 }
 
 class _RecordingPageState extends State<RecordingPage> {
-  final SessionMarkerLog _log = SessionMarkerLog();
   final TextEditingController _noteController = TextEditingController();
+
+  RecordingController get _controller => widget.controller;
 
   @override
   void dispose() {
-    _log.dispose();
+    _controller.dispose();
     _noteController.dispose();
     super.dispose();
   }
@@ -27,8 +44,13 @@ class _RecordingPageState extends State<RecordingPage> {
     if (text.isEmpty) {
       return;
     }
-    _log.addNote(text);
+    _controller.addNote(text);
     _noteController.clear();
+  }
+
+  Future<void> _share() async {
+    final share = widget.onShare ?? _shareFiles;
+    await share(_controller.shareableFiles);
   }
 
   @override
@@ -36,21 +58,21 @@ class _RecordingPageState extends State<RecordingPage> {
     return Scaffold(
       appBar: AppBar(title: const Text('didscout')),
       body: AnimatedBuilder(
-        animation: _log,
+        animation: Listenable.merge([_controller, _controller.markers]),
         builder: (context, _) {
           return SafeArea(
             child: ListView(
               padding: const EdgeInsets.all(16),
               children: [
-                _StatusCard(),
+                _StatusCard(controller: _controller, onShare: _share),
                 const SizedBox(height: 16),
-                _PhaseButtonGrid(log: _log),
+                _PhaseButtonGrid(controller: _controller),
                 const SizedBox(height: 16),
                 _NoteInput(controller: _noteController, onSubmit: _addNote),
                 const SizedBox(height: 16),
                 Text('Markers', style: Theme.of(context).textTheme.titleMedium),
                 const SizedBox(height: 8),
-                _MarkerList(markers: _log.markers),
+                _MarkerList(markers: _controller.markers.markers),
               ],
             ),
           );
@@ -60,11 +82,54 @@ class _RecordingPageState extends State<RecordingPage> {
   }
 }
 
+/// Human-readable status line and icon for [RecordingPhase].
+String _statusText(RecordingController controller) {
+  final detail = controller.statusDetail;
+  switch (controller.phase) {
+    case RecordingPhase.idle:
+      return 'Not connected — tap Start recording to connect';
+    case RecordingPhase.requestingPermissions:
+      return 'Requesting Bluetooth permissions…';
+    case RecordingPhase.permissionDenied:
+      return 'Bluetooth permission denied${detail != null ? ' ($detail)' : ''}';
+    case RecordingPhase.scanning:
+      return 'Scanning for an adapter…';
+    case RecordingPhase.noAdapterFound:
+      return 'No adapter found';
+    case RecordingPhase.connecting:
+      return 'Connecting${detail != null ? ' to $detail' : ''}…';
+    case RecordingPhase.startingRecording:
+      return 'Starting recording…';
+    case RecordingPhase.recording:
+      return 'Recording${detail != null ? ' via $detail' : ''}';
+    case RecordingPhase.stopping:
+      return 'Stopping…';
+    case RecordingPhase.finished:
+      return 'Recording finished — ready to share';
+    case RecordingPhase.error:
+      return 'Error${detail != null ? ': $detail' : ''}';
+  }
+}
+
+bool _isBusy(RecordingPhase phase) => switch (phase) {
+  RecordingPhase.requestingPermissions ||
+  RecordingPhase.scanning ||
+  RecordingPhase.connecting ||
+  RecordingPhase.startingRecording ||
+  RecordingPhase.stopping => true,
+  _ => false,
+};
+
 class _StatusCard extends StatelessWidget {
-  const _StatusCard();
+  const _StatusCard({required this.controller, required this.onShare});
+
+  final RecordingController controller;
+  final Future<void> Function() onShare;
 
   @override
   Widget build(BuildContext context) {
+    final busy = _isBusy(controller.phase);
+    final recording = controller.phase == RecordingPhase.recording;
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -74,15 +139,18 @@ class _StatusCard extends StatelessWidget {
             Row(
               children: [
                 Icon(
-                  Icons.bluetooth_disabled,
-                  color: Theme.of(context).colorScheme.error,
+                  recording ? Icons.bluetooth_connected : Icons.bluetooth,
+                  color: controller.phase == RecordingPhase.error ||
+                          controller.phase == RecordingPhase.noAdapterFound ||
+                          controller.phase == RecordingPhase.permissionDenied
+                      ? Theme.of(context).colorScheme.error
+                      : null,
                 ),
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(
-                    'Not connected — recording comes with the adapter connection',
-                    semanticsLabel:
-                        'Not connected. Recording comes with the adapter connection.',
+                    _statusText(controller),
+                    semanticsLabel: _statusText(controller),
                   ),
                 ),
               ],
@@ -92,8 +160,19 @@ class _StatusCard extends StatelessWidget {
               width: double.infinity,
               height: 48,
               child: ElevatedButton(
-                onPressed: null,
-                child: const Text('Start recording'),
+                onPressed: busy
+                    ? null
+                    : (recording ? controller.stop : controller.start),
+                child: Text(recording ? 'Stop' : 'Start recording'),
+              ),
+            ),
+            const SizedBox(height: 8),
+            SizedBox(
+              width: double.infinity,
+              height: 48,
+              child: OutlinedButton(
+                onPressed: controller.canShare ? onShare : null,
+                child: const Text('Share recording'),
               ),
             ),
           ],
@@ -104,9 +183,9 @@ class _StatusCard extends StatelessWidget {
 }
 
 class _PhaseButtonGrid extends StatelessWidget {
-  const _PhaseButtonGrid({required this.log});
+  const _PhaseButtonGrid({required this.controller});
 
-  final SessionMarkerLog log;
+  final RecordingController controller;
 
   static const _phases = [
     (MarkerPhase.drive, 'Drive', Icons.directions_car),
@@ -117,7 +196,7 @@ class _PhaseButtonGrid extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final current = log.currentPhase;
+    final current = controller.markers.currentPhase;
     return GridView.count(
       crossAxisCount: 2,
       shrinkWrap: true,
@@ -131,7 +210,7 @@ class _PhaseButtonGrid extends StatelessWidget {
             label: label,
             icon: icon,
             selected: current == phase,
-            onPressed: () => log.addPhase(phase),
+            onPressed: () => controller.addPhase(phase),
           ),
       ],
     );

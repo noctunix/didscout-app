@@ -1,10 +1,62 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:obdbridge/obdbridge.dart';
+// `NativeObdApi` is deliberately not re-exported from `obdbridge.dart` — this
+// test needs it anyway, to build a fake in place of the real native channel.
+import 'package:obdbridge/src/obdbridge_api.g.dart' show NativeObdApi;
 
+import 'package:didscout_app/bridge/didscout_policy.dart';
+import 'package:didscout_app/bridge/recording_controller.dart';
 import 'package:didscout_app/ui/recording_page.dart';
 
+/// A native API that never actually reaches a channel. Every call resolves
+/// immediately with the "everything works" result; these widget tests only
+/// exercise button enablement, not the controller's own state machine (see
+/// `recording_controller_test.dart` for that).
+class _FakeNativeObdApi extends NativeObdApi {
+  @override
+  Future<void> configure(ObdBridgeConfigMessage config) async {}
+
+  @override
+  Future<ObdPermissionStatusMessage> permissionStatus() async =>
+      ObdPermissionStatusMessage.granted;
+
+  @override
+  Future<ObdPermissionStatusMessage> requestPermissions() async =>
+      ObdPermissionStatusMessage.granted;
+
+  @override
+  Future<List<ObdAdapterMessage>> scanAdapters(int durationMs) async => [
+    ObdAdapterMessage(handle: 'cx', advertisedName: 'OBDLink CX', rssi: -50),
+  ];
+
+  @override
+  Future<ObdLinkStateMessage> connect(String handle) async =>
+      ObdLinkStateMessage(
+        state: ObdLinkStateValueMessage.connected,
+        adapterHandle: handle,
+      );
+
+  @override
+  Future<bool> startRecording(ObdStartRecordingRequest request) async => true;
+
+  @override
+  Future<void> stopRecording(String sessionId) async {}
+}
+
+RecordingController _fakeController() => RecordingController(
+  bridge: ObdBridge(DidscoutPolicy(), nativeApi: _FakeNativeObdApi()),
+  recordingsDirectory: () async => Directory.systemTemp,
+  sessionIdFactory: () => 'test-session',
+);
+
 void main() {
-  Future<void> pumpPage(WidgetTester tester) async {
+  Future<void> pumpPage(
+    WidgetTester tester, {
+    RecordingController? controller,
+  }) async {
     // The default 800x600 test surface is too short to fit the status card,
     // phase grid, note input and marker list at once; use a phone-sized
     // surface instead so interacting with later widgets doesn't require
@@ -18,17 +70,57 @@ void main() {
       tester.view.devicePixelRatio = originalDpr;
     });
 
-    await tester.pumpWidget(const MaterialApp(home: RecordingPage()));
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RecordingPage(controller: controller ?? _fakeController()),
+      ),
+    );
   }
 
-  testWidgets('start recording button is disabled', (tester) async {
+  testWidgets('start recording button is enabled while idle', (
+    tester,
+  ) async {
     await pumpPage(tester);
 
     final button = tester.widget<ElevatedButton>(
       find.widgetWithText(ElevatedButton, 'Start recording'),
     );
+    expect(button.onPressed, isNotNull);
+  });
+
+  testWidgets('share button is disabled before a recording finishes', (
+    tester,
+  ) async {
+    await pumpPage(tester);
+
+    final button = tester.widget<OutlinedButton>(
+      find.widgetWithText(OutlinedButton, 'Share recording'),
+    );
     expect(button.onPressed, isNull);
   });
+
+  testWidgets(
+    'starting a recording shows Stop and enables the share button once finished',
+    (tester) async {
+      final controller = _fakeController();
+      await pumpPage(tester, controller: controller);
+
+      await tester.tap(find.widgetWithText(ElevatedButton, 'Start recording'));
+      await tester.pumpAndSettle();
+
+      expect(find.widgetWithText(ElevatedButton, 'Stop'), findsOneWidget);
+      expect(controller.phase, RecordingPhase.recording);
+
+      await tester.tap(find.widgetWithText(ElevatedButton, 'Stop'));
+      await tester.pumpAndSettle();
+
+      expect(controller.phase, RecordingPhase.finished);
+      final shareButton = tester.widget<OutlinedButton>(
+        find.widgetWithText(OutlinedButton, 'Share recording'),
+      );
+      expect(shareButton.onPressed, isNotNull);
+    },
+  );
 
   testWidgets('tapping a phase button adds and highlights that phase', (
     tester,

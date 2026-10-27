@@ -25,7 +25,7 @@ class DidscoutApp extends StatelessWidget {
         ),
       ),
       themeMode: ThemeMode.system,
-      home: const RecordingPage(),
+      home: RecordingPage(),
     );
   }
 }
