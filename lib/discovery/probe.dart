@@ -95,6 +95,12 @@ class ProbeStep {
 String moduleIdOf(String signalId) =>
     signalId.substring(0, signalId.indexOf('_'));
 
+/// Recovers the command a [ProbeStep.signalId]/[ProbeResult.signalId] was
+/// built from, upper-cased back to the original hex command text (safe
+/// because [signalIdFor] only ever lower-cases pure-hex command text).
+String commandOf(String signalId) =>
+    signalId.substring(signalId.indexOf('_') + 1).toUpperCase();
+
 /// Builds the signal id for [moduleId]/[command] per the
 /// `<moduleId>_<command lowercase>` scheme.
 String signalIdFor(String moduleId, String command) {
