@@ -12,7 +12,9 @@ import 'package:obdbridge/obdbridge.dart';
 /// - mode 01 reads and UDS ReadDataByIdentifier (`22`) reads.
 class DidscoutPolicy implements CommandPolicy {
   static final RegExp _hex = RegExp(r'^[0-9A-F]+$');
-  static final RegExp _headerCommand = RegExp(r'^(ATSH|ATCRA|ATFCSH)([0-9A-F]+)$');
+  static final RegExp _headerCommand = RegExp(
+    r'^(ATSH|ATCRA|ATFCSH)([0-9A-F]+)$',
+  );
   static final RegExp _elevenBitPhysical = RegExp(r'^7[0-9A-F]{2}$');
   static final RegExp _twentyNineBitPhysicalRequest = RegExp(
     r'^18DA[0-9A-F]{2}F1$',
