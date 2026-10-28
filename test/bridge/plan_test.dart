@@ -4,9 +4,15 @@ import 'package:obdbridge/obdbridge.dart';
 import 'package:didscout_app/bridge/didscout_policy.dart';
 import 'package:didscout_app/bridge/recording_controller.dart';
 import 'package:didscout_app/bridge/vag_ppe_plan_data.dart';
+import 'package:didscout_app/discovery/discovery_state.dart';
+import 'package:didscout_app/settings/app_settings.dart';
 
 void main() {
-  final plan = RecordingController.buildPlanForTesting();
+  final plan = RecordingController.buildPlanForTesting(
+    settings: const AppSettings.defaultValues().copyWith(
+      recordingMode: RecordingMode.scoutAndRecordKnown,
+    ),
+  );
   final filter = GuardedCommandFilter(DidscoutPolicy());
 
   test('every known profile DID is read, plus the base signals', () {
@@ -44,5 +50,82 @@ void main() {
       (sum, s) => sum + 1000 / s.intervalMs,
     );
     expect(readsPerSecond, lessThan(plan.limits.maxReadsPerSecond * 0.7));
+  });
+
+  group('RecordingMode.scoutOnly (the default)', () {
+    final scoutOnlyPlan = RecordingController.buildPlanForTesting();
+
+    test('reads only the speed signal', () {
+      expect(scoutOnlyPlan.steps, hasLength(1));
+      expect(scoutOnlyPlan.steps.single.signalId, 'module7_22f40d');
+    });
+
+    test('omits the generated vag-ppe DID modules', () {
+      final moduleIds = scoutOnlyPlan.modules.map((m) => m.moduleId).toSet();
+      expect(moduleIds, {'module7', 'module8', 'module6'});
+    });
+
+    test('adds discovered DIDs when keepSamplingFoundDids is on', () {
+      final state = DiscoveryState();
+      state.ecus['ecus11-7B0'] = EcuInfo(
+        requestHeader: '7B0',
+        responseHeader: '7B8',
+        protocol: 6,
+      )..discovered.add('2A00');
+
+      final withDiscovery = RecordingController.buildPlanForTesting(
+        discoveryState: state,
+      );
+
+      expect(
+        withDiscovery.steps.map((s) => s.signalId),
+        containsAll(['module7_22f40d', 'ecus11-7B0_222a00']),
+      );
+    });
+
+    test('omits discovered DIDs when keepSamplingFoundDids is off', () {
+      final state = DiscoveryState();
+      state.ecus['ecus11-7B0'] = EcuInfo(
+        requestHeader: '7B0',
+        responseHeader: '7B8',
+        protocol: 6,
+      )..discovered.add('2A00');
+
+      final withoutDiscovery = RecordingController.buildPlanForTesting(
+        settings: const AppSettings.defaultValues().copyWith(
+          keepSamplingFoundDids: false,
+        ),
+        discoveryState: state,
+      );
+
+      expect(withoutDiscovery.steps, hasLength(1));
+      expect(withoutDiscovery.steps.single.signalId, 'module7_22f40d');
+    });
+  });
+
+  group('RecordingMode.scoutAndRecordKnown', () {
+    test('omits discovered DIDs when keepSamplingFoundDids is off', () {
+      final state = DiscoveryState();
+      state.ecus['ecus11-7B0'] = EcuInfo(
+        requestHeader: '7B0',
+        responseHeader: '7B8',
+        protocol: 6,
+      )..discovered.add('2A00');
+
+      final withoutDiscovery = RecordingController.buildPlanForTesting(
+        settings: const AppSettings.defaultValues().copyWith(
+          recordingMode: RecordingMode.scoutAndRecordKnown,
+          keepSamplingFoundDids: false,
+        ),
+        discoveryState: state,
+      );
+
+      final known = vagPpeModules.fold<int>(0, (n, m) => n + m.dids.length);
+      expect(withoutDiscovery.steps, hasLength(known + 7));
+      expect(
+        withoutDiscovery.steps.map((s) => s.signalId),
+        isNot(contains('ecus11-7B0_222a00')),
+      );
+    });
   });
 }

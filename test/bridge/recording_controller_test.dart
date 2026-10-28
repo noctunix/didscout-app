@@ -515,6 +515,8 @@ void main() {
       recordOnlyWhilePoweredOn: false,
       scoutWhileRecording: false,
       scoutWhileDriving: false,
+      recordingMode: RecordingMode.scoutAndRecordKnown,
+      keepSamplingFoundDids: true,
     );
 
     RecordingController controllerWithSettings(AppSettings settings) =>
@@ -585,6 +587,7 @@ void main() {
       settings: const AppSettings.defaultValues().copyWith(
         maxReadsPerSecond: 8,
         surveyIntervalMinutes: 1,
+        recordingMode: RecordingMode.scoutAndRecordKnown,
       ),
     );
 

@@ -944,23 +944,25 @@ class RecordingController extends ChangeNotifier {
   }
 
   /// One survey-interval read step per discovered DID not already covered
-  /// by [_knownDidSteps].
+  /// by [_knownDidSteps] -- empty whenever
+  /// [AppSettings.keepSamplingFoundDids] is off.
   static List<ObdStepMessage> _discoveredSteps(
     List<DiscoveredEcuPlan> additions,
     AppSettings settings,
   ) => [
-    for (final addition in additions)
-      for (final did in addition.dids)
-        ObdStepMessage(
-          signalId: signalIdFor(
-            _effectiveModuleId(addition.moduleId),
-            '22$did',
+    if (settings.keepSamplingFoundDids)
+      for (final addition in additions)
+        for (final did in addition.dids)
+          ObdStepMessage(
+            signalId: signalIdFor(
+              _effectiveModuleId(addition.moduleId),
+              '22$did',
+            ),
+            moduleId: _effectiveModuleId(addition.moduleId),
+            command: '22$did',
+            responseHeader: addition.responseHeader,
+            intervalMs: settings.surveyIntervalMs,
           ),
-          moduleId: _effectiveModuleId(addition.moduleId),
-          command: '22$did',
-          responseHeader: addition.responseHeader,
-          intervalMs: settings.surveyIntervalMs,
-        ),
   ];
 
   @visibleForTesting
@@ -1004,7 +1006,14 @@ class RecordingController extends ChangeNotifier {
       ),
     );
 
-    final knownModules = [module7, module8, module6, ..._knownDidModules()];
+    final recordKnown =
+        settings.recordingMode == RecordingMode.scoutAndRecordKnown;
+    final knownModules = [
+      module7,
+      module8,
+      module6,
+      if (recordKnown) ..._knownDidModules(),
+    ];
     final discoveredAdditions = discoveredPlanAdditions(discoveryState);
     final discoveredModules = _discoveredModules(discoveredAdditions, {
       for (final module in knownModules) module.moduleId,
@@ -1018,6 +1027,8 @@ class RecordingController extends ChangeNotifier {
       resync: _adapterInitCommands,
       modules: [...knownModules, ...discoveredModules],
       steps: [
+        // The speed signal is always planned, driving or not -- discovery
+        // is motion-aware and needs it even in RecordingMode.scoutOnly.
         ObdStepMessage(
           signalId: 'module7_22f40d',
           moduleId: 'module7',
@@ -1025,49 +1036,51 @@ class RecordingController extends ChangeNotifier {
           responseHeader: _module7ResponseHeader,
           intervalMs: 5000,
         ),
-        ObdStepMessage(
-          signalId: 'module6_222ab8',
-          moduleId: 'module6',
-          command: '222AB8',
-          responseHeader: _module6ResponseHeader,
-          intervalMs: 15000,
-        ),
-        ObdStepMessage(
-          signalId: 'module6_222ab6',
-          moduleId: 'module6',
-          command: '222AB6',
-          responseHeader: _module6ResponseHeader,
-          intervalMs: 60000,
-        ),
-        ObdStepMessage(
-          signalId: 'module7_22f446',
-          moduleId: 'module7',
-          command: '22F446',
-          responseHeader: _module7ResponseHeader,
-          intervalMs: 60000,
-        ),
-        ObdStepMessage(
-          signalId: 'module8_22f4a6',
-          moduleId: 'module8',
-          command: '22F4A6',
-          responseHeader: _module8ResponseHeader,
-          intervalMs: 60000,
-        ),
-        ObdStepMessage(
-          signalId: 'module7_22f449',
-          moduleId: 'module7',
-          command: '22F449',
-          responseHeader: _module7ResponseHeader,
-          intervalMs: 5000,
-        ),
-        ObdStepMessage(
-          signalId: 'module7_22f442',
-          moduleId: 'module7',
-          command: '22F442',
-          responseHeader: _module7ResponseHeader,
-          intervalMs: 60000,
-        ),
-        ..._knownDidSteps(settings),
+        if (recordKnown) ...[
+          ObdStepMessage(
+            signalId: 'module6_222ab8',
+            moduleId: 'module6',
+            command: '222AB8',
+            responseHeader: _module6ResponseHeader,
+            intervalMs: 15000,
+          ),
+          ObdStepMessage(
+            signalId: 'module6_222ab6',
+            moduleId: 'module6',
+            command: '222AB6',
+            responseHeader: _module6ResponseHeader,
+            intervalMs: 60000,
+          ),
+          ObdStepMessage(
+            signalId: 'module7_22f446',
+            moduleId: 'module7',
+            command: '22F446',
+            responseHeader: _module7ResponseHeader,
+            intervalMs: 60000,
+          ),
+          ObdStepMessage(
+            signalId: 'module8_22f4a6',
+            moduleId: 'module8',
+            command: '22F4A6',
+            responseHeader: _module8ResponseHeader,
+            intervalMs: 60000,
+          ),
+          ObdStepMessage(
+            signalId: 'module7_22f449',
+            moduleId: 'module7',
+            command: '22F449',
+            responseHeader: _module7ResponseHeader,
+            intervalMs: 5000,
+          ),
+          ObdStepMessage(
+            signalId: 'module7_22f442',
+            moduleId: 'module7',
+            command: '22F442',
+            responseHeader: _module7ResponseHeader,
+            intervalMs: 60000,
+          ),
+          ..._knownDidSteps(settings),
+        ],
         ..._discoveredSteps(discoveredAdditions, settings),
       ],
       limits: ObdLimitsMessage(
