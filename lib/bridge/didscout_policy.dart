@@ -30,6 +30,10 @@ class DidscoutPolicy implements CommandPolicy {
     'ATI', 'ATRV', 'ATDP', 'ATDPN', 'STI', 'STDI',
     // Flow control, fixed to the exact shape buildModuleSetupCommands emits.
     'ATFCSD300000', 'ATFCSM1',
+    // Receive filter/mask for the 11-bit manufacturer-ECU discovery sweep:
+    // accepts a reply from any header in 0x700-0x7FF, since the ECU that
+    // answers a given request header is not known in advance.
+    'ATCF700', 'ATCM700',
   };
 
   static const Set<String> _allowedProtocolSelectCommands = {'ATSP6', 'ATSP7'};

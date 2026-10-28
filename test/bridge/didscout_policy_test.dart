@@ -25,6 +25,8 @@ void main() {
       'STDI',
       'ATFCSD300000',
       'ATFCSM1',
+      'ATCF700',
+      'ATCM700',
     ]) {
       test('$command is allowed', () {
         expect(policy.allows(command), isTrue);
@@ -37,6 +39,14 @@ void main() {
       expect(policy.allows('ATCAF0'), isFalse);
       expect(policy.allows('ATD'), isFalse);
     });
+
+    test(
+      'a CAN filter/mask other than the discovery sweep value is rejected',
+      () {
+        expect(policy.allows('ATCF701'), isFalse);
+        expect(policy.allows('ATCM000'), isFalse);
+      },
+    );
   });
 
   group('protocol selection', () {
