@@ -14,6 +14,7 @@ import '../session/charge_reminder.dart';
 import '../session/session_markers.dart';
 import 'connection_status.dart';
 import 'didscout_policy.dart';
+import 'vag_ppe_plan_data.dart';
 
 /// The 29-bit module this app's fixed plan reads: ECU address `04`.
 const String _module7RequestHeader = '18DA04F1';
@@ -591,6 +592,48 @@ class RecordingController extends ChangeNotifier {
     return strongest;
   }
 
+  /// Module id used for a profile module in this plan: the gateway shares the
+  /// base plan's `module6` (same headers), every other module keeps its
+  /// profile id.
+  static String _planModuleId(VagPpeModuleSpec spec) =>
+      spec.request == _module6RequestHeader ? 'module6' : spec.id;
+
+  static ObdProtocol _protocolOf(VagPpeModuleSpec spec) => spec.protocol == '7'
+      ? ObdProtocol.twentyNineBitCan
+      : ObdProtocol.elevenBitCan;
+
+  /// Modules for every vehicle module known from the vag-ppe profile that the
+  /// base plan does not already address.
+  static List<ObdModuleMessage> _knownDidModules() => [
+    for (final spec in vagPpeModules)
+      if (_planModuleId(spec) != 'module6')
+        ObdModuleMessage(
+          moduleId: _planModuleId(spec),
+          protocol: _protocolOf(spec).wireValue,
+          setup: buildModuleSetupCommands(
+            protocol: _protocolOf(spec),
+            requestHeader: spec.request,
+            responseHeader: spec.response,
+          ),
+        ),
+  ];
+
+  /// One read step per DID known to answer on this vehicle platform.
+  static List<ObdStepMessage> _knownDidSteps() => [
+    for (final spec in vagPpeModules)
+      for (final did in spec.dids)
+        ObdStepMessage(
+          signalId: '${_planModuleId(spec)}_22${did.did.toLowerCase()}',
+          moduleId: _planModuleId(spec),
+          command: '22${did.did}',
+          responseHeader: spec.response,
+          intervalMs: did.intervalMs,
+        ),
+  ];
+
+  @visibleForTesting
+  static ObdPlanMessage buildPlanForTesting() => _buildPlan();
+
   static ObdPlanMessage _buildPlan() {
     final module7 = ObdModuleMessage(
       moduleId: 'module7',
@@ -626,7 +669,7 @@ class RecordingController extends ChangeNotifier {
       formatVersion: 1,
       init: _adapterInitCommands,
       resync: _adapterInitCommands,
-      modules: [module7, module8, module6],
+      modules: [module7, module8, module6, ..._knownDidModules()],
       steps: [
         ObdStepMessage(
           signalId: 'module7_22f40d',
@@ -663,6 +706,21 @@ class RecordingController extends ChangeNotifier {
           responseHeader: _module8ResponseHeader,
           intervalMs: 60000,
         ),
+        ObdStepMessage(
+          signalId: 'module7_22f449',
+          moduleId: 'module7',
+          command: '22F449',
+          responseHeader: _module7ResponseHeader,
+          intervalMs: 5000,
+        ),
+        ObdStepMessage(
+          signalId: 'module7_22f442',
+          moduleId: 'module7',
+          command: '22F442',
+          responseHeader: _module7ResponseHeader,
+          intervalMs: 60000,
+        ),
+        ..._knownDidSteps(),
       ],
       limits: ObdLimitsMessage(
         maxResponseBytes: 4096,
