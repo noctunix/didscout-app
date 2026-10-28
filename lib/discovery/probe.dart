@@ -136,13 +136,30 @@ class ProbeResult {
   final DateTime at;
 }
 
+/// Why [ReadExecutor.submit] could not queue a batch at all -- none of it
+/// was queued either way.
+enum SubmitRejectionReason {
+  /// The executor's own queue is at capacity; safe to retry shortly.
+  queueFull,
+
+  /// Nothing is currently running to queue this batch against.
+  noActiveRecording,
+}
+
+/// Thrown by [ReadExecutor.submit] when a whole batch was rejected rather
+/// than queued.
+abstract class ReadExecutorRejection implements Exception {
+  SubmitRejectionReason get reason;
+}
+
 /// Executes queued probe steps against whatever transport/adapter backs
 /// an implementation; results are reported asynchronously and may arrive
 /// in any order relative to submission.
 abstract class ReadExecutor {
   /// Queues [steps] for execution, setting up any module in [modules] not
   /// already set up. Returns once the steps are queued, not once they
-  /// have run.
+  /// have run. Throws a [ReadExecutorRejection] if none of the batch could
+  /// be queued.
   Future<void> submit(List<ProbeModule> modules, List<ProbeStep> steps);
 
   /// Reports one [ProbeResult] per completed step.

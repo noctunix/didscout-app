@@ -14,10 +14,20 @@ import '../discovery/probe.dart';
 /// Thrown when [ObdBridge.enqueueOneShot] could not queue a whole batch --
 /// the native one-shot queue is full, or no recording is currently
 /// running. Either way none of the batch was queued.
-class BridgeReadExecutorException implements Exception {
+class BridgeReadExecutorException implements ReadExecutorRejection {
   BridgeReadExecutorException(this.result);
 
   final ObdOneShotEnqueueResultMessage result;
+
+  @override
+  SubmitRejectionReason get reason => switch (result) {
+    ObdOneShotEnqueueResultMessage.queueFull => SubmitRejectionReason.queueFull,
+    ObdOneShotEnqueueResultMessage.noActiveRecording =>
+      SubmitRejectionReason.noActiveRecording,
+    ObdOneShotEnqueueResultMessage.accepted => throw StateError(
+      'BridgeReadExecutorException must never carry an accepted result',
+    ),
+  };
 
   @override
   String toString() => 'BridgeReadExecutorException: ${result.name}';

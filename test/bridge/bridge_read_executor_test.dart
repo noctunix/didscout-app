@@ -123,6 +123,27 @@ void main() {
       await executor.submit([], []);
       expect(fakeNative.lastModules, isNull);
     });
+
+    test('exposes the rejection reason the discovery engine acts on', () async {
+      fakeNative.enqueueResult =
+          ObdOneShotEnqueueResultMessage.noActiveRecording;
+      try {
+        await executor.submit(
+          [
+            ProbeModule(
+              id: 'ecu1',
+              requestHeader: '710',
+              responseHeader: '77A',
+              protocol: 6,
+            ),
+          ],
+          [ProbeStep(signalId: 'ecu1_22f189', command: '22F189')],
+        );
+        fail('expected a rejection');
+      } on BridgeReadExecutorException catch (e) {
+        expect(e.reason, SubmitRejectionReason.noActiveRecording);
+      }
+    });
   });
 
   group('deliverOneShotResult', () {
