@@ -140,6 +140,31 @@ void main() {
     engine.dispose();
   });
 
+  test('allowedToRun: false short-circuits to waiting: moving even with '
+      'eligible, non-blocklisted work', () {
+    final state = DiscoveryState(inventoryStagesDone: {'ecus11', 'ecus29'});
+    final engine = DiscoveryEngine(
+      executor: FakeExecutor(),
+      state: state,
+      onHit: (_, _, _) {},
+    );
+    // The seeded vag-ppe ECUs have pending work and no F197 name, so
+    // they're not safety-blocklisted -- `selectNextEcuForScan` alone
+    // would report `scanning`.
+    expect(engine.selectNextEcuForScan(stationary: false, now: now), isNotNull);
+
+    final uiState = buildDiscoveryUiState(
+      engine: engine,
+      stationary: false,
+      now: now,
+      sessionHits: 0,
+      allowedToRun: false,
+    );
+
+    expect(uiState.activity, DiscoveryActivity.waitingMoving);
+    engine.dispose();
+  });
+
   test('totalHits and sessionHits are reported independently', () {
     final state = DiscoveryState(inventoryStagesDone: {'ecus11', 'ecus29'});
     state.ecus['ecu1'] = EcuInfo(requestHeader: '7B0', protocol: 6)

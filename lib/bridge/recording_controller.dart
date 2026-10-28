@@ -10,13 +10,38 @@ import 'package:uuid/uuid.dart';
 
 import '../capture/isotp.dart';
 import '../capture/readings.dart';
+import '../discovery/discovery_engine.dart';
+import '../discovery/discovery_plan.dart';
+import '../discovery/discovery_state.dart';
+import '../discovery/discovery_state_store.dart';
+import '../discovery/discovery_ui_state.dart';
+import '../discovery/probe.dart' show signalIdFor;
+import '../discovery/profile_export.dart';
 import '../session/charge_reminder.dart';
 import '../session/session_markers.dart';
 import '../settings/app_settings.dart';
 import '../settings/settings_repository.dart';
+import 'bridge_read_executor.dart';
 import 'connection_status.dart';
 import 'didscout_policy.dart';
 import 'vag_ppe_plan_data.dart';
+
+/// Forwards obdbridge's one-shot result events to the discovery executor
+/// currently serving a recording; registered exclusively while one is
+/// active, since nothing else in this app listens for [ObdEventsApi]
+/// events today.
+class _DiscoveryEventsBridge implements ObdEventsApi {
+  _DiscoveryEventsBridge(this._executor);
+
+  final BridgeReadExecutor _executor;
+
+  @override
+  void onOneShotResult(ObdSignalExchangeMessage result) =>
+      _executor.deliverOneShotResult(result);
+
+  @override
+  void onLinkState(ObdLinkStateMessage state) {}
+}
 
 /// The 29-bit module this app's fixed plan reads: ECU address `04`.
 const String _module7RequestHeader = '18DA04F1';
@@ -95,8 +120,11 @@ class RecordingController extends ChangeNotifier {
     DateTime Function()? clock,
     this._scanDurationMs = 8000,
     Duration tickInterval = const Duration(seconds: 5),
+    this._discoveryPumpInterval = const Duration(seconds: 2),
     Future<void> Function(List<ph.Permission>)? requestRuntimePermissions,
     Future<AppSettings> Function()? loadSettings,
+    Future<DiscoveryState> Function()? loadDiscoveryState,
+    Future<void> Function(DiscoveryState)? saveDiscoveryState,
   }) : _bridge = bridge ?? ObdBridge(DidscoutPolicy()),
        _requestRuntimePermissions =
            requestRuntimePermissions ?? _defaultRequestRuntimePermissions,
@@ -108,6 +136,8 @@ class RecordingController extends ChangeNotifier {
        // ignore: prefer_initializing_formals
        _tickInterval = tickInterval,
        _loadSettings = loadSettings ?? const SettingsRepository().load,
+       _loadDiscoveryState = loadDiscoveryState ?? _defaultLoadDiscoveryState,
+       _saveDiscoveryState = saveDiscoveryState ?? _defaultSaveDiscoveryState,
        _clock = clock,
        markers = SessionMarkerLog(clock: clock),
        _chargeReminder = ChargeReminderScheduler(clock: clock);
@@ -118,8 +148,37 @@ class RecordingController extends ChangeNotifier {
   final String Function() _sessionIdFactory;
   final int _scanDurationMs;
   final Duration _tickInterval;
+  final Duration _discoveryPumpInterval;
   final Future<AppSettings> Function() _loadSettings;
+  final Future<DiscoveryState> Function() _loadDiscoveryState;
+  final Future<void> Function(DiscoveryState) _saveDiscoveryState;
   final DateTime Function()? _clock;
+
+  DateTime _now() => (_clock ?? DateTime.now)();
+
+  BridgeReadExecutor? _discoveryExecutor;
+  DiscoveryEngine? _discoveryEngine;
+  DiscoveryState? _discoveryState;
+  Timer? _discoveryTimer;
+  int _sessionDiscoveryHits = 0;
+  DiscoveryUiState? _discoveryUiState;
+
+  /// Snapshot for the recording page's "Scouting" card -- null whenever
+  /// discovery isn't currently running (not recording, or "scout while
+  /// recording" is off).
+  DiscoveryUiState? get discoveryUiState => _discoveryUiState;
+
+  /// The discovery executor currently serving a recording, if any -- tests
+  /// use this to simulate [ObdEventsApi.onOneShotResult] via
+  /// [BridgeReadExecutor.deliverOneShotResult] without reaching into the
+  /// real platform channel.
+  @visibleForTesting
+  BridgeReadExecutor? get discoveryExecutorForTesting => _discoveryExecutor;
+
+  /// The discovery engine currently serving a recording, if any -- tests
+  /// use this to inspect scan progress/hits directly.
+  @visibleForTesting
+  DiscoveryEngine? get discoveryEngineForTesting => _discoveryEngine;
 
   /// The settings in effect for the recording currently in progress (or the
   /// one most recently started) — reloaded by [start] every time, never
@@ -228,6 +287,41 @@ class RecordingController extends ChangeNotifier {
   /// Recordings list) that needs to enumerate past recordings too.
   Future<Directory> resolveRecordingsDirectory() => _recordingsDirectory();
 
+  /// Writes whatever discovery has found so far -- the recording currently
+  /// in progress's own in-memory state if discovery is running, otherwise
+  /// whatever was last persisted -- as a profile-draft TOML file, ready for
+  /// a share sheet. Returns the written file's path, or null if nothing
+  /// has ever been discovered (including when no discovery state exists
+  /// at all).
+  Future<String?> writeProfileDraft() async {
+    DiscoveryState state;
+    final active = _discoveryState;
+    if (active != null) {
+      state = active;
+    } else {
+      try {
+        state = await _loadDiscoveryState();
+      } catch (_) {
+        return null;
+      }
+    }
+    if (state.ecus.values.every((ecu) => ecu.discovered.isEmpty)) {
+      return null;
+    }
+    final draft = exportProfileDraft(
+      state,
+      id: 'didscout-draft',
+      name: 'didscout discovery draft',
+      description: 'Draft profile from on-device discovery, unverified.',
+    );
+    final directory = await _recordingsDirectory();
+    final path =
+        '${directory.path}/profile-draft-'
+        '${DateTime.now().toUtc().millisecondsSinceEpoch}.toml';
+    await File(path).writeAsString(draft);
+    return path;
+  }
+
   bool get canStart =>
       _phase == RecordingPhase.idle ||
       _phase == RecordingPhase.permissionDenied ||
@@ -259,6 +353,7 @@ class RecordingController extends ChangeNotifier {
     if (phase != MarkerPhase.charge) {
       _chargeReminderVisible = false;
     }
+    _discoveryEngine?.handlePhaseChange();
     unawaited(_appendLatestMarker());
   }
 
@@ -401,8 +496,18 @@ class RecordingController extends ChangeNotifier {
       final sessionId = _sessionIdFactory();
       final bufferFilePath = '${directory.path}/$sessionId.jsonl';
 
+      DiscoveryState discoveryState;
+      try {
+        discoveryState = await _loadDiscoveryState();
+      } catch (_) {
+        // A corrupt/unavailable discovery state must never stop a
+        // recording from starting; the plan simply carries no extra
+        // discovered DIDs this time.
+        discoveryState = DiscoveryState();
+      }
+
       _setPhase(RecordingPhase.startingRecording);
-      final plan = _buildPlan(_settings);
+      final plan = _buildPlan(_settings, discoveryState);
       final started = await _bridge.startRecording(
         ObdStartRecordingRequest(
           sessionId: sessionId,
@@ -441,6 +546,7 @@ class RecordingController extends ChangeNotifier {
         adapter.advertisedName ?? adapter.handle,
       );
       _startTicking();
+      _startDiscovery(discoveryState);
     } catch (error) {
       _setPhase(RecordingPhase.error, error.toString());
     }
@@ -458,6 +564,7 @@ class RecordingController extends ChangeNotifier {
       return;
     }
     _stopTicking();
+    await _teardownDiscovery();
     _setPhase(RecordingPhase.stopping);
     try {
       await _bridge.stopRecording(sessionId);
@@ -474,6 +581,7 @@ class RecordingController extends ChangeNotifier {
   @override
   void dispose() {
     _stopTicking();
+    unawaited(_teardownDiscovery());
     super.dispose();
   }
 
@@ -490,6 +598,131 @@ class RecordingController extends ChangeNotifier {
     _connectionStatus = null;
     _reconnectingSince = null;
     _reconnectPollAttempts = 0;
+  }
+
+  /// Starts the discovery engine for the recording that just started, when
+  /// [AppSettings.scoutWhileRecording] is on; a no-op otherwise, and
+  /// [discoveryUiState] then stays null for the whole recording.
+  void _startDiscovery(DiscoveryState discoveryState) {
+    if (!_settings.scoutWhileRecording) return;
+    _discoveryState = discoveryState;
+    final executor = BridgeReadExecutor(_bridge);
+    _discoveryExecutor = executor;
+    ObdEventsApi.setUp(_DiscoveryEventsBridge(executor));
+    _sessionDiscoveryHits = 0;
+    final engine = DiscoveryEngine(
+      executor: executor,
+      state: discoveryState,
+      onHit: (_, _, _) => _sessionDiscoveryHits++,
+    );
+    _discoveryEngine = engine;
+    final stationary = _liveInfo.speedKmh == 0;
+    _discoveryUiState = buildDiscoveryUiState(
+      engine: engine,
+      stationary: stationary,
+      now: _now(),
+      sessionHits: _sessionDiscoveryHits,
+      allowedToRun: stationary || _settings.scoutWhileDriving,
+    );
+    _discoveryTimer = Timer.periodic(
+      _discoveryPumpInterval,
+      (_) => unawaited(_pumpDiscovery()),
+    );
+  }
+
+  /// Guards [_pumpDiscovery] against overlapping ticks: [DiscoveryEngine]
+  /// isn't designed to have [DiscoveryEngine.pump] called again before a
+  /// previous call finished, and the pump interval can be shorter than one
+  /// round-trip through a slow or heavily-loaded one-shot queue.
+  bool _discoveryPumpInFlight = false;
+
+  /// One discovery scheduler tick: skips [DiscoveryEngine.pump] entirely
+  /// while the vehicle is moving and [AppSettings.scoutWhileDriving] is
+  /// off (the engine's own safety blocklist in `did_order.dart` applies
+  /// regardless of this setting, inside `pump` itself), persists
+  /// [_discoveryState] whenever this tick actually changed it, and always
+  /// refreshes [discoveryUiState].
+  Future<void> _pumpDiscovery() async {
+    if (_discoveryPumpInFlight) return;
+    final engine = _discoveryEngine;
+    final discoveryState = _discoveryState;
+    if (engine == null || discoveryState == null) return;
+    _discoveryPumpInFlight = true;
+    try {
+      await _pumpDiscoveryOnce(engine, discoveryState);
+    } finally {
+      _discoveryPumpInFlight = false;
+    }
+  }
+
+  Future<void> _pumpDiscoveryOnce(
+    DiscoveryEngine engine,
+    DiscoveryState discoveryState,
+  ) async {
+    final now = _now();
+    // Unknown speed (no live source yet) is treated as moving, never as
+    // stationary -- discovery must not assume it's safe to scan a
+    // potentially-safety-relevant ECU just because speed hasn't been read
+    // yet.
+    final stationary = _liveInfo.speedKmh == 0;
+    final allowedToRun = stationary || _settings.scoutWhileDriving;
+    if (allowedToRun) {
+      final before = jsonEncode(discoveryState.toJson());
+      try {
+        await engine.pump(stationary: stationary, now: now);
+      } on BridgeReadExecutorException {
+        // The one-shot queue was full or the recording just ended under
+        // us -- skip this tick, retry on the next one.
+      }
+      if (jsonEncode(discoveryState.toJson()) != before) {
+        await _saveDiscoveryState(discoveryState);
+      }
+    }
+    _discoveryUiState = buildDiscoveryUiState(
+      engine: engine,
+      stationary: stationary,
+      now: now,
+      sessionHits: _sessionDiscoveryHits,
+      allowedToRun: allowedToRun,
+    );
+    notifyListeners();
+  }
+
+  /// Stops and persists discovery for the recording that just ended (or is
+  /// ending), called from every exit path ([stop], [_handleNativeStop],
+  /// [dispose]) -- a no-op if discovery was never started for it.
+  Future<void> _teardownDiscovery() async {
+    _discoveryTimer?.cancel();
+    _discoveryTimer = null;
+    final engine = _discoveryEngine;
+    final discoveryState = _discoveryState;
+    _discoveryEngine = null;
+    _discoveryExecutor?.dispose();
+    _discoveryExecutor = null;
+    _discoveryState = null;
+    _discoveryUiState = null;
+    _sessionDiscoveryHits = 0;
+    engine?.dispose();
+    if (engine != null) {
+      ObdEventsApi.setUp(null);
+    }
+    if (discoveryState != null) {
+      try {
+        await _saveDiscoveryState(discoveryState);
+      } catch (_) {
+        // Best-effort -- a save failure must never block stopping.
+      }
+    }
+  }
+
+  static Future<DiscoveryState> _defaultLoadDiscoveryState() async {
+    final file = await discoveryStateFile(defaultVehicleLabel);
+    return DiscoveryState.loadFromFile(file);
+  }
+
+  static Future<void> _defaultSaveDiscoveryState(DiscoveryState state) async {
+    final file = await discoveryStateFile(defaultVehicleLabel);
+    await state.saveToFile(file);
   }
 
   Future<void> _tick() async {
@@ -575,6 +808,7 @@ class RecordingController extends ChangeNotifier {
         _handleNativeStop(state.writeError ?? state.state.name);
         return;
       }
+      _discoveryExecutor?.applyRecordingState(state.oneShotQueueDepth);
     } catch (_) {
       // Treated as "link not confirmed" below, same as a bad link state.
     }
@@ -605,6 +839,7 @@ class RecordingController extends ChangeNotifier {
     _nativeStopAt = DateTime.now().toUtc();
     _nativeStopReason = reason;
     _stopTicking();
+    unawaited(_teardownDiscovery());
     // After `_stopTicking` (which clears `_connectionStatus` along with the
     // rest of the live polling state) so the final status shown is `stopped`,
     // not `null`.
@@ -671,11 +906,76 @@ class RecordingController extends ChangeNotifier {
         ),
   ];
 
-  @visibleForTesting
-  static ObdPlanMessage buildPlanForTesting({AppSettings? settings}) =>
-      _buildPlan(settings ?? const AppSettings.defaultValues());
+  /// The effective plan module id for a [DiscoveredEcuPlan] found by
+  /// discovery: a vag-ppe-seeded ECU (see
+  /// `DiscoveryEngine._seedVagPpeEcus`, which keys the engine's own state by
+  /// the vag-ppe module's id) maps onto that module's own [_planModuleId]
+  /// (so a `gateway` hit lands on the already-planned `module6`, not a
+  /// second module addressing the same header); any other, genuinely new
+  /// ECU keeps its own id.
+  static String _effectiveModuleId(String discoveredModuleId) {
+    for (final spec in vagPpeModules) {
+      if (spec.id == discoveredModuleId) return _planModuleId(spec);
+    }
+    return discoveredModuleId;
+  }
 
-  static ObdPlanMessage _buildPlan(AppSettings settings) {
+  /// Modules for every [DiscoveredEcuPlan] not already covered by
+  /// [existingModuleIds] (the base plan plus [_knownDidModules]).
+  static List<ObdModuleMessage> _discoveredModules(
+    List<DiscoveredEcuPlan> additions,
+    Set<String> existingModuleIds,
+  ) {
+    final seen = <String>{};
+    return [
+      for (final addition in additions)
+        if (seen.add(_effectiveModuleId(addition.moduleId)) &&
+            !existingModuleIds.contains(_effectiveModuleId(addition.moduleId)))
+          ObdModuleMessage(
+            moduleId: _effectiveModuleId(addition.moduleId),
+            protocol: addition.protocol,
+            setup: buildModuleSetupCommands(
+              protocol: ObdProtocol.fromWireValue(addition.protocol)!,
+              requestHeader: addition.requestHeader,
+              responseHeader: addition.responseHeader,
+            ),
+          ),
+    ];
+  }
+
+  /// One survey-interval read step per discovered DID not already covered
+  /// by [_knownDidSteps].
+  static List<ObdStepMessage> _discoveredSteps(
+    List<DiscoveredEcuPlan> additions,
+    AppSettings settings,
+  ) => [
+    for (final addition in additions)
+      for (final did in addition.dids)
+        ObdStepMessage(
+          signalId: signalIdFor(
+            _effectiveModuleId(addition.moduleId),
+            '22$did',
+          ),
+          moduleId: _effectiveModuleId(addition.moduleId),
+          command: '22$did',
+          responseHeader: addition.responseHeader,
+          intervalMs: settings.surveyIntervalMs,
+        ),
+  ];
+
+  @visibleForTesting
+  static ObdPlanMessage buildPlanForTesting({
+    AppSettings? settings,
+    DiscoveryState? discoveryState,
+  }) => _buildPlan(
+    settings ?? const AppSettings.defaultValues(),
+    discoveryState ?? DiscoveryState(),
+  );
+
+  static ObdPlanMessage _buildPlan(
+    AppSettings settings,
+    DiscoveryState discoveryState,
+  ) {
     final module7 = ObdModuleMessage(
       moduleId: 'module7',
       protocol: ObdProtocol.twentyNineBitCan.wireValue,
@@ -704,13 +1004,19 @@ class RecordingController extends ChangeNotifier {
       ),
     );
 
+    final knownModules = [module7, module8, module6, ..._knownDidModules()];
+    final discoveredAdditions = discoveredPlanAdditions(discoveryState);
+    final discoveredModules = _discoveredModules(discoveredAdditions, {
+      for (final module in knownModules) module.moduleId,
+    });
+
     return ObdPlanMessage(
       planId: 'didscout-fixed-plan',
       planVersion: 1,
       formatVersion: 1,
       init: _adapterInitCommands,
       resync: _adapterInitCommands,
-      modules: [module7, module8, module6, ..._knownDidModules()],
+      modules: [...knownModules, ...discoveredModules],
       steps: [
         ObdStepMessage(
           signalId: 'module7_22f40d',
@@ -762,6 +1068,7 @@ class RecordingController extends ChangeNotifier {
           intervalMs: 60000,
         ),
         ..._knownDidSteps(settings),
+        ..._discoveredSteps(discoveredAdditions, settings),
       ],
       limits: ObdLimitsMessage(
         maxResponseBytes: 4096,

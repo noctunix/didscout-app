@@ -101,6 +101,10 @@ ObdLiveStateMessage _liveStateWithLink(ObdLinkStateValueMessage link) =>
     );
 
 void main() {
+  // `RecordingController.start` wires `ObdEventsApi` (for discovery
+  // results) through a real `BasicMessageChannel`, which needs a binding.
+  TestWidgetsFlutterBinding.ensureInitialized();
+
   late Directory tempDir;
   late _FakeNativeObdApi fakeNative;
   late RecordingController controller;
@@ -363,6 +367,7 @@ void main() {
         bufferBytes: 0,
         gapCount: 0,
         resumedAfterRestart: false,
+        oneShotQueueDepth: 0,
       );
       controller = RecordingController(
         requestRuntimePermissions: (_) async {},
@@ -395,6 +400,7 @@ void main() {
         bufferBytes: 0,
         gapCount: 1,
         resumedAfterRestart: false,
+        oneShotQueueDepth: 0,
       );
       controller = RecordingController(
         requestRuntimePermissions: (_) async {},
@@ -429,6 +435,7 @@ void main() {
         gapCount: 3,
         writeError: 'reconnect attempts exhausted',
         resumedAfterRestart: false,
+        oneShotQueueDepth: 0,
       );
       controller = RecordingController(
         requestRuntimePermissions: (_) async {},
@@ -467,6 +474,7 @@ void main() {
         gapCount: 1,
         writeError: 'reconnect attempts exhausted',
         resumedAfterRestart: false,
+        oneShotQueueDepth: 0,
       );
       controller = RecordingController(
         requestRuntimePermissions: (_) async {},
@@ -505,6 +513,8 @@ void main() {
       chargeReminderIntervalMinutes: 2,
       autoStartOnPower: false,
       recordOnlyWhilePoweredOn: false,
+      scoutWhileRecording: false,
+      scoutWhileDriving: false,
     );
 
     RecordingController controllerWithSettings(AppSettings settings) =>

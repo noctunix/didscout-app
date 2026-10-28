@@ -60,18 +60,34 @@ class DiscoveryUiState {
 /// Builds a [DiscoveryUiState] from [engine]'s current state, [stationary]
 /// (the same flag passed to [DiscoveryEngine.pump]), and [sessionHits]
 /// (tracked by the caller, since the engine itself has no notion of "this
-/// recording" vs. "ever").
+/// recording" vs. "ever"). [allowedToRun] is the caller's own, higher-level
+/// gate on top of [stationary] -- e.g. [AppSettings.scoutWhileDriving]
+/// being off while moving -- false short-circuits straight to
+/// [DiscoveryActivity.waitingMoving] without even asking [engine] whether
+/// it has scannable work, since the caller isn't calling
+/// [DiscoveryEngine.pump] this tick either way.
 DiscoveryUiState buildDiscoveryUiState({
   required DiscoveryEngine engine,
   required bool stationary,
   required DateTime now,
   required int sessionHits,
+  bool allowedToRun = true,
 }) {
   final progress = engine.scanProgress();
   final totalHits = engine.state.ecus.values.fold<int>(
     0,
     (sum, ecu) => sum + ecu.discovered.length,
   );
+
+  if (!allowedToRun) {
+    return DiscoveryUiState(
+      ecuCount: progress.ecuCount,
+      progressPercent: progress.percent,
+      totalHits: totalHits,
+      sessionHits: sessionHits,
+      activity: DiscoveryActivity.waitingMoving,
+    );
+  }
 
   // Mirrors `DiscoveryEngine.pump`'s own order: inventory runs before any
   // ECU scan batch while stationary, so it takes display priority too.
