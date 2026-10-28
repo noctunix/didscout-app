@@ -12,6 +12,8 @@ import '../capture/isotp.dart';
 import '../capture/readings.dart';
 import '../session/charge_reminder.dart';
 import '../session/session_markers.dart';
+import '../settings/app_settings.dart';
+import '../settings/settings_repository.dart';
 import 'connection_status.dart';
 import 'didscout_policy.dart';
 import 'vag_ppe_plan_data.dart';
@@ -53,6 +55,12 @@ const List<String> _adapterInitCommands = [
   'ATH1',
 ];
 
+/// The generator's own default survey interval in `vag_ppe_plan_data.dart`
+/// (the interval most of that file's exploratory DIDs carry) — the only
+/// value [AppSettings.surveyIntervalMs] is allowed to override; DIDs
+/// generated with a different (watch/once) interval are left alone.
+const int _generatedSurveyIntervalMs = 180000;
+
 /// [RecordingController]'s state machine. UI code decides what to show and
 /// which buttons to enable purely from [RecordingController.phase] (plus
 /// [RecordingController.canStart]/[canStop]/[canShare]), never by re-deriving
@@ -88,6 +96,7 @@ class RecordingController extends ChangeNotifier {
     this._scanDurationMs = 8000,
     Duration tickInterval = const Duration(seconds: 5),
     Future<void> Function(List<ph.Permission>)? requestRuntimePermissions,
+    Future<AppSettings> Function()? loadSettings,
   }) : _bridge = bridge ?? ObdBridge(DidscoutPolicy()),
        _requestRuntimePermissions =
            requestRuntimePermissions ?? _defaultRequestRuntimePermissions,
@@ -98,6 +107,8 @@ class RecordingController extends ChangeNotifier {
        // constructor parameter name must stay public for tests to pass it.
        // ignore: prefer_initializing_formals
        _tickInterval = tickInterval,
+       _loadSettings = loadSettings ?? const SettingsRepository().load,
+       _clock = clock,
        markers = SessionMarkerLog(clock: clock),
        _chargeReminder = ChargeReminderScheduler(clock: clock);
 
@@ -107,9 +118,16 @@ class RecordingController extends ChangeNotifier {
   final String Function() _sessionIdFactory;
   final int _scanDurationMs;
   final Duration _tickInterval;
+  final Future<AppSettings> Function() _loadSettings;
+  final DateTime Function()? _clock;
+
+  /// The settings in effect for the recording currently in progress (or the
+  /// one most recently started) — reloaded by [start] every time, never
+  /// cached across app launches.
+  AppSettings _settings = const AppSettings.defaultValues();
 
   final SessionMarkerLog markers;
-  final ChargeReminderScheduler _chargeReminder;
+  ChargeReminderScheduler _chargeReminder;
   Timer? _tickTimer;
 
   LiveVehicleInfo _liveInfo = LiveVehicleInfo.empty;
@@ -321,6 +339,17 @@ class RecordingController extends ChangeNotifier {
     _reconnectingSince = null;
     _reconnectPollAttempts = 0;
     try {
+      _settings = await _loadSettings();
+    } catch (_) {
+      // Settings are advisory — a store that's unavailable or corrupt must
+      // never stop a recording from starting; keep whatever was last
+      // applied (the defaults, the first time).
+    }
+    _chargeReminder = ChargeReminderScheduler(
+      interval: _settings.chargeReminderInterval,
+      clock: _clock,
+    );
+    try {
       _setPhase(RecordingPhase.requestingPermissions);
       var permission = await _bridge.permissionStatus();
       if (permission == ObdPermissionStatusMessage.denied) {
@@ -373,7 +402,7 @@ class RecordingController extends ChangeNotifier {
       final bufferFilePath = '${directory.path}/$sessionId.jsonl';
 
       _setPhase(RecordingPhase.startingRecording);
-      final plan = _buildPlan();
+      final plan = _buildPlan(_settings);
       final started = await _bridge.startRecording(
         ObdStartRecordingRequest(
           sessionId: sessionId,
@@ -418,8 +447,10 @@ class RecordingController extends ChangeNotifier {
   }
 
   /// Stops the active recording, making it shareable. A no-op unless
-  /// [canStop].
-  Future<void> stop() async {
+  /// [canStop]. [reason], when given (e.g. a power-only setting reacting to
+  /// unplugging), is recorded the same way a native-initiated stop is, so
+  /// [nativeStopBanner] surfaces it too.
+  Future<void> stop({String? reason}) async {
     if (!canStop) return;
     final sessionId = _sessionId;
     if (sessionId == null) {
@@ -430,6 +461,10 @@ class RecordingController extends ChangeNotifier {
     _setPhase(RecordingPhase.stopping);
     try {
       await _bridge.stopRecording(sessionId);
+      if (reason != null) {
+        _nativeStopAt = DateTime.now().toUtc();
+        _nativeStopReason = reason;
+      }
       _setPhase(RecordingPhase.finished);
     } catch (error) {
       _setPhase(RecordingPhase.error, error.toString());
@@ -618,8 +653,11 @@ class RecordingController extends ChangeNotifier {
         ),
   ];
 
-  /// One read step per DID known to answer on this vehicle platform.
-  static List<ObdStepMessage> _knownDidSteps() => [
+  /// One read step per DID known to answer on this vehicle platform. DIDs
+  /// generated with the survey default ([_generatedSurveyIntervalMs]) use
+  /// [AppSettings.surveyIntervalMs] instead; every other (watch/once) DID
+  /// keeps its generated interval unchanged.
+  static List<ObdStepMessage> _knownDidSteps(AppSettings settings) => [
     for (final spec in vagPpeModules)
       for (final did in spec.dids)
         ObdStepMessage(
@@ -627,14 +665,17 @@ class RecordingController extends ChangeNotifier {
           moduleId: _planModuleId(spec),
           command: '22${did.did}',
           responseHeader: spec.response,
-          intervalMs: did.intervalMs,
+          intervalMs: did.intervalMs == _generatedSurveyIntervalMs
+              ? settings.surveyIntervalMs
+              : did.intervalMs,
         ),
   ];
 
   @visibleForTesting
-  static ObdPlanMessage buildPlanForTesting() => _buildPlan();
+  static ObdPlanMessage buildPlanForTesting({AppSettings? settings}) =>
+      _buildPlan(settings ?? const AppSettings.defaultValues());
 
-  static ObdPlanMessage _buildPlan() {
+  static ObdPlanMessage _buildPlan(AppSettings settings) {
     final module7 = ObdModuleMessage(
       moduleId: 'module7',
       protocol: ObdProtocol.twentyNineBitCan.wireValue,
@@ -720,23 +761,18 @@ class RecordingController extends ChangeNotifier {
           responseHeader: _module7ResponseHeader,
           intervalMs: 60000,
         ),
-        ..._knownDidSteps(),
+        ..._knownDidSteps(settings),
       ],
       limits: ObdLimitsMessage(
         maxResponseBytes: 4096,
-        adapterStepDeadlineMs: 2000,
-        vehicleReadDeadlineMs: 2000,
-        maxReadsPerSecond: 5,
+        adapterStepDeadlineMs: settings.readTimeoutMs,
+        vehicleReadDeadlineMs: settings.readTimeoutMs,
+        maxReadsPerSecond: settings.maxReadsPerSecond,
         maxConsecutiveTimeouts: 3,
-        // 30 min: long charging stops with the bus asleep shouldn't look
-        // idle before they actually are.
-        idleVehicleStopAfterMs: 1800000,
-        reconnectBackoffMinMs: 2000,
-        reconnectBackoffMaxMs: 60000,
-        // The plugin only counts up per gap, never down — this is
-        // effectively unlimited so a long session survives any number of
-        // adapter dropouts instead of ending on the plugin's old budget of 5.
-        maxReconnectAttemptsPerGap: 100000,
+        idleVehicleStopAfterMs: settings.idleVehicleStopAfterMs,
+        reconnectBackoffMinMs: settings.reconnectBackoffMinMs,
+        reconnectBackoffMaxMs: settings.reconnectBackoffMaxMs,
+        maxReconnectAttemptsPerGap: settings.maxReconnectAttemptsPerGap,
         // 0 disables the cap entirely (see `ObdLimitsMessage.maxRecordingMs`)
         // — already well past the 72h floor a long session needs.
         maxRecordingMs: 0,
