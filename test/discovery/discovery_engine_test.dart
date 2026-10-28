@@ -220,6 +220,82 @@ void main() {
       },
     );
 
+    test('a batch where at least three quarters of the replies are NO DATA '
+        'is treated as asleep for the longer no-data pause', () async {
+      final executor = FakeExecutor();
+      final state = DiscoveryState();
+      state.ecus['test'] = EcuInfo(
+        requestHeader: '7A1',
+        responseHeader: '7A9',
+        protocol: 6,
+        discoverRanges: [(0x2A00, 0x2A0F)],
+      );
+      final engine = buildEngine(executor, state, []);
+
+      var i = 0;
+      executor.respond = (step) {
+        final status = i < 12 ? const ProbeNoData() : const ProbeNrc(0x31);
+        i++;
+        return ProbeResult(signalId: step.signalId, status: status, at: now);
+      };
+
+      final found = await engine.runDiscoveryBatch('test', now);
+
+      expect(found, isEmpty);
+      expect(
+        state.ecus['test']!.scanPosition,
+        0,
+        reason: 'a NO-DATA-asleep batch must not advance',
+      );
+      expect(
+        state.ecus['test']!.asleepUntil,
+        now.add(noDataAsleepPauseDuration),
+      );
+      expect(
+        engine.eventLog.first.detail,
+        'no data',
+        reason: 'distinguishes this from the NRC-11 asleep signature',
+      );
+
+      engine.dispose();
+    });
+
+    test('a batch with at least one OK reply is never NO-DATA-asleep, however '
+        'much of the rest is NO DATA', () async {
+      final executor = FakeExecutor();
+      final state = DiscoveryState();
+      state.ecus['test'] = EcuInfo(
+        requestHeader: '7A1',
+        responseHeader: '7A9',
+        protocol: 6,
+        discoverRanges: [(0x2A00, 0x2A0F)],
+      );
+      final engine = buildEngine(executor, state, []);
+
+      // 15 of 16 replies are NO DATA (well past the 75% threshold), but
+      // the ECU demonstrably answered one of them -- it isn't asleep.
+      executor.respond = (step) => step.command == '222A00'
+          ? ProbeResult(
+              signalId: step.signalId,
+              status: const ProbeOk(),
+              payload: const [1],
+              at: now,
+            )
+          : ProbeResult(
+              signalId: step.signalId,
+              status: const ProbeNoData(),
+              at: now,
+            );
+
+      final found = await engine.runDiscoveryBatch('test', now);
+
+      expect(found, ['2A00']);
+      expect(state.ecus['test']!.scanPosition, 16);
+      expect(state.ecus['test']!.asleepUntil, isNull);
+
+      engine.dispose();
+    });
+
     test('an asleep ECU is skipped until its pause expires', () async {
       final executor = FakeExecutor();
       final state = DiscoveryState();
@@ -274,9 +350,13 @@ void main() {
             status: const ProbeNrc(0x33),
             at: now,
           ),
+          // Everything else answers OK -- a mix of NoData filler here would
+          // make this batch look NO-DATA-asleep (`batchLooksNoDataAsleep`)
+          // and mask the two conditional DIDs this test is actually about.
           _ => ProbeResult(
             signalId: step.signalId,
-            status: const ProbeNoData(),
+            status: const ProbeOk(),
+            payload: const [],
             at: now,
           ),
         };
@@ -409,9 +489,11 @@ void main() {
           onHit: (_, _, _) {},
           maxQueueDepth: 48,
         );
+        // OK, not NoData -- an all-NoData batch would look NO-DATA-asleep
+        // (`batchLooksNoDataAsleep`) and this test isn't about that.
         executor.respond = (step) => ProbeResult(
           signalId: step.signalId,
-          status: const ProbeNoData(),
+          status: const ProbeOk(),
           at: now,
         );
 
@@ -863,9 +945,11 @@ void main() {
           onHit: (_, _, _) {},
           batchSize: 8,
         );
+        // OK, not NoData -- an all-NoData batch would look NO-DATA-asleep
+        // (`batchLooksNoDataAsleep`) and this test isn't about that.
         executor.respond = (step) => ProbeResult(
           signalId: step.signalId,
-          status: const ProbeNoData(),
+          status: const ProbeOk(),
           at: now,
         );
 

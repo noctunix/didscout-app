@@ -21,6 +21,14 @@ const int discoveryBatchSize = 16;
 /// likely gone to sleep.
 const Duration asleepPauseDuration = Duration(seconds: 60);
 
+/// How long a module's discovery pauses after a batch where at least
+/// three quarters of the replies were "NO DATA" -- a module that doesn't
+/// answer at all (e.g. tyre pressure sensors while parked) rather than
+/// actively refusing the service, which calls for a longer pause than
+/// [asleepPauseDuration]: it's more likely to stay quiet for a while than
+/// to wake up again within a minute.
+const Duration noDataAsleepPauseDuration = Duration(minutes: 5);
+
 /// Default per-step addition to a batch's result-wait deadline (see
 /// [DiscoveryEngine.batchDeadlinePerStep]).
 const Duration defaultBatchDeadlinePerStep = Duration(seconds: 2);
@@ -50,6 +58,20 @@ bool batchIsAsleep(Map<String, int> statusCounts, int batchSize) {
   }
   final nrc11 = statusCounts['NRC 11'] ?? 0;
   return nrc11 * 2 >= batchSize;
+}
+
+/// True if at least three quarters of one discovery batch's replies were
+/// "NO DATA" and none were OK -- the signature of a module that simply
+/// never answers rather than one that actively refuses the service (see
+/// [batchIsAsleep]) or one that answered at least one of the batch's DIDs
+/// and is therefore demonstrably awake, whatever the rest of the batch's
+/// DIDs it doesn't happen to support looks like.
+bool batchLooksNoDataAsleep(Map<String, int> statusCounts, int batchSize) {
+  if (batchSize == 0 || (statusCounts['OK'] ?? 0) > 0) {
+    return false;
+  }
+  final noData = statusCounts['NO DATA'] ?? 0;
+  return noData * 4 >= batchSize * 3;
 }
 
 String _statusBucket(ProbeStatus status) => switch (status) {
@@ -620,6 +642,11 @@ class DiscoveryEngine {
     if (batchIsAsleep(statusCounts, dids.length)) {
       ecu.asleepUntil = now.add(asleepPauseDuration);
       _logEvent(ScoutEventKind.asleep, ecuId: ecuId);
+      return [];
+    }
+    if (batchLooksNoDataAsleep(statusCounts, dids.length)) {
+      ecu.asleepUntil = now.add(noDataAsleepPauseDuration);
+      _logEvent(ScoutEventKind.asleep, ecuId: ecuId, detail: 'no data');
       return [];
     }
 
