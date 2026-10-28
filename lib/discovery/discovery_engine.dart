@@ -59,6 +59,7 @@ String _statusBucket(ProbeStatus status) => switch (status) {
     'NRC ${code.toRadixString(16).toUpperCase().padLeft(2, '0')}',
   ProbeTimeout() => 'TIMEOUT',
   ProbeTransportError() => 'TRANSPORT_ERROR',
+  ProbeCancelled() => 'CANCELLED',
 };
 
 String hex3(int value) => value.toRadixString(16).toUpperCase().padLeft(3, '0');
@@ -199,7 +200,34 @@ class DiscoveryEngine {
     }
   }
 
-  void dispose() => _subscription.cancel();
+  /// Abandons whatever batch is currently in flight, if any: every
+  /// outstanding completer resolves right now with [ProbeCancelled]
+  /// instead of waiting out its deadline, and (like [_suspended]) this
+  /// engine never submits again -- a fresh engine is expected for the
+  /// next recording. Called when the recording this engine serves is
+  /// stopping, so a pump call already awaiting results doesn't keep
+  /// running in the background for minutes after the caller walked away;
+  /// its own `await` simply resolves promptly once this runs, without the
+  /// caller needing to await it itself.
+  void cancel() {
+    _suspended = true;
+    final pending = _pending.entries.toList();
+    _pending.clear();
+    for (final entry in pending) {
+      entry.value.complete(
+        ProbeResult(
+          signalId: entry.key,
+          status: const ProbeCancelled(),
+          at: _clock(),
+        ),
+      );
+    }
+  }
+
+  void dispose() {
+    cancel();
+    _subscription.cancel();
+  }
 
   void _handleResult(ProbeResult result) {
     _lastResultSummary = _statusBucket(result.status);
@@ -244,6 +272,13 @@ class DiscoveryEngine {
     List<ProbeModule> modules,
     List<ProbeStep> steps,
   ) async {
+    if (_suspended) {
+      // Already cancelled or permanently rejected -- an abandoned sweep
+      // loop (inventory, identification) that hasn't noticed yet must not
+      // keep submitting against an executor the caller may already have
+      // torn down.
+      return [for (final _ in steps) null];
+    }
     final completers = <String, Completer<ProbeResult>>{};
     for (final step in steps) {
       completers[step.signalId] = Completer<ProbeResult>();
@@ -550,10 +585,11 @@ class DiscoveryEngine {
   /// position/retry-queue advancement, discovered/conditional bookkeeping,
   /// and [onHit] reporting. Returns the DIDs found OK.
   ///
-  /// A batch with any missing (null) result -- its deadline passed before
-  /// the plugin reported one -- advances nothing: it is logged and left
-  /// exactly as queued, so the same slice is simply retried on a later
-  /// batch instead of being silently treated as answered.
+  /// A batch with any missing (null) or [ProbeCancelled] result -- its
+  /// deadline passed before the plugin reported one, or the request was
+  /// cancelled -- advances nothing: it is logged and left exactly as
+  /// queued, so the same slice is simply retried on a later batch instead
+  /// of being silently treated as answered.
   List<String> _finalizeBatch(
     String ecuId,
     List<String> dids,
@@ -562,7 +598,9 @@ class DiscoveryEngine {
     DateTime now,
   ) {
     final ecu = state.ecus[ecuId]!;
-    final missing = results.where((r) => r == null).length;
+    final missing = results
+        .where((r) => r == null || r.status is ProbeCancelled)
+        .length;
     if (missing > 0) {
       _logEvent(
         ScoutEventKind.batchTimedOut,

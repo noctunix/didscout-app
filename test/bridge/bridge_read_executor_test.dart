@@ -220,6 +220,21 @@ void main() {
       expect(results.single.status, isA<ProbeTimeout>());
     });
 
+    test('a cancelled transport decodes into ProbeCancelled', () async {
+      final results = <ProbeResult>[];
+      executor.results.listen(results.add);
+
+      executor.deliverOneShotResult(
+        _exchange(
+          signalId: 'ecu1_22f189',
+          transport: ObdTransportStatusMessage.cancelled,
+        ),
+      );
+      await Future<void>.delayed(Duration.zero);
+
+      expect(results.single.status, isA<ProbeCancelled>());
+    });
+
     test(
       'any other non-ok transport decodes into ProbeTransportError',
       () async {

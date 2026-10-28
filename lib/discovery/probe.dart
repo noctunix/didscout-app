@@ -39,6 +39,14 @@ class ProbeTransportError extends ProbeStatus {
   const ProbeTransportError();
 }
 
+/// The request was cancelled before a reply could be collected -- either
+/// [DiscoveryEngine.cancel] gave up on it, or the plugin itself reported
+/// `ObdTransportStatusMessage.cancelled`. Treated the same as a missing
+/// result: the batch it belongs to must not advance.
+class ProbeCancelled extends ProbeStatus {
+  const ProbeCancelled();
+}
+
 /// A CAN module an executor must set up (header/filter/flow-control)
 /// before steps addressed to it can run.
 class ProbeModule {

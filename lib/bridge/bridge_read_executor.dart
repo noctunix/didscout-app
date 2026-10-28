@@ -157,8 +157,9 @@ class BridgeReadExecutor implements ReadExecutor {
 }
 
 /// Parses one [ObdSignalExchangeMessage] into a [ProbeResult], ported from
-/// didscout's `classify`: an actual timeout maps to [ProbeTimeout], any
-/// other non-ok transport outcome to [ProbeTransportError], a reply
+/// didscout's `classify`: an actual timeout maps to [ProbeTimeout], a
+/// cancelled transport to [ProbeCancelled], any other non-ok transport
+/// outcome to [ProbeTransportError], a reply
 /// containing an ELM-level no-answer marker ([_noAnswerMarkers]) to
 /// [ProbeNoData], a reassembled negative response (`7F <SID> <code>`) to
 /// [ProbeNrc], a reassembled positive response (`<SID+0x40> ...`) to
@@ -176,6 +177,13 @@ ProbeResult _toProbeResult(ObdSignalExchangeMessage result) {
     return ProbeResult(
       signalId: result.signalId,
       status: const ProbeTimeout(),
+      at: at,
+    );
+  }
+  if (result.transport == ObdTransportStatusMessage.cancelled) {
+    return ProbeResult(
+      signalId: result.signalId,
+      status: const ProbeCancelled(),
       at: at,
     );
   }

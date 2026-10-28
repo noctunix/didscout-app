@@ -664,6 +664,75 @@ void main() {
     );
   });
 
+  group('cancel', () {
+    test('resolves an in-flight batch immediately as cancelled, without '
+        'waiting out its deadline, and never advances scan position', () async {
+      final executor = FakeExecutor();
+      final state = DiscoveryState();
+      state.ecus['test'] = EcuInfo(
+        requestHeader: '7A1',
+        responseHeader: '7A9',
+        protocol: 6,
+        discoverRanges: [(0x2A00, 0x2A0F)],
+      );
+      final engine = DiscoveryEngine(
+        executor: executor,
+        state: state,
+        onHit: (_, _, _) {},
+        // Real-time, so a test that accidentally waited out the actual
+        // deadline instead of being cancelled immediately would time out
+        // rather than quietly pass.
+        delay: (duration) => Future<void>.delayed(duration),
+      );
+      // Every step's result is dropped -- simulates the plugin never
+      // reporting one, same as a disconnect mid-batch.
+      for (var did = 0x2A00; did <= 0x2A0F; did++) {
+        executor.droppedSignalIds.add(signalIdFor('test', '22${hex4(did)}'));
+      }
+
+      final batchFuture = engine.runDiscoveryBatch('test', now);
+      engine.cancel();
+      final found = await batchFuture;
+
+      expect(found, isEmpty);
+      expect(state.ecus['test']!.scanPosition, 0);
+      expect(
+        engine.suspended,
+        isTrue,
+        reason: 'cancel is permanent, same as a noActiveRecording reject',
+      );
+
+      engine.dispose();
+    });
+
+    test('dispose cancels too', () async {
+      final executor = FakeExecutor();
+      final state = DiscoveryState();
+      state.ecus['test'] = EcuInfo(
+        requestHeader: '7A1',
+        responseHeader: '7A9',
+        protocol: 6,
+        discoverRanges: [(0x2A00, 0x2A0F)],
+      );
+      final engine = DiscoveryEngine(
+        executor: executor,
+        state: state,
+        onHit: (_, _, _) {},
+        delay: (duration) => Future<void>.delayed(duration),
+      );
+      for (var did = 0x2A00; did <= 0x2A0F; did++) {
+        executor.droppedSignalIds.add(signalIdFor('test', '22${hex4(did)}'));
+      }
+
+      final batchFuture = engine.runDiscoveryBatch('test', now);
+      engine.dispose();
+      final found = await batchFuture;
+
+      expect(found, isEmpty);
+      expect(state.ecus['test']!.scanPosition, 0);
+    });
+  });
+
   group('scoutStatus', () {
     test(
       'reflects the current batch, reads per minute, and last result',

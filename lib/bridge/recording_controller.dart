@@ -452,8 +452,9 @@ class RecordingController extends ChangeNotifier {
     if (tagInactive && marker is! PhaseMarker) {
       json = {...json, 'recording_active': false};
     }
-    return File('${_bufferFilePath!}.markers.jsonl')
-        .writeAsString('${jsonEncode(json)}\n', mode: FileMode.append);
+    return File(
+      '${_bufferFilePath!}.markers.jsonl',
+    ).writeAsString('${jsonEncode(json)}\n', mode: FileMode.append);
   }
 
   /// Runs the whole connect-and-record flow. A no-op unless [canStart].
@@ -567,8 +568,9 @@ class RecordingController extends ChangeNotifier {
       // The sidecar always exists once a recording has started, with the
       // actually-sent plan as its first line — created here, not lazily on
       // the first marker.
-      await File('$bufferFilePath.markers.jsonl')
-          .writeAsString('${jsonEncode(_planSidecarLine(plan))}\n');
+      await File(
+        '$bufferFilePath.markers.jsonl',
+      ).writeAsString('${jsonEncode(_planSidecarLine(plan))}\n');
       // Flush markers recorded before the sidecar path existed.
       for (final marker in markers.markers) {
         await _appendMarkerLine(marker);
@@ -702,6 +704,15 @@ class RecordingController extends ChangeNotifier {
       // inside `engine.pump` itself -- backed off and retried, or the
       // engine suspends itself -- so this never throws.
       await engine.pump(stationary: stationary, now: now);
+      // `_teardownDiscovery` may have run while the await above was
+      // in flight (it never awaits this call itself -- see `cancel`'s
+      // doc comment): once that happened, this engine is no longer
+      // `_discoveryEngine` and nothing below may touch persisted state
+      // or notify listeners on a controller that could itself be
+      // disposed by now.
+      if (!identical(_discoveryEngine, engine)) {
+        return;
+      }
       if (jsonEncode(discoveryState.toJson()) != before) {
         await _saveDiscoveryState(discoveryState);
       }

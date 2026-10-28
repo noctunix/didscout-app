@@ -330,6 +330,28 @@ void main() {
     await controller.stop();
   });
 
+  test('stop cancels an in-flight discovery batch instead of waiting out its '
+      'deadline', () async {
+    // Never set up: every enqueued one-shot step is simply never
+    // answered, same as a result the plugin dropped mid-recording.
+    fakeNative.respondToOneShot = null;
+    final controller = makeController();
+
+    await controller.start();
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+    expect(fakeNative.enqueuedSteps, isNotEmpty);
+
+    final stopwatch = Stopwatch()..start();
+    await controller.stop();
+    stopwatch.stop();
+
+    // The engine's own default batch deadline alone is tens of
+    // seconds; completing well under that proves `stop()` cancelled
+    // the in-flight batch rather than waiting it out.
+    expect(stopwatch.elapsed, lessThan(const Duration(seconds: 5)));
+    expect(controller.discoveryEngineForTesting, isNull);
+  });
+
   test('addPhase queues conditional retries on the discovery engine', () async {
     fakeNative.respondToOneShot = (step) {
       // Every DID answers "conditions not correct" (NRC 22) -- becomes
