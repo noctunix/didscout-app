@@ -126,6 +126,10 @@ ObdLiveStateMessage _liveStateWithSpeed(int speedKmh) {
         signalId: 'module7_22f40d',
         transport: ObdTransportStatusMessage.ok,
         rawResponseText: '18DAF104 04 62 F4 0D $speedHex',
+        // The engine's stationary check requires a fresh speed reading
+        // (see `AppSettings.speedFreshnessWindow`) -- "now" keeps every
+        // fixture built from this helper fresh regardless of test timing.
+        receivedAtEpochMs: DateTime.now().millisecondsSinceEpoch,
       ),
     ],
   );
@@ -150,6 +154,7 @@ void main() {
 
   RecordingController makeController({
     AppSettings settings = const AppSettings.defaultValues(),
+    DateTime Function()? clock,
   }) {
     final controller = RecordingController(
       requestRuntimePermissions: (List<ph.Permission> _) async {},
@@ -161,6 +166,7 @@ void main() {
       loadSettings: () async => settings,
       loadDiscoveryState: loadState,
       saveDiscoveryState: saveState,
+      clock: clock,
     );
     fakeNative.executorGetter = () => controller.discoveryExecutorForTesting;
     return controller;
@@ -297,6 +303,32 @@ void main() {
       await controller.stop();
     },
   );
+
+  test('a stale speed=0 reading outside the freshness window is treated as '
+      'moving, not stationary', () async {
+    fakeNative.liveStateResult = _liveStateWithSpeed(0);
+    fakeNative.respondToOneShot = (_) => null;
+    // The default speedPollIntervalS (20s) gives a 50s freshness window;
+    // a clock running 5 minutes ahead of the fixture's real-time
+    // `receivedAtEpochMs` makes every speed reading look stale.
+    final controller = makeController(
+      settings: const AppSettings.defaultValues().copyWith(
+        scoutWhileDriving: false,
+      ),
+      clock: () => DateTime.now().add(const Duration(minutes: 5)),
+    );
+
+    await controller.start();
+    await Future<void>.delayed(const Duration(milliseconds: 600));
+
+    expect(fakeNative.enqueuedSteps, isEmpty);
+    expect(
+      controller.discoveryUiState?.activity,
+      DiscoveryActivity.waitingMoving,
+    );
+
+    await controller.stop();
+  });
 
   test('addPhase queues conditional retries on the discovery engine', () async {
     fakeNative.respondToOneShot = (step) {

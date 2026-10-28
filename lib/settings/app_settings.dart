@@ -1,3 +1,12 @@
+/// [AppSettings.maxReadsPerSecond] value meaning "no throttling" — the
+/// native poller clamps its per-read spacing to
+/// `1000 ~/ maxReadsPerSecond` ms (see `CxPoller.minGlobalIntervalMs`),
+/// and integer division already floors that to zero at any value from
+/// 1000 upward, so this is the lowest value that truly means unlimited
+/// rather than just "very fast". `0` is not usable for this: the poller
+/// clamps it to a floor of 1 read/s, the opposite of unlimited.
+const int unlimitedMaxReadsPerSecond = 1000;
+
 /// What a recurring recording plan reads beyond the speed signal.
 enum RecordingMode {
   /// Only the speed signal (needed for motion-aware scouting) plus,
@@ -32,6 +41,9 @@ class AppSettings {
     required this.scoutWhileDriving,
     required this.recordingMode,
     required this.keepSamplingFoundDids,
+    required this.speedPollIntervalS,
+    required this.discoveryBatchSize,
+    this.adapterResponseTimeoutMs,
   });
 
   const AppSettings.defaultValues()
@@ -41,7 +53,7 @@ class AppSettings {
       neverGiveUpReconnecting = true,
       reconnectAttempts = 20,
       stopAfterNoVehicleDataMinutes = 30,
-      maxReadsPerSecond = 6,
+      maxReadsPerSecond = 8,
       surveyIntervalMinutes = 3,
       chargeReminderIntervalMinutes = 5,
       autoStartOnPower = false,
@@ -49,7 +61,10 @@ class AppSettings {
       scoutWhileRecording = true,
       scoutWhileDriving = true,
       recordingMode = RecordingMode.scoutOnly,
-      keepSamplingFoundDids = true;
+      keepSamplingFoundDids = true,
+      speedPollIntervalS = 20,
+      discoveryBatchSize = 16,
+      adapterResponseTimeoutMs = null;
 
   /// Timeout per request, applied to both
   /// `ObdLimitsMessage.adapterStepDeadlineMs` and `.vehicleReadDeadlineMs`.
@@ -91,6 +106,22 @@ class AppSettings {
   /// means.
   final bool keepSamplingFoundDids;
 
+  /// How often the plan's `module7_22f40d` (speed) step is read. Less often
+  /// leaves more of the adapter's read budget for scouting, but motion is
+  /// noticed later.
+  final int speedPollIntervalS;
+
+  /// DIDs read per discovery batch; the discovery executor's queue target
+  /// scales with it (see [RecordingController._startDiscovery]).
+  final int discoveryBatchSize;
+
+  /// Sent as `ATST` + two hex digits (the value in 4 ms units) in the
+  /// plan's init and resync sequences, right after the existing formatting
+  /// commands -- null (the default) sends no `ATST` at all, leaving the
+  /// adapter's own default response timeout in effect. Too short a value
+  /// can miss a slow ECU behind a gateway.
+  final int? adapterResponseTimeoutMs;
+
   /// The plugin's reconnect-attempt counter only ever counts up within a
   /// gap, never down, so "never give up" needs a budget that is effectively
   /// unlimited rather than a literal cap.
@@ -103,6 +134,24 @@ class AppSettings {
   int get surveyIntervalMs => surveyIntervalMinutes * 60000;
   Duration get chargeReminderInterval =>
       Duration(minutes: chargeReminderIntervalMinutes);
+
+  int get speedPollIntervalMs => speedPollIntervalS * 1000;
+
+  /// The engine's live speed reading counts as fresh for 2.5x the poll
+  /// interval -- generous enough to tolerate one missed/slow read without
+  /// falsely treating the vehicle as moving (which would block
+  /// safety-relevant discovery unnecessarily), while still catching a
+  /// connection that has actually gone stale.
+  Duration get speedFreshnessWindow =>
+      Duration(milliseconds: (speedPollIntervalMs * 2.5).round());
+
+  /// `ATST` command text for [adapterResponseTimeoutMs], or null when unset.
+  String? get adapterResponseTimeoutCommand {
+    final ms = adapterResponseTimeoutMs;
+    if (ms == null) return null;
+    final units = (ms / 4).round().clamp(0, 255);
+    return 'ATST${units.toRadixString(16).toUpperCase().padLeft(2, '0')}';
+  }
 
   AppSettings copyWith({
     int? readTimeoutMs,
@@ -120,6 +169,9 @@ class AppSettings {
     bool? scoutWhileDriving,
     RecordingMode? recordingMode,
     bool? keepSamplingFoundDids,
+    int? speedPollIntervalS,
+    int? discoveryBatchSize,
+    Object? adapterResponseTimeoutMs = _unset,
   }) => AppSettings(
     readTimeoutMs: readTimeoutMs ?? this.readTimeoutMs,
     reconnectBackoffMinS: reconnectBackoffMinS ?? this.reconnectBackoffMinS,
@@ -140,7 +192,17 @@ class AppSettings {
     scoutWhileDriving: scoutWhileDriving ?? this.scoutWhileDriving,
     recordingMode: recordingMode ?? this.recordingMode,
     keepSamplingFoundDids: keepSamplingFoundDids ?? this.keepSamplingFoundDids,
+    speedPollIntervalS: speedPollIntervalS ?? this.speedPollIntervalS,
+    discoveryBatchSize: discoveryBatchSize ?? this.discoveryBatchSize,
+    adapterResponseTimeoutMs: identical(adapterResponseTimeoutMs, _unset)
+        ? this.adapterResponseTimeoutMs
+        : adapterResponseTimeoutMs as int?,
   );
+
+  /// Sentinel for [copyWith]'s `adapterResponseTimeoutMs` so "not passed"
+  /// (keep the current value) can be told apart from "pass null" (clear it
+  /// back to the adapter default).
+  static const _unset = Object();
 
   Map<String, dynamic> toJson() => {
     'readTimeoutMs': readTimeoutMs,
@@ -158,6 +220,9 @@ class AppSettings {
     'scoutWhileDriving': scoutWhileDriving,
     'recordingMode': recordingMode.name,
     'keepSamplingFoundDids': keepSamplingFoundDids,
+    'speedPollIntervalS': speedPollIntervalS,
+    'discoveryBatchSize': discoveryBatchSize,
+    'adapterResponseTimeoutMs': adapterResponseTimeoutMs,
   };
 
   /// Missing keys (an older version's blob, or a corrupt one a caller has
@@ -198,6 +263,11 @@ class AppSettings {
       ),
       keepSamplingFoundDids:
           json['keepSamplingFoundDids'] as bool? ?? d.keepSamplingFoundDids,
+      speedPollIntervalS:
+          json['speedPollIntervalS'] as int? ?? d.speedPollIntervalS,
+      discoveryBatchSize:
+          json['discoveryBatchSize'] as int? ?? d.discoveryBatchSize,
+      adapterResponseTimeoutMs: json['adapterResponseTimeoutMs'] as int?,
     );
   }
 
@@ -218,7 +288,10 @@ class AppSettings {
       other.scoutWhileRecording == scoutWhileRecording &&
       other.scoutWhileDriving == scoutWhileDriving &&
       other.recordingMode == recordingMode &&
-      other.keepSamplingFoundDids == keepSamplingFoundDids;
+      other.keepSamplingFoundDids == keepSamplingFoundDids &&
+      other.speedPollIntervalS == speedPollIntervalS &&
+      other.discoveryBatchSize == discoveryBatchSize &&
+      other.adapterResponseTimeoutMs == adapterResponseTimeoutMs;
 
   @override
   int get hashCode => Object.hash(
@@ -237,5 +310,8 @@ class AppSettings {
     scoutWhileDriving,
     recordingMode,
     keepSamplingFoundDids,
+    speedPollIntervalS,
+    discoveryBatchSize,
+    adapterResponseTimeoutMs,
   );
 }

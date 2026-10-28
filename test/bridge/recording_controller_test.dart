@@ -125,6 +125,11 @@ void main() {
   });
 
   tearDown(() async {
+    // Disposes whatever discovery timer `start()` may have armed -- a test
+    // that never calls `stop()` would otherwise leave it running past this
+    // test, free to fire against a later test's unmocked `enqueueOneShot`
+    // channel.
+    controller.dispose();
     await tempDir.delete(recursive: true);
   });
 
@@ -517,6 +522,8 @@ void main() {
       scoutWhileDriving: false,
       recordingMode: RecordingMode.scoutAndRecordKnown,
       keepSamplingFoundDids: true,
+      speedPollIntervalS: 20,
+      discoveryBatchSize: 32,
     );
 
     RecordingController controllerWithSettings(AppSettings settings) =>
@@ -542,7 +549,25 @@ void main() {
       expect(limits.maxReconnectAttemptsPerGap, 7);
       expect(limits.idleVehicleStopAfterMs, 10 * 60000);
       expect(limits.maxReadsPerSecond, 4);
+      final speedStep = fakeNative.lastStartRecordingRequest!.plan.steps
+          .firstWhere((s) => s.signalId == 'module7_22f40d');
+      expect(speedStep.intervalMs, 20000);
     });
+
+    test(
+      'applies the loaded discovery batch size to the discovery engine',
+      () async {
+        controller = controllerWithSettings(
+          customSettings.copyWith(scoutWhileRecording: true),
+        );
+
+        await controller.start();
+
+        expect(controller.discoveryEngineForTesting!.batchSize, 32);
+        expect(controller.discoveryEngineForTesting!.minQueueDepth, 64);
+        expect(controller.discoveryEngineForTesting!.maxQueueDepth, 256);
+      },
+    );
 
     test('overrides only the DID steps generated at the survey interval, '
         'leaving watch/once DIDs at their generated interval', () async {

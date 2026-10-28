@@ -35,6 +35,9 @@ void main() {
       scoutWhileDriving: false,
       recordingMode: RecordingMode.scoutAndRecordKnown,
       keepSamplingFoundDids: false,
+      speedPollIntervalS: 15,
+      discoveryBatchSize: 24,
+      adapterResponseTimeoutMs: 100,
     );
 
     await repository.save(settings);
@@ -56,6 +59,24 @@ void main() {
 
     expect(settings.recordingMode, RecordingMode.scoutOnly);
     expect(settings.keepSamplingFoundDids, isTrue);
+  });
+
+  test('loading a blob saved before the scout-speed settings existed '
+      'migrates to defaults for the new keys', () async {
+    final legacy = const AppSettings.defaultValues().toJson()
+      ..remove('speedPollIntervalS')
+      ..remove('discoveryBatchSize')
+      ..remove('adapterResponseTimeoutMs');
+    SharedPreferences.setMockInitialValues({
+      'didscout_app_settings_v1': jsonEncode(legacy),
+    });
+
+    final settings = await repository.load();
+
+    const defaults = AppSettings.defaultValues();
+    expect(settings.speedPollIntervalS, defaults.speedPollIntervalS);
+    expect(settings.discoveryBatchSize, defaults.discoveryBatchSize);
+    expect(settings.adapterResponseTimeoutMs, isNull);
   });
 
   test(

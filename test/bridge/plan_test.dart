@@ -103,6 +103,41 @@ void main() {
     });
   });
 
+  group('scout speed settings', () {
+    test('the speed step interval follows speedPollIntervalS', () {
+      final customPlan = RecordingController.buildPlanForTesting(
+        settings: const AppSettings.defaultValues().copyWith(
+          speedPollIntervalS: 25,
+        ),
+      );
+
+      final speedStep = customPlan.steps.firstWhere(
+        (s) => s.signalId == 'module7_22f40d',
+      );
+      expect(speedStep.intervalMs, 25000);
+    });
+
+    test('no ATST command is sent by default', () {
+      final defaultPlan = RecordingController.buildPlanForTesting();
+
+      expect(defaultPlan.init.any((c) => c.startsWith('ATST')), isFalse);
+      expect(defaultPlan.resync.any((c) => c.startsWith('ATST')), isFalse);
+    });
+
+    test('an ATST command is appended to init and resync after the existing '
+        'formatting commands when set', () {
+      final customPlan = RecordingController.buildPlanForTesting(
+        settings: const AppSettings.defaultValues().copyWith(
+          adapterResponseTimeoutMs: 100,
+        ),
+      );
+
+      expect(customPlan.init.last, 'ATST19');
+      expect(customPlan.resync.last, 'ATST19');
+      expect(customPlan.init.length, greaterThan(1));
+    });
+  });
+
   group('RecordingMode.scoutAndRecordKnown', () {
     test('omits discovered DIDs when keepSamplingFoundDids is off', () {
       final state = DiscoveryState();

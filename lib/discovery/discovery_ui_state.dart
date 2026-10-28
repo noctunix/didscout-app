@@ -34,6 +34,7 @@ class DiscoveryUiState {
     required this.progressPercent,
     required this.totalHits,
     required this.sessionHits,
+    required this.readsPerMinute,
     required this.activity,
     this.scanningEcuName,
   });
@@ -49,6 +50,10 @@ class DiscoveryUiState {
 
   /// DIDs discovered during the recording currently in progress.
   final int sessionHits;
+
+  /// [ScoutStatus.readsPerMinute] at the moment this snapshot was built --
+  /// the Scouting card's own prominent reads/min KPI.
+  final int readsPerMinute;
 
   final DiscoveryActivity activity;
 
@@ -78,6 +83,7 @@ DiscoveryUiState buildDiscoveryUiState({
     0,
     (sum, ecu) => sum + ecu.discovered.length,
   );
+  final readsPerMinute = engine.scoutStatus(now).readsPerMinute;
 
   if (!allowedToRun) {
     return DiscoveryUiState(
@@ -85,6 +91,7 @@ DiscoveryUiState buildDiscoveryUiState({
       progressPercent: progress.percent,
       totalHits: totalHits,
       sessionHits: sessionHits,
+      readsPerMinute: readsPerMinute,
       activity: DiscoveryActivity.waitingMoving,
     );
   }
@@ -100,6 +107,7 @@ DiscoveryUiState buildDiscoveryUiState({
       progressPercent: progress.percent,
       totalHits: totalHits,
       sessionHits: sessionHits,
+      readsPerMinute: readsPerMinute,
       activity: DiscoveryActivity.inventory,
     );
   }
@@ -115,6 +123,7 @@ DiscoveryUiState buildDiscoveryUiState({
       progressPercent: progress.percent,
       totalHits: totalHits,
       sessionHits: sessionHits,
+      readsPerMinute: readsPerMinute,
       activity: DiscoveryActivity.scanning,
       scanningEcuName: ecu.f197Name ?? nextEcuId,
     );
@@ -141,6 +150,7 @@ DiscoveryUiState buildDiscoveryUiState({
     progressPercent: progress.percent,
     totalHits: totalHits,
     sessionHits: sessionHits,
+    readsPerMinute: readsPerMinute,
     activity: activity,
   );
 }

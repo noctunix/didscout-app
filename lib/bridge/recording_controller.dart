@@ -81,6 +81,14 @@ const List<String> _adapterInitCommands = [
   'ATH1',
 ];
 
+/// [_adapterInitCommands] plus, when [AppSettings.adapterResponseTimeoutMs]
+/// is set, the `ATST` command right after them -- used for both the plan's
+/// `init` and `resync` sequences.
+List<String> _adapterSequence(AppSettings settings) => [
+  ..._adapterInitCommands,
+  ?settings.adapterResponseTimeoutCommand,
+];
+
 /// The generator's own default survey interval in `vag_ppe_plan_data.dart`
 /// (the interval most of that file's exploratory DIDs carry) — the only
 /// value [AppSettings.surveyIntervalMs] is allowed to override; DIDs
@@ -205,6 +213,23 @@ class RecordingController extends ChangeNotifier {
   /// available (not recording, or the query failed) — tiles then simply
   /// show no live info.
   LiveVehicleInfo get liveInfo => _liveInfo;
+
+  /// When the `module7_22f40d` (speed) exchange behind [_liveInfo.speedKmh]
+  /// was actually received, per [ObdSignalExchangeMessage.receivedAtEpochMs]
+  /// -- null whenever no successful speed read has ever been decoded.
+  DateTime? _speedReadAt;
+
+  /// True only when the vehicle is both reporting zero speed and that
+  /// reading is still fresh ([AppSettings.speedFreshnessWindow]) -- unknown
+  /// or stale speed (no live source yet, or a read that is older than the
+  /// window) is treated as moving, never as stationary, since discovery
+  /// must not assume it's safe to scan a potentially-safety-relevant ECU
+  /// just because speed hasn't been read recently.
+  bool _isStationary(DateTime now) {
+    final readAt = _speedReadAt;
+    if (_liveInfo.speedKmh != 0 || readAt == null) return false;
+    return now.difference(readAt) <= _settings.speedFreshnessWindow;
+  }
 
   /// The most recently observed link state, from [ObdBridge.liveState]'s own
   /// link snapshot — used by [_pollConnectionStatus] to tell a live
@@ -427,9 +452,8 @@ class RecordingController extends ChangeNotifier {
     if (tagInactive && marker is! PhaseMarker) {
       json = {...json, 'recording_active': false};
     }
-    return File(
-      '${_bufferFilePath!}.markers.jsonl',
-    ).writeAsString('${jsonEncode(json)}\n', mode: FileMode.append);
+    return File('${_bufferFilePath!}.markers.jsonl')
+        .writeAsString('${jsonEncode(json)}\n', mode: FileMode.append);
   }
 
   /// Runs the whole connect-and-record flow. A no-op unless [canStart].
@@ -543,9 +567,8 @@ class RecordingController extends ChangeNotifier {
       // The sidecar always exists once a recording has started, with the
       // actually-sent plan as its first line — created here, not lazily on
       // the first marker.
-      await File(
-        '$bufferFilePath.markers.jsonl',
-      ).writeAsString('${jsonEncode(_planSidecarLine(plan))}\n');
+      await File('$bufferFilePath.markers.jsonl')
+          .writeAsString('${jsonEncode(_planSidecarLine(plan))}\n');
       // Flush markers recorded before the sidecar path existed.
       for (final marker in markers.markers) {
         await _appendMarkerLine(marker);
@@ -603,6 +626,7 @@ class RecordingController extends ChangeNotifier {
     _tickTimer?.cancel();
     _tickTimer = null;
     _liveInfo = LiveVehicleInfo.empty;
+    _speedReadAt = null;
     _linkState = null;
     _connectionStatus = null;
     _reconnectingSince = null;
@@ -623,9 +647,10 @@ class RecordingController extends ChangeNotifier {
       executor: executor,
       state: discoveryState,
       onHit: (_, _, _) => _sessionDiscoveryHits++,
+      batchSize: _settings.discoveryBatchSize,
     );
     _discoveryEngine = engine;
-    final stationary = _liveInfo.speedKmh == 0;
+    final stationary = _isStationary(_now());
     _discoveryUiState = buildDiscoveryUiState(
       engine: engine,
       stationary: stationary,
@@ -669,11 +694,7 @@ class RecordingController extends ChangeNotifier {
     DiscoveryState discoveryState,
   ) async {
     final now = _now();
-    // Unknown speed (no live source yet) is treated as moving, never as
-    // stationary -- discovery must not assume it's safe to scan a
-    // potentially-safety-relevant ECU just because speed hasn't been read
-    // yet.
-    final stationary = _liveInfo.speedKmh == 0;
+    final stationary = _isStationary(now);
     final allowedToRun = stationary || _settings.scoutWhileDriving;
     if (allowedToRun) {
       final before = jsonEncode(discoveryState.toJson());
@@ -771,6 +792,11 @@ class RecordingController extends ChangeNotifier {
         switch (exchange.signalId) {
           case 'module7_22f40d':
             speedKmh = decodeSpeedKmh(payload);
+            _speedReadAt = exchange.receivedAtEpochMs == null
+                ? null
+                : DateTime.fromMillisecondsSinceEpoch(
+                    exchange.receivedAtEpochMs!,
+                  );
           case 'module7_22f446':
             outsideTempC = decodeOutsideTempC(payload);
           case 'module8_22f4a6':
@@ -790,6 +816,7 @@ class RecordingController extends ChangeNotifier {
       );
     } catch (_) {
       _liveInfo = LiveVehicleInfo.empty;
+      _speedReadAt = null;
       _linkState = ObdLinkStateValueMessage.disconnected;
     }
     notifyListeners();
@@ -1026,12 +1053,14 @@ class RecordingController extends ChangeNotifier {
       for (final module in knownModules) module.moduleId,
     });
 
+    final adapterSequence = _adapterSequence(settings);
+
     return ObdPlanMessage(
       planId: 'didscout-fixed-plan',
       planVersion: 1,
       formatVersion: 1,
-      init: _adapterInitCommands,
-      resync: _adapterInitCommands,
+      init: adapterSequence,
+      resync: adapterSequence,
       modules: [...knownModules, ...discoveredModules],
       steps: [
         // The speed signal is always planned, driving or not -- discovery
@@ -1041,7 +1070,7 @@ class RecordingController extends ChangeNotifier {
           moduleId: 'module7',
           command: '22F40D',
           responseHeader: _module7ResponseHeader,
-          intervalMs: 5000,
+          intervalMs: settings.speedPollIntervalMs,
         ),
         if (recordKnown) ...[
           ObdStepMessage(

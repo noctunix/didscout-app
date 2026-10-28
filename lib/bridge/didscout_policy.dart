@@ -4,7 +4,8 @@ import 'package:obdbridge/obdbridge.dart';
 /// rejects VIN/serial reads and any non-read service regardless of this
 /// policy). Deliberately narrower than [HardGuard]'s own allow-list:
 ///
-/// - adapter setup/identification commands only,
+/// - adapter setup/identification commands only, plus `ATST` + two hex
+///   digits (adapter response timeout, in 4 ms units),
 /// - protocol selection restricted to 6 (11-bit CAN) and 7 (29-bit CAN),
 /// - headers restricted to the 11-bit physical range `0x700`-`0x7EF`, the
 ///   29-bit physical pattern `18DAxxF1`/`18DAF1xx`, and the functional
@@ -15,6 +16,7 @@ class DidscoutPolicy implements CommandPolicy {
   static final RegExp _headerCommand = RegExp(
     r'^(ATSH|ATCRA|ATFCSH)([0-9A-F]+)$',
   );
+  static final RegExp _responseTimeoutCommand = RegExp(r'^ATST[0-9A-F]{2}$');
   static final RegExp _elevenBitPhysical = RegExp(r'^7[0-9A-F]{2}$');
   static final RegExp _twentyNineBitPhysicalRequest = RegExp(
     r'^18DA[0-9A-F]{2}F1$',
@@ -63,7 +65,8 @@ class DidscoutPolicy implements CommandPolicy {
 
   static bool _allowsAdapterCommand(String normalized) {
     if (_allowedAdapterCommands.contains(normalized) ||
-        _allowedProtocolSelectCommands.contains(normalized)) {
+        _allowedProtocolSelectCommands.contains(normalized) ||
+        _responseTimeoutCommand.hasMatch(normalized)) {
       return true;
     }
     final headerMatch = _headerCommand.firstMatch(normalized);

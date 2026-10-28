@@ -49,6 +49,22 @@ void main() {
     );
   });
 
+  group('adapter response timeout (ATST)', () {
+    test('ATST plus two hex digits is allowed', () {
+      expect(policy.allows('ATST00'), isTrue);
+      expect(policy.allows('ATST19'), isTrue);
+      expect(policy.allows('ATSTFF'), isTrue);
+    });
+
+    test('a malformed ATST command is rejected', () {
+      expect(policy.allows('ATST'), isFalse);
+      expect(policy.allows('ATST1'), isFalse);
+      expect(policy.allows('ATST123'), isFalse);
+      expect(policy.allows('ATSTGG'), isFalse);
+      expect(policy.allows('ATST1g'), isFalse);
+    });
+  });
+
   group('protocol selection', () {
     test('ATSP6 and ATSP7 are allowed', () {
       expect(policy.allows('ATSP6'), isTrue);

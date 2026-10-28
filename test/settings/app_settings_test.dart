@@ -13,7 +13,7 @@ void main() {
       expect(defaults.neverGiveUpReconnecting, isTrue);
       expect(defaults.reconnectAttempts, 20);
       expect(defaults.stopAfterNoVehicleDataMinutes, 30);
-      expect(defaults.maxReadsPerSecond, 6);
+      expect(defaults.maxReadsPerSecond, 8);
       expect(defaults.surveyIntervalMinutes, 3);
       expect(defaults.chargeReminderIntervalMinutes, 5);
       expect(defaults.autoStartOnPower, isFalse);
@@ -22,6 +22,9 @@ void main() {
       expect(defaults.scoutWhileDriving, isTrue);
       expect(defaults.recordingMode, RecordingMode.scoutOnly);
       expect(defaults.keepSamplingFoundDids, isTrue);
+      expect(defaults.speedPollIntervalS, 20);
+      expect(defaults.discoveryBatchSize, 16);
+      expect(defaults.adapterResponseTimeoutMs, isNull);
     });
 
     test('derived values convert to the units ObdLimitsMessage expects', () {
@@ -31,6 +34,12 @@ void main() {
       expect(defaults.idleVehicleStopAfterMs, 1800000);
       expect(defaults.surveyIntervalMs, 180000);
       expect(defaults.chargeReminderInterval, const Duration(minutes: 5));
+      expect(defaults.speedPollIntervalMs, 20000);
+      expect(
+        defaults.speedFreshnessWindow,
+        const Duration(milliseconds: 50000),
+      );
+      expect(defaults.adapterResponseTimeoutCommand, isNull);
     });
 
     test('maxReconnectAttemptsPerGap falls back to reconnectAttempts once '
@@ -73,12 +82,26 @@ void main() {
       scoutWhileDriving: false,
       recordingMode: RecordingMode.scoutAndRecordKnown,
       keepSamplingFoundDids: false,
+      speedPollIntervalS: 20,
+      discoveryBatchSize: 40,
+      adapterResponseTimeoutMs: 150,
     );
 
     final roundTripped = AppSettings.fromJson(settings.toJson());
 
     expect(roundTripped, settings);
   });
+
+  test(
+    'toJson/fromJson round trip preserves a null adapterResponseTimeoutMs',
+    () {
+      const settings = AppSettings.defaultValues();
+
+      final roundTripped = AppSettings.fromJson(settings.toJson());
+
+      expect(roundTripped.adapterResponseTimeoutMs, isNull);
+    },
+  );
 
   test('fromJson falls back to defaults for missing keys', () {
     final settings = AppSettings.fromJson(const {'readTimeoutMs': 3333});
@@ -105,4 +128,91 @@ void main() {
       expect(settings.recordingMode, RecordingMode.scoutOnly);
     },
   );
+
+  test('fromJson falls back to defaults for missing scout-speed keys', () {
+    final settings = AppSettings.fromJson(const {'readTimeoutMs': 3333});
+    const defaults = AppSettings.defaultValues();
+
+    expect(settings.speedPollIntervalS, defaults.speedPollIntervalS);
+    expect(settings.discoveryBatchSize, defaults.discoveryBatchSize);
+    expect(settings.adapterResponseTimeoutMs, isNull);
+  });
+
+  group('copyWith adapterResponseTimeoutMs', () {
+    test('omitting it keeps the current value', () {
+      const settings = AppSettings.defaultValues();
+      final withTimeout = settings.copyWith(adapterResponseTimeoutMs: 100);
+
+      final unrelatedChange = withTimeout.copyWith(readTimeoutMs: 5000);
+
+      expect(unrelatedChange.adapterResponseTimeoutMs, 100);
+    });
+
+    test('passing null clears it back to the adapter default', () {
+      const settings = AppSettings.defaultValues();
+      final withTimeout = settings.copyWith(adapterResponseTimeoutMs: 100);
+
+      final cleared = withTimeout.copyWith(adapterResponseTimeoutMs: null);
+
+      expect(cleared.adapterResponseTimeoutMs, isNull);
+    });
+  });
+
+  group('adapterResponseTimeoutCommand', () {
+    const settings = AppSettings.defaultValues();
+
+    test('null when unset', () {
+      expect(settings.adapterResponseTimeoutCommand, isNull);
+    });
+
+    test('formats as ATST plus two hex digits in 4 ms units', () {
+      expect(
+        settings
+            .copyWith(adapterResponseTimeoutMs: 100)
+            .adapterResponseTimeoutCommand,
+        'ATST19',
+      );
+      expect(
+        settings
+            .copyWith(adapterResponseTimeoutMs: 200)
+            .adapterResponseTimeoutCommand,
+        'ATST32',
+      );
+      expect(
+        settings
+            .copyWith(adapterResponseTimeoutMs: 50)
+            .adapterResponseTimeoutCommand,
+        'ATST0D',
+      );
+      expect(
+        settings
+            .copyWith(adapterResponseTimeoutMs: 150)
+            .adapterResponseTimeoutCommand,
+        'ATST26',
+      );
+    });
+  });
+
+  group('speedFreshnessWindow', () {
+    test('scales to 2.5x the configured poll interval', () {
+      const settings = AppSettings.defaultValues();
+      expect(
+        settings.copyWith(speedPollIntervalS: 2).speedFreshnessWindow,
+        const Duration(milliseconds: 5000),
+      );
+      expect(
+        settings.copyWith(speedPollIntervalS: 60).speedFreshnessWindow,
+        const Duration(milliseconds: 150000),
+      );
+    });
+  });
+
+  test('unlimitedMaxReadsPerSecond is accepted as an ordinary value', () {
+    const settings = AppSettings.defaultValues();
+    final unlimited = settings.copyWith(
+      maxReadsPerSecond: unlimitedMaxReadsPerSecond,
+    );
+
+    expect(unlimited.maxReadsPerSecond, 1000);
+  });
 }

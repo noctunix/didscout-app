@@ -741,4 +741,72 @@ void main() {
       engine.dispose();
     });
   });
+
+  group('batchSize', () {
+    test('minQueueDepth/maxQueueDepth scale with it when not given '
+        'explicitly', () {
+      final executor = FakeExecutor();
+      final engine = DiscoveryEngine(
+        executor: executor,
+        state: DiscoveryState(),
+        onHit: (_, _, _) {},
+        batchSize: 32,
+      );
+
+      expect(engine.minQueueDepth, 64);
+      expect(engine.maxQueueDepth, 256);
+
+      engine.dispose();
+    });
+
+    test('an explicit minQueueDepth/maxQueueDepth overrides the scaled '
+        'default', () {
+      final executor = FakeExecutor();
+      final engine = DiscoveryEngine(
+        executor: executor,
+        state: DiscoveryState(),
+        onHit: (_, _, _) {},
+        batchSize: 32,
+        minQueueDepth: 10,
+        maxQueueDepth: 20,
+      );
+
+      expect(engine.minQueueDepth, 10);
+      expect(engine.maxQueueDepth, 20);
+
+      engine.dispose();
+    });
+
+    test(
+      'a batch reads batchSize dids, not the fixed discoveryBatchSize',
+      () async {
+        final executor = FakeExecutor();
+        final state = DiscoveryState();
+        state.ecus['test'] = EcuInfo(
+          requestHeader: '7A1',
+          responseHeader: '7A9',
+          protocol: 6,
+          discoverRanges: [(0x0000, 0x0FFF)],
+        );
+        final engine = DiscoveryEngine(
+          executor: executor,
+          state: state,
+          onHit: (_, _, _) {},
+          batchSize: 8,
+        );
+        executor.respond = (step) => ProbeResult(
+          signalId: step.signalId,
+          status: const ProbeNoData(),
+          at: now,
+        );
+
+        await engine.runDiscoveryBatch('test', now);
+
+        expect(executor.submittedSteps.length, 8);
+        expect(state.ecus['test']!.scanPosition, 8);
+
+        engine.dispose();
+      },
+    );
+  });
 }

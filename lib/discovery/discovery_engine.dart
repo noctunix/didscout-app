@@ -66,8 +66,11 @@ String hex4(int value) => value.toRadixString(16).toUpperCase().padLeft(4, '0');
 
 /// Reported once a DID scan confirms an ECU answers a given DID -- lets
 /// the caller add it to its own recurring reads.
-typedef DiscoveryHit =
-    void Function(String ecuId, String did, List<int> payload);
+typedef DiscoveryHit = void Function(
+  String ecuId,
+  String did,
+  List<int> payload,
+);
 
 /// Drives ECU inventory and DID discovery against [executor], persisting
 /// progress into [state]. Motion-gates discovery per [didscout's safety
@@ -79,15 +82,18 @@ class DiscoveryEngine {
     required this.executor,
     required this.state,
     required this.onHit,
-    this.minQueueDepth = 32,
-    this.maxQueueDepth = 128,
+    this.batchSize = discoveryBatchSize,
+    int? minQueueDepth,
+    int? maxQueueDepth,
     this.sweepChunkSize = 64,
     this.batchDeadlinePerStep = defaultBatchDeadlinePerStep,
     this.batchDeadlineBase = defaultBatchDeadlineBase,
     this.submitBackoff = defaultSubmitBackoff,
     Future<void> Function(Duration)? delay,
     DateTime Function()? clock,
-  }) : _delay = delay ?? Future<void>.delayed,
+  }) : minQueueDepth = minQueueDepth ?? batchSize * 2,
+       maxQueueDepth = maxQueueDepth ?? batchSize * 8,
+       _delay = delay ?? Future<void>.delayed,
        _clock = clock ?? _utcNow {
     _subscription = executor.results.listen(_handleResult);
     _seedVagPpeEcus();
@@ -96,6 +102,11 @@ class DiscoveryEngine {
   final ReadExecutor executor;
   final DiscoveryState state;
   final DiscoveryHit onHit;
+
+  /// DIDs read per discovery batch (see [_nextBatchFor]/[pump]). Defaults
+  /// to the proven CLI's [discoveryBatchSize]; [minQueueDepth]/
+  /// [maxQueueDepth] scale with it unless given explicitly.
+  final int batchSize;
 
   /// Lower bound the engine tries to keep the executor's queue filled to
   /// (see [pump]).
@@ -373,9 +384,9 @@ class DiscoveryEngine {
       for (final ecu in state.ecus.values)
         if (ecu.protocol == 7 &&
             RegExp(r'^18DA([0-9A-F]{2})F1$').hasMatch(ecu.requestHeader))
-          RegExp(
-            r'^18DA([0-9A-F]{2})F1$',
-          ).firstMatch(ecu.requestHeader)!.group(1)!,
+          RegExp(r'^18DA([0-9A-F]{2})F1$')
+              .firstMatch(ecu.requestHeader)!
+              .group(1)!,
     };
     final candidates = ecu29Ids.where((id) => !knownIds.contains(id)).toList();
 
@@ -526,11 +537,11 @@ class DiscoveryEngine {
     }
     final fromRetry = ecu.retryQueue.isNotEmpty;
     final dids = fromRetry
-        ? ecu.retryQueue.take(discoveryBatchSize).toList()
+        ? ecu.retryQueue.take(batchSize).toList()
         : _orderFor(
             ecuId,
             ecu.discoverRanges,
-          ).skip(ecu.scanPosition).take(discoveryBatchSize).map(hex4).toList();
+          ).skip(ecu.scanPosition).take(batchSize).map(hex4).toList();
     return dids.isEmpty ? null : (dids: dids, fromRetry: fromRetry);
   }
 
@@ -601,7 +612,7 @@ class DiscoveryEngine {
     return newlyFound;
   }
 
-  /// Reads one batch ([discoveryBatchSize] DIDs) of [ecuId]'s discovery
+  /// Reads one batch ([batchSize] DIDs) of [ecuId]'s discovery
   /// work. If the batch looks asleep ([batchIsAsleep]), progress does not
   /// advance and the ECU pauses for [asleepPauseDuration]; otherwise
   /// updates position/discovered/conditional, reports every newly found
@@ -756,7 +767,7 @@ class DiscoveryEngine {
         continue;
       }
       round.add(ecuId);
-      if (round.length * discoveryBatchSize >= maxQueueDepth) {
+      if (round.length * batchSize >= maxQueueDepth) {
         break;
       }
     }

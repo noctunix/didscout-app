@@ -3,6 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:didscout_app/discovery/discovery_engine.dart';
 import 'package:didscout_app/discovery/discovery_state.dart';
 import 'package:didscout_app/discovery/discovery_ui_state.dart';
+import 'package:didscout_app/discovery/probe.dart';
 
 import 'fake_executor.dart';
 
@@ -187,6 +188,40 @@ void main() {
 
     expect(uiState.totalHits, 2);
     expect(uiState.sessionHits, 3);
+    engine.dispose();
+  });
+
+  test('readsPerMinute mirrors the engine\'s own scoutStatus', () async {
+    final executor = FakeExecutor();
+    final state = DiscoveryState();
+    state.ecus['ecu1'] = EcuInfo(
+      requestHeader: '7B0',
+      responseHeader: '7B8',
+      protocol: 6,
+      discoverRanges: [(0x2A00, 0x2A0F)],
+    );
+    final engine = DiscoveryEngine(
+      executor: executor,
+      state: state,
+      onHit: (_, _, _) {},
+      clock: () => now,
+    );
+    executor.respond = (step) => ProbeResult(
+      signalId: step.signalId,
+      status: const ProbeNoData(),
+      at: now,
+    );
+
+    await engine.runDiscoveryBatch('ecu1', now);
+    final uiState = buildDiscoveryUiState(
+      engine: engine,
+      stationary: true,
+      now: now,
+      sessionHits: 0,
+    );
+
+    expect(uiState.readsPerMinute, engine.scoutStatus(now).readsPerMinute);
+    expect(uiState.readsPerMinute, greaterThan(0));
     engine.dispose();
   });
 }
