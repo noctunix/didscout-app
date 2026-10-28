@@ -100,6 +100,20 @@ RecordingController _fakeController({
   tickInterval: tickInterval,
 );
 
+/// Starts [controller] the same way tapping the "Start recording" button
+/// would (its `onPressed` is exactly [RecordingController.start]), via
+/// [WidgetTester.runAsync]. [RecordingController.start] does real file I/O
+/// (the marker sidecar's plan line) that never actually completes if begun
+/// under `testWidgets`' own fake clock — started from a tap, that I/O hangs
+/// forever instead of resolving on real time.
+Future<void> _startRecording(
+  WidgetTester tester,
+  RecordingController controller,
+) async {
+  await tester.runAsync(controller.start);
+  await tester.pumpAndSettle();
+}
+
 void main() {
   Future<void> pumpPage(
     WidgetTester tester, {
@@ -154,8 +168,7 @@ void main() {
       final controller = _fakeController();
       await pumpPage(tester, controller: controller);
 
-      await tester.tap(find.widgetWithText(ElevatedButton, 'Start recording'));
-      await tester.pumpAndSettle();
+      await _startRecording(tester, controller);
 
       expect(find.widgetWithText(ElevatedButton, 'Stop'), findsOneWidget);
       expect(controller.phase, RecordingPhase.recording);
@@ -315,10 +328,13 @@ void main() {
       );
       await pumpPage(tester, controller: controller);
 
-      await tester.tap(find.widgetWithText(ElevatedButton, 'Start recording'));
-      await tester.pumpAndSettle();
-      // Let the live-state poll land.
-      await tester.pump(const Duration(milliseconds: 5));
+      await _startRecording(tester, controller);
+      // The tick timer was armed inside `runAsync` (see `_startRecording`),
+      // so it runs on the real clock now, not the fake one `tester.pump`
+      // advances — wait in real time for the live-state poll to land.
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 20)),
+      );
       await tester.pumpAndSettle();
 
       expect(find.textContaining('outside temp.: 20'), findsOneWidget);

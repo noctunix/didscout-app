@@ -12,6 +12,7 @@ import '../capture/isotp.dart';
 import '../capture/readings.dart';
 import '../session/charge_reminder.dart';
 import '../session/session_markers.dart';
+import 'connection_status.dart';
 import 'didscout_policy.dart';
 
 /// The 29-bit module this app's fixed plan reads: ECU address `04`.
@@ -118,6 +119,46 @@ class RecordingController extends ChangeNotifier {
   /// show no live info.
   LiveVehicleInfo get liveInfo => _liveInfo;
 
+  /// The most recently observed link state, from [ObdBridge.liveState]'s own
+  /// link snapshot — used by [_pollConnectionStatus] to tell a live
+  /// connection apart from a reconnect in progress.
+  ObdLinkStateValueMessage? _linkState;
+
+  DateTime? _reconnectingSince;
+  int _reconnectPollAttempts = 0;
+
+  ConnectionStatus? _connectionStatus;
+
+  /// The recording's connection status while [phase] is [RecordingPhase.recording],
+  /// plus the final [RecordingConnectionState.stopped] value for the instant native
+  /// ends a recording on its own; null at every other time.
+  ConnectionStatus? get connectionStatus => _connectionStatus;
+
+  DateTime? _nativeStopAt;
+  String? _nativeStopReason;
+
+  /// Set once native has ended a recording on its own (connection lost and
+  /// the reconnect budget exhausted, idle vehicle, write failure, …) rather
+  /// than the owner tapping Stop — a persistent banner until the next
+  /// [start] clears it. Null otherwise, including after an ordinary
+  /// owner-initiated stop.
+  String? get nativeStopBanner {
+    final at = _nativeStopAt;
+    final reason = _nativeStopReason;
+    if (at == null || reason == null) return null;
+    final local = at.toLocal();
+    String two(int value) => value.toString().padLeft(2, '0');
+    return 'Recording stopped at ${two(local.hour)}:${two(local.minute)}: '
+        '$reason';
+  }
+
+  /// The buffer file of the recording currently in progress — null unless
+  /// [phase] is [RecordingPhase.recording]. Distinct from [bufferFilePath],
+  /// which stays set through [RecordingPhase.finished] so it can still be
+  /// shared.
+  String? get currentRecordingPath =>
+      _phase == RecordingPhase.recording ? _bufferFilePath : null;
+
   bool _chargeReminderVisible = false;
 
   /// Whether the charging-round reminder banner should be shown right now.
@@ -153,17 +194,20 @@ class RecordingController extends ChangeNotifier {
 
   String? _sessionId;
   String? _bufferFilePath;
-  bool _markersWritten = false;
 
   /// Set once a recording has been started; also the file shared when
   /// [canShare].
   String? get bufferFilePath => _bufferFilePath;
 
-  /// The session's marker sidecar path, next to [bufferFilePath]. Null until
-  /// a marker has actually been written for this session — a session with
-  /// no markers has no sidecar file.
+  /// The session's marker sidecar path, next to [bufferFilePath]. Created at
+  /// [start] (with the plan line as its first entry) and so set for as long
+  /// as [bufferFilePath] is — never null for a session that has started.
   String? get markersFilePath =>
-      _markersWritten ? '${_bufferFilePath!}.markers.jsonl' : null;
+      _bufferFilePath != null ? '${_bufferFilePath!}.markers.jsonl' : null;
+
+  /// Where [start] creates recording buffers, for anything (e.g. the
+  /// Recordings list) that needs to enumerate past recordings too.
+  Future<Directory> resolveRecordingsDirectory() => _recordingsDirectory();
 
   bool get canStart =>
       _phase == RecordingPhase.idle ||
@@ -237,19 +281,32 @@ class RecordingController extends ChangeNotifier {
 
   Future<void> _appendLatestMarker() async {
     if (_bufferFilePath == null) {
-      // No session yet — the marker stays in [markers] only and is flushed
-      // to the sidecar once [start] creates one.
+      // No session has ever started — the marker stays in [markers] only
+      // and is flushed to the sidecar once [start] creates one.
       return;
     }
-    await _appendMarkerLine(markers.markers.last);
-    _markersWritten = true;
+    // Readings/notes/events can still be entered after a recording has
+    // ended (deliberately, by the owner, or because native stopped it) —
+    // they land in the last recording's sidecar, flagged as not actually
+    // belonging to a running recording.
+    await _appendMarkerLine(
+      markers.markers.last,
+      tagInactive: _phase != RecordingPhase.recording,
+    );
     notifyListeners();
   }
 
-  Future<void> _appendMarkerLine(SessionMarker marker) {
+  Future<void> _appendMarkerLine(
+    SessionMarker marker, {
+    bool tagInactive = false,
+  }) {
+    var json = marker.toJson();
+    if (tagInactive && marker is! PhaseMarker) {
+      json = {...json, 'recording_active': false};
+    }
     return File(
       '${_bufferFilePath!}.markers.jsonl',
-    ).writeAsString('${jsonEncode(marker.toJson())}\n', mode: FileMode.append);
+    ).writeAsString('${jsonEncode(json)}\n', mode: FileMode.append);
   }
 
   /// Runs the whole connect-and-record flow. A no-op unless [canStart].
@@ -257,7 +314,11 @@ class RecordingController extends ChangeNotifier {
     if (!canStart) return;
     _sessionId = null;
     _bufferFilePath = null;
-    _markersWritten = false;
+    _nativeStopAt = null;
+    _nativeStopReason = null;
+    _connectionStatus = null;
+    _reconnectingSince = null;
+    _reconnectPollAttempts = 0;
     try {
       _setPhase(RecordingPhase.requestingPermissions);
       var permission = await _bridge.permissionStatus();
@@ -311,13 +372,14 @@ class RecordingController extends ChangeNotifier {
       final bufferFilePath = '${directory.path}/$sessionId.jsonl';
 
       _setPhase(RecordingPhase.startingRecording);
+      final plan = _buildPlan();
       final started = await _bridge.startRecording(
         ObdStartRecordingRequest(
           sessionId: sessionId,
           vehicleId: sessionId,
           bufferFilePath: bufferFilePath,
           startedAtEpochMs: DateTime.now().millisecondsSinceEpoch,
-          plan: _buildPlan(),
+          plan: plan,
           options: ObdRecordingOptionsMessage(holdWakeLock: true),
           notification: ObdRecordingNotificationMessage(
             channelName: 'didscout recording',
@@ -334,10 +396,15 @@ class RecordingController extends ChangeNotifier {
 
       _sessionId = sessionId;
       _bufferFilePath = bufferFilePath;
+      // The sidecar always exists once a recording has started, with the
+      // actually-sent plan as its first line — created here, not lazily on
+      // the first marker.
+      await File(
+        '$bufferFilePath.markers.jsonl',
+      ).writeAsString('${jsonEncode(_planSidecarLine(plan))}\n');
       // Flush markers recorded before the sidecar path existed.
       for (final marker in markers.markers) {
         await _appendMarkerLine(marker);
-        _markersWritten = true;
       }
       _setPhase(
         RecordingPhase.recording,
@@ -383,10 +450,15 @@ class RecordingController extends ChangeNotifier {
     _tickTimer?.cancel();
     _tickTimer = null;
     _liveInfo = LiveVehicleInfo.empty;
+    _linkState = null;
+    _connectionStatus = null;
+    _reconnectingSince = null;
+    _reconnectPollAttempts = 0;
   }
 
   Future<void> _tick() async {
     await _pollLiveState();
+    await _pollConnectionStatus();
     if (_chargeReminder.checkDue()) {
       _chargeReminderVisible = true;
       notifyListeners();
@@ -397,9 +469,11 @@ class RecordingController extends ChangeNotifier {
   /// whatever answered into [_liveInfo]. Any failure (no live-state support,
   /// transport error, …) leaves [_liveInfo] at [LiveVehicleInfo.empty] — the
   /// tiles then simply show no live info, never a stale or fabricated one.
+  /// Also records the link state exchanges carry, for [_pollConnectionStatus].
   Future<void> _pollLiveState() async {
     try {
       final state = await _bridge.liveState(_liveSignalSpecs.keys.toList());
+      _linkState = state.link.state;
       int? speedKmh;
       double? odometerKm;
       int? outsideTempC;
@@ -440,8 +514,66 @@ class RecordingController extends ChangeNotifier {
       );
     } catch (_) {
       _liveInfo = LiveVehicleInfo.empty;
+      _linkState = ObdLinkStateValueMessage.disconnected;
     }
     notifyListeners();
+  }
+
+  /// Polls [ObdBridge.recordingState] while [phase] is
+  /// [RecordingPhase.recording] and derives [connectionStatus] from it, plus
+  /// [_linkState] ([_pollLiveState]'s own, already-polled link snapshot).
+  /// Native ending the recording on its own (not via [stop]) is handled
+  /// here too, via [_handleNativeStop] — the app must never keep showing a
+  /// recording as live once native has actually ended it.
+  Future<void> _pollConnectionStatus() async {
+    if (_phase != RecordingPhase.recording) {
+      _connectionStatus = null;
+      _reconnectingSince = null;
+      _reconnectPollAttempts = 0;
+      return;
+    }
+    try {
+      final state = await _bridge.recordingState();
+      if (state.state == ObdRecordingStateValueMessage.stopped ||
+          state.state == ObdRecordingStateValueMessage.interrupted) {
+        _handleNativeStop(state.writeError ?? state.state.name);
+        return;
+      }
+    } catch (_) {
+      // Treated as "link not confirmed" below, same as a bad link state.
+    }
+    final connected =
+        _linkState == ObdLinkStateValueMessage.connected ||
+        _linkState == ObdLinkStateValueMessage.running;
+    if (connected) {
+      _connectionStatus = const ConnectionStatus.connected();
+      _reconnectingSince = null;
+      _reconnectPollAttempts = 0;
+    } else {
+      _reconnectingSince ??= DateTime.now();
+      _reconnectPollAttempts++;
+      _connectionStatus = ConnectionStatus.reconnecting(
+        since: _reconnectingSince!,
+        attempt: _reconnectPollAttempts,
+      );
+    }
+    notifyListeners();
+  }
+
+  /// Native ended the recording by itself — reconnect budget exhausted, a
+  /// write failure, etc. Switches [phase] out of [RecordingPhase.recording]
+  /// immediately (as [finished], so the buffer up to that point is still
+  /// shareable and a new recording can start right away) and records
+  /// [reason] for [nativeStopBanner].
+  void _handleNativeStop(String reason) {
+    _nativeStopAt = DateTime.now().toUtc();
+    _nativeStopReason = reason;
+    _stopTicking();
+    // After `_stopTicking` (which clears `_connectionStatus` along with the
+    // rest of the live polling state) so the final status shown is `stopped`,
+    // not `null`.
+    _connectionStatus = ConnectionStatus.stopped(reason);
+    _setPhase(RecordingPhase.finished, reason);
   }
 
   static ObdAdapterMessage? _strongestAdapter(
@@ -538,16 +670,51 @@ class RecordingController extends ChangeNotifier {
         vehicleReadDeadlineMs: 2000,
         maxReadsPerSecond: 5,
         maxConsecutiveTimeouts: 3,
-        // Comfortably above the plan's slowest step (60s) so a quiet bus
-        // doesn't look idle before it actually is.
-        idleVehicleStopAfterMs: 300000,
-        reconnectBackoffMinMs: 1000,
-        reconnectBackoffMaxMs: 30000,
-        maxReconnectAttemptsPerGap: 5,
+        // 30 min: long charging stops with the bus asleep shouldn't look
+        // idle before they actually are.
+        idleVehicleStopAfterMs: 1800000,
+        reconnectBackoffMinMs: 2000,
+        reconnectBackoffMaxMs: 60000,
+        // The plugin only counts up per gap, never down — this is
+        // effectively unlimited so a long session survives any number of
+        // adapter dropouts instead of ending on the plugin's old budget of 5.
+        maxReconnectAttemptsPerGap: 100000,
+        // 0 disables the cap entirely (see `ObdLimitsMessage.maxRecordingMs`)
+        // — already well past the 72h floor a long session needs.
         maxRecordingMs: 0,
         maxBufferBytes: 50 * 1024 * 1024,
       ),
     );
+  }
+
+  /// The marker sidecar's first line (`{"type":"plan",…}`), built from
+  /// [plan] exactly as sent to native rather than from this class's own
+  /// header constants — so the sidecar always reflects what actually went
+  /// out, even if a future plan version diverges from them.
+  static Map<String, dynamic> _planSidecarLine(ObdPlanMessage plan) => {
+    'type': 'plan',
+    'planId': plan.planId,
+    'planVersion': plan.planVersion,
+    'at': DateTime.now().toUtc().toIso8601String(),
+    'modules': [
+      for (final module in plan.modules)
+        {
+          'id': module.moduleId,
+          'request': _setupHeader(module.setup, 'ATSH'),
+          'response': _setupHeader(module.setup, 'ATCRA'),
+          'protocol': module.protocol.toString(),
+        },
+    ],
+  };
+
+  /// Reads the request/response header a module's compiled `setup` sequence
+  /// carries, by its `ATSH`/`ATCRA` command — the single source of truth
+  /// [buildModuleSetupCommands] itself compiled it from.
+  static String _setupHeader(List<String> setup, String prefix) {
+    for (final command in setup) {
+      if (command.startsWith(prefix)) return command.substring(prefix.length);
+    }
+    throw StateError('module setup has no $prefix command');
   }
 
   static Future<Directory> _defaultRecordingsDirectory() async {

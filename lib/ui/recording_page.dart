@@ -4,9 +4,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:share_plus/share_plus.dart';
 
+import '../bridge/connection_status.dart';
 import '../bridge/recording_controller.dart';
 import '../capture/readings.dart';
 import '../session/session_markers.dart';
+import 'recordings_page.dart';
 
 /// The default [RecordingPage.onShare]: hands [paths] to the platform share
 /// sheet as files.
@@ -70,6 +72,18 @@ class _RecordingPageState extends State<RecordingPage> {
     await share(_controller.shareableFiles);
   }
 
+  Future<void> _openRecordings() async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute(
+        builder: (context) => RecordingsPage(
+          recordingsDirectory: _controller.resolveRecordingsDirectory,
+          currentBufferPath: _controller.currentRecordingPath,
+          onShare: widget.onShare,
+        ),
+      ),
+    );
+  }
+
   Future<void> _openTileSheet(ReadingQuantity quantity) async {
     final readAt = DateTime.now();
     final prefill = _controller.markers.lastValueFor(quantity);
@@ -124,7 +138,16 @@ class _RecordingPageState extends State<RecordingPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('didscout')),
+      appBar: AppBar(
+        title: const Text('didscout'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.history),
+            tooltip: 'Recordings',
+            onPressed: _openRecordings,
+          ),
+        ],
+      ),
       body: AnimatedBuilder(
         animation: Listenable.merge([_controller, _controller.markers]),
         builder: (context, _) {
@@ -141,6 +164,13 @@ class _RecordingPageState extends State<RecordingPage> {
               padding: const EdgeInsets.all(16),
               children: [
                 _StatusCard(controller: _controller, onShare: _share),
+                if (_controller.nativeStopBanner != null) ...[
+                  const SizedBox(height: 16),
+                  _NativeStopBanner(
+                    message: _controller.nativeStopBanner!,
+                    onStartNew: _controller.start,
+                  ),
+                ],
                 const SizedBox(height: 16),
                 _PhaseButtonGrid(controller: _controller),
                 if (reminderVisible) ...[
@@ -247,6 +277,7 @@ class _StatusCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final busy = _isBusy(controller.phase);
     final recording = controller.phase == RecordingPhase.recording;
+    final connectionStatus = controller.connectionStatus;
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -273,6 +304,17 @@ class _StatusCard extends StatelessWidget {
                 ),
               ],
             ),
+            if (recording && connectionStatus != null) ...[
+              const SizedBox(height: 8),
+              Text(
+                describeConnectionStatus(connectionStatus),
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: connectionStatus.state == RecordingConnectionState.connected
+                      ? null
+                      : Theme.of(context).colorScheme.error,
+                ),
+              ),
+            ],
             if (recording && controller.liveInfo.speedKmh != null) ...[
               const SizedBox(height: 8),
               Text(
@@ -373,6 +415,45 @@ class _PhaseButton extends StatelessWidget {
             mainAxisAlignment: MainAxisAlignment.center,
             children: [Icon(icon), const SizedBox(height: 4), Text(label)],
           ),
+        ),
+      ),
+    );
+  }
+}
+
+class _NativeStopBanner extends StatelessWidget {
+  const _NativeStopBanner({required this.message, required this.onStartNew});
+
+  final String message;
+  final Future<void> Function() onStartNew;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return Material(
+      color: colorScheme.errorContainer,
+      borderRadius: BorderRadius.circular(12),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        child: Row(
+          children: [
+            Icon(
+              Icons.warning_amber_outlined,
+              color: colorScheme.onErrorContainer,
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                message,
+                style: TextStyle(color: colorScheme.onErrorContainer),
+              ),
+            ),
+            const SizedBox(width: 8),
+            FilledButton(
+              onPressed: () => unawaited(onStartNew()),
+              child: const Text('Start new recording'),
+            ),
+          ],
         ),
       ),
     );
