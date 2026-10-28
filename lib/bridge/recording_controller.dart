@@ -1136,6 +1136,10 @@ class RecordingController extends ChangeNotifier {
         vehicleReadDeadlineMs: settings.readTimeoutMs,
         maxReadsPerSecond: settings.maxReadsPerSecond,
         maxConsecutiveTimeouts: 3,
+        // A burst of read failures resyncs the adapter and keeps scouting
+        // instead of ending a long session.
+        onConsecutiveFailures:
+            ObdConsecutiveFailuresPolicyMessage.resyncAndContinue,
         idleVehicleStopAfterMs: settings.idleVehicleStopAfterMs,
         reconnectBackoffMinMs: settings.reconnectBackoffMinMs,
         reconnectBackoffMaxMs: settings.reconnectBackoffMaxMs,
@@ -1143,7 +1147,7 @@ class RecordingController extends ChangeNotifier {
         // 0 disables the cap entirely (see `ObdLimitsMessage.maxRecordingMs`)
         // — already well past the 72h floor a long session needs.
         maxRecordingMs: 0,
-        maxBufferBytes: 50 * 1024 * 1024,
+        maxBufferBytes: 200 * 1024 * 1024,
       ),
     );
   }

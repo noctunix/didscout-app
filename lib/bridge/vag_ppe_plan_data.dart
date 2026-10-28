@@ -396,4 +396,55 @@ const vagPpeModules = <VagPpeModuleSpec>[
     VagPpeDidSpec('04FC', 180000),
     VagPpeDidSpec('04FE', 180000),
   ]),
+  VagPpeModuleSpec('steering-column', '70C', '776', '6', [
+    VagPpeDidSpec('F197', 600000),
+  ]),
+  VagPpeModuleSpec('bcm1', '70E', '778', '6', [VagPpeDidSpec('F197', 600000)]),
+  VagPpeModuleSpec('eps', '712', '77C', '6', [VagPpeDidSpec('F197', 600000)]),
+  VagPpeModuleSpec('abs', '713', '77D', '6', [VagPpeDidSpec('F197', 600000)]),
+  VagPpeModuleSpec('cluster', '714', '77E', '6', [
+    VagPpeDidSpec('F197', 600000),
+  ]),
+  VagPpeModuleSpec('airbag', '715', '77F', '6', [
+    VagPpeDidSpec('F197', 600000),
+  ]),
+  VagPpeModuleSpec('hud', '71B', '785', '6', [VagPpeDidSpec('F197', 600000)]),
+  VagPpeModuleSpec('door-rear-left', '73E', '7A8', '6', [
+    VagPpeDidSpec('F197', 600000),
+  ]),
+  VagPpeModuleSpec('door-rear-right', '73F', '7A9', '6', [
+    VagPpeDidSpec('F197', 600000),
+  ]),
+  VagPpeModuleSpec('trailer', '747', '7B1', '6', [
+    VagPpeDidSpec('F197', 600000),
+  ]),
+  VagPpeModuleSpec('door-front-left', '74A', '7B4', '6', [
+    VagPpeDidSpec('F197', 600000),
+  ]),
+  VagPpeModuleSpec('door-front-right', '74B', '7B5', '6', [
+    VagPpeDidSpec('F197', 600000),
+  ]),
+  VagPpeModuleSpec('seat-front', '74C', '7B6', '6', [
+    VagPpeDidSpec('F197', 600000),
+  ]),
+  VagPpeModuleSpec('camera', '74F', '7B9', '6', [
+    VagPpeDidSpec('F197', 600000),
+  ]),
+  VagPpeModuleSpec('gsm', '753', '7BD', '6', [VagPpeDidSpec('F197', 600000)]),
+  VagPpeModuleSpec('wba', '756', '7C0', '6', [VagPpeDidSpec('F197', 600000)]),
+  VagPpeModuleSpec('climate', '767', '7D1', '6', [
+    VagPpeDidSpec('F197', 600000),
+  ]),
+  VagPpeModuleSpec('infotainment', '773', '7DD', '6', [
+    VagPpeDidSpec('F197', 600000),
+  ]),
+  VagPpeModuleSpec('motor-rear', '18DA06F1', '18DAF106', '7', [
+    VagPpeDidSpec('F197', 600000),
+  ]),
+  VagPpeModuleSpec('motor-front', '18DA07F1', '18DAF107', '7', [
+    VagPpeDidSpec('F197', 600000),
+  ]),
+  VagPpeModuleSpec('parking-lock', '18DA28F1', '18DAF128', '7', [
+    VagPpeDidSpec('F197', 600000),
+  ]),
 ];

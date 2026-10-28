@@ -32,6 +32,13 @@ void main() {
     }
   });
 
+  test('a failure burst resyncs and keeps recording', () {
+    expect(
+      plan.limits.onConsecutiveFailures,
+      ObdConsecutiveFailuresPolicyMessage.resyncAndContinue,
+    );
+  });
+
   test('every command passes the hard guard and the app policy', () {
     final commands = [
       ...plan.init,
