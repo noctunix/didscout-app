@@ -4,6 +4,7 @@ import 'package:didscout_app/discovery/did_order.dart';
 import 'package:didscout_app/discovery/discovery_engine.dart';
 import 'package:didscout_app/discovery/discovery_state.dart';
 import 'package:didscout_app/discovery/probe.dart';
+import 'package:didscout_app/discovery/scout_status.dart';
 
 import 'fake_executor.dart';
 
@@ -508,6 +509,235 @@ void main() {
       // value is between 0 and 100.
       expect(progress.percent, greaterThan(0));
       expect(progress.percent, lessThan(100));
+      engine.dispose();
+    });
+  });
+
+  group('batch deadline and enqueue rejection', () {
+    test(
+      'a lost result event times out without advancing position, and is retried',
+      () async {
+        final executor = FakeExecutor();
+        final state = DiscoveryState();
+        state.ecus['test'] = EcuInfo(
+          requestHeader: '7A1',
+          responseHeader: '7A9',
+          protocol: 6,
+          discoverRanges: [(0x2A00, 0x2A0F)],
+        );
+        final engine = DiscoveryEngine(
+          executor: executor,
+          state: state,
+          onHit: (_, _, _) {},
+          // A real timer (even a zero-duration one) only fires once every
+          // pending microtask has drained, so a normal result -- delivered
+          // through the fake executor's own microtask chain -- always wins
+          // its race against this; only a genuinely dropped signal (no
+          // delivery scheduled at all) ever times out.
+          delay: (_) => Future<void>.delayed(Duration.zero),
+        );
+        executor.respond = (step) => ProbeResult(
+          signalId: step.signalId,
+          status: const ProbeOk(),
+          payload: const [1],
+          at: now,
+        );
+        executor.droppedSignalIds.add(signalIdFor('test', '222A00'));
+
+        final found = await engine.runDiscoveryBatch('test', now);
+
+        expect(found, isEmpty);
+        expect(
+          state.ecus['test']!.scanPosition,
+          0,
+          reason: 'a batch with a missing result must not advance',
+        );
+        expect(state.ecus['test']!.discovered, isEmpty);
+        expect(
+          engine.eventLog.first.kind,
+          ScoutEventKind.batchTimedOut,
+          reason: 'newest event first',
+        );
+        expect(engine.eventLog.first.ecuId, 'test');
+        expect(engine.eventLog.first.detail, '1/16 missing');
+
+        // Retried on the next call: the lost DID answers this time.
+        executor.droppedSignalIds.clear();
+        final retried = await engine.runDiscoveryBatch('test', now);
+        expect(retried.length, 16);
+        expect(state.ecus['test']!.scanPosition, 16);
+
+        engine.dispose();
+      },
+    );
+
+    test('a rejected enqueue backs off and retries, then succeeds', () async {
+      final executor = FakeExecutor();
+      final state = DiscoveryState();
+      state.ecus['test'] = EcuInfo(
+        requestHeader: '7A1',
+        responseHeader: '7A9',
+        protocol: 6,
+        discoverRanges: [(0x2A00, 0x2A0F)],
+      );
+      final requestedBackoffs = <Duration>[];
+      final engine = DiscoveryEngine(
+        executor: executor,
+        state: state,
+        onHit: (_, _, _) {},
+        delay: (duration) {
+          requestedBackoffs.add(duration);
+          return Future<void>.delayed(Duration.zero);
+        },
+      );
+      executor.rejectionsToThrow.add(
+        const FakeRejection(SubmitRejectionReason.queueFull),
+      );
+      executor.respond = (step) => ProbeResult(
+        signalId: step.signalId,
+        status: const ProbeOk(),
+        payload: const [1],
+        at: now,
+      );
+
+      final found = await engine.runDiscoveryBatch('test', now);
+
+      expect(found.length, 16, reason: 'the retried submit must succeed');
+      expect(
+        requestedBackoffs.first,
+        defaultSubmitBackoff,
+        reason:
+            'the rejected submit itself backs off by this -- later calls '
+            'to the same delay hook are the (always-losing) per-step '
+            'deadline races',
+      );
+      expect(
+        engine.eventLog.any(
+          (e) =>
+              e.kind == ScoutEventKind.enqueueRejected &&
+              e.detail == 'queueFull',
+        ),
+        isTrue,
+      );
+
+      engine.dispose();
+    });
+
+    test(
+      'noActiveRecording suspends the engine permanently -- pump never submits again',
+      () async {
+        final executor = FakeExecutor();
+        final state = DiscoveryState(inventoryStagesDone: {'ecus11', 'ecus29'});
+        state.ecus['test'] = EcuInfo(
+          requestHeader: '7A1',
+          responseHeader: '7A9',
+          protocol: 6,
+          discoverRanges: [(0x2A00, 0x2A0F)],
+        );
+        final engine = DiscoveryEngine(
+          executor: executor,
+          state: state,
+          onHit: (_, _, _) {},
+          delay: (_) => Future<void>.delayed(Duration.zero),
+        );
+        executor.rejectionsToThrow.add(
+          const FakeRejection(SubmitRejectionReason.noActiveRecording),
+        );
+
+        await engine.pump(stationary: true, now: now);
+
+        expect(engine.suspended, isTrue);
+        expect(engine.eventLog.first.kind, ScoutEventKind.enqueueRejected);
+        expect(state.ecus['test']!.scanPosition, 0);
+
+        executor.rejectionsToThrow.clear();
+        executor.submittedSteps.clear();
+        await engine.pump(stationary: true, now: now);
+        expect(
+          executor.submittedSteps,
+          isEmpty,
+          reason: 'a suspended engine never submits again',
+        );
+
+        engine.dispose();
+      },
+    );
+  });
+
+  group('scoutStatus', () {
+    test(
+      'reflects the current batch, reads per minute, and last result',
+      () async {
+        final executor = FakeExecutor();
+        final state = DiscoveryState();
+        state.ecus['test'] = EcuInfo(
+          requestHeader: '7A1',
+          responseHeader: '7A9',
+          protocol: 6,
+          discoverRanges: [(0x2A00, 0x2A0F)],
+        );
+        var clockNow = now;
+        final engine = DiscoveryEngine(
+          executor: executor,
+          state: state,
+          onHit: (_, _, _) {},
+          clock: () => clockNow,
+        );
+        executor.respond = (step) => ProbeResult(
+          signalId: step.signalId,
+          status: const ProbeNrc(0x31),
+          at: now,
+        );
+
+        await engine.runDiscoveryBatch('test', now);
+
+        final status = engine.scoutStatus(clockNow);
+        expect(status.currentEcuId, 'test');
+        expect(status.currentDidRangeLabel, '2A00–2A0F');
+        expect(status.readsPerMinute, 16);
+        expect(status.lastResultSummary, 'NRC 31');
+        expect(status.waitingCount, 0, reason: 'batch already finished');
+        expect(status.waitingFor, isNull);
+
+        // Reads older than the rolling window drop out of the rate.
+        clockNow = now.add(const Duration(seconds: 61));
+        expect(engine.scoutStatus(clockNow).readsPerMinute, 0);
+
+        engine.dispose();
+      },
+    );
+
+    test('event log is bounded at 50 entries, newest first', () async {
+      final executor = FakeExecutor();
+      final state = DiscoveryState();
+      state.ecus['test'] = EcuInfo(
+        requestHeader: '7A1',
+        responseHeader: '7A9',
+        protocol: 6,
+        discoverRanges: [(0x0000, 0x0FFF)],
+      );
+      final engine = DiscoveryEngine(
+        executor: executor,
+        state: state,
+        onHit: (_, _, _) {},
+      );
+      executor.respond = (step) => ProbeResult(
+        signalId: step.signalId,
+        status: const ProbeOk(),
+        payload: const [],
+        at: now,
+      );
+
+      // Each batch logs 1 "batch submitted" + up to 16 "hit" events --
+      // a handful of batches is plenty to overflow the 50-entry buffer.
+      for (var i = 0; i < 5; i++) {
+        await engine.runDiscoveryBatch('test', now);
+      }
+
+      expect(engine.eventLog.length, scoutEventLogCapacity);
+      // Newest first: the very last hit logged must be at index 0.
+      expect(engine.eventLog.first.kind, ScoutEventKind.hit);
+
       engine.dispose();
     });
   });
