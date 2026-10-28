@@ -9,6 +9,7 @@ import 'package:obdbridge/src/obdbridge_api.g.dart' show NativeObdApi;
 
 import 'package:didscout_app/bridge/didscout_policy.dart';
 import 'package:didscout_app/bridge/recording_controller.dart';
+import 'package:didscout_app/discovery/discovery_state.dart';
 import 'package:didscout_app/power/power_monitor.dart';
 import 'package:didscout_app/power/power_recording_coordinator.dart';
 import 'package:didscout_app/settings/app_settings.dart';
@@ -48,6 +49,10 @@ class _FakeNativeObdApi extends NativeObdApi {
 }
 
 void main() {
+  // `RecordingController.start` wires `ObdEventsApi` (for discovery
+  // results) through a real `BasicMessageChannel`, which needs a binding.
+  TestWidgetsFlutterBinding.ensureInitialized();
+
   late Directory tempDir;
   late RecordingController controller;
 
@@ -61,6 +66,12 @@ void main() {
     sessionIdFactory: () => 'power-test-session',
     requestRuntimePermissions: (_) async {},
     tickInterval: const Duration(hours: 1),
+    discoveryPumpInterval: const Duration(hours: 1),
+    // Discovery isn't what these tests exercise; avoid the real
+    // `path_provider` round trip so the tight timing budgets below (tens
+    // of milliseconds) stay reliable under load.
+    loadDiscoveryState: () async => DiscoveryState(),
+    saveDiscoveryState: (_) async {},
   );
 
   tearDown(() async {

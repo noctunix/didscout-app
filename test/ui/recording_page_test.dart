@@ -10,6 +10,7 @@ import 'package:obdbridge/src/obdbridge_api.g.dart' show NativeObdApi;
 import 'package:didscout_app/bridge/didscout_policy.dart';
 import 'package:didscout_app/bridge/recording_controller.dart';
 import 'package:didscout_app/capture/readings.dart';
+import 'package:didscout_app/discovery/discovery_state.dart';
 import 'package:didscout_app/session/session_markers.dart';
 import 'package:didscout_app/ui/recording_page.dart';
 
@@ -98,6 +99,16 @@ RecordingController _fakeController({
   sessionIdFactory: () => 'test-session',
   requestRuntimePermissions: (_) async {},
   tickInterval: tickInterval,
+  // Same reasoning as `tickInterval` above: a periodic timer never
+  // "settles", so it must be far longer than any `pumpAndSettle` call in
+  // this file is willing to wait.
+  discoveryPumpInterval: const Duration(hours: 1),
+  // Discovery isn't what these tests exercise; avoid the real
+  // `path_provider`/file I/O `RecordingController.stop` would otherwise
+  // await -- real I/O never completes under `pumpAndSettle`'s fake clock
+  // outside `tester.runAsync` (see `_startRecording` above).
+  loadDiscoveryState: () async => DiscoveryState(),
+  saveDiscoveryState: (_) async {},
 );
 
 /// Starts [controller] the same way tapping the "Start recording" button
