@@ -8,6 +8,7 @@ import '../bridge/connection_status.dart';
 import '../bridge/recording_controller.dart';
 import '../capture/readings.dart';
 import '../discovery/discovery_ui_state.dart';
+import '../discovery/scout_status.dart';
 import '../power/power_monitor.dart';
 import '../power/power_recording_coordinator.dart';
 import '../session/session_markers.dart';
@@ -175,6 +176,15 @@ class _RecordingPageState extends State<RecordingPage> {
     _controller.addEvent(label.trim());
   }
 
+  Future<void> _openScoutEventLog() async {
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      builder: (context) =>
+          _ScoutEventLogSheet(events: _controller.scoutEventLog),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -220,6 +230,11 @@ class _RecordingPageState extends State<RecordingPage> {
                   const SizedBox(height: 16),
                   _ScoutingCard(state: _controller.discoveryUiState!),
                 ],
+                if (_controller.scoutStatus != null)
+                  _ScoutStatusLine(
+                    status: _controller.scoutStatus!,
+                    onTap: _openScoutEventLog,
+                  ),
                 const SizedBox(height: 16),
                 _PhaseButtonGrid(controller: _controller),
                 if (reminderVisible) ...[
@@ -602,6 +617,132 @@ class _ScoutingCard extends StatelessWidget {
         ),
       ),
     );
+  }
+}
+
+/// Compact one-line summary of [ScoutStatus], shown under the Scouting
+/// card for the whole recording -- e.g. `HCP1 · 1A40–1A4F · 284/min · NRC
+/// 31 · q 24`, or, once a batch has been pending more than 10 seconds,
+/// `waiting 16 for 12 s` in amber. Tapping opens the full event log.
+class _ScoutStatusLine extends StatelessWidget {
+  const _ScoutStatusLine({required this.status, required this.onTap});
+
+  final ScoutStatus status;
+  final VoidCallback onTap;
+
+  static const Duration _pendingWarningThreshold = Duration(seconds: 10);
+
+  @override
+  Widget build(BuildContext context) {
+    final waitingFor = status.waitingFor;
+    final pendingLong =
+        waitingFor != null && waitingFor > _pendingWarningThreshold;
+    final text = pendingLong
+        ? 'waiting ${status.waitingCount} for ${waitingFor.inSeconds} s'
+        : _summaryText(status);
+    final style = Theme.of(context).textTheme.bodySmall?.copyWith(
+      fontFamily: 'monospace',
+      color: pendingLong ? Colors.amber.shade800 : null,
+    );
+    return InkWell(
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
+        child: Text(text, style: style),
+      ),
+    );
+  }
+
+  static String _summaryText(ScoutStatus status) {
+    final parts = <String>[
+      status.currentEcuName ?? status.currentEcuId ?? '—',
+      if (status.currentDidRangeLabel != null) status.currentDidRangeLabel!,
+      '${status.readsPerMinute}/min',
+      if (status.lastResultSummary != null) status.lastResultSummary!,
+      'q ${status.queueDepth}',
+    ];
+    return parts.join(' · ');
+  }
+}
+
+/// Bottom sheet listing [DiscoveryEngine.eventLog], newest first, in local
+/// time -- opened by tapping [_ScoutStatusLine].
+class _ScoutEventLogSheet extends StatelessWidget {
+  const _ScoutEventLogSheet({required this.events});
+
+  final List<ScoutEvent> events;
+
+  @override
+  Widget build(BuildContext context) {
+    return DraggableScrollableSheet(
+      initialChildSize: 0.6,
+      minChildSize: 0.3,
+      maxChildSize: 0.9,
+      expand: false,
+      builder: (context, scrollController) => SafeArea(
+        child: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.all(16),
+              child: Text(
+                'Scouting events',
+                style: Theme.of(context).textTheme.titleLarge,
+              ),
+            ),
+            const Divider(height: 1),
+            Expanded(
+              child: events.isEmpty
+                  ? const Center(child: Text('No events yet'))
+                  : ListView.builder(
+                      controller: scrollController,
+                      itemCount: events.length,
+                      itemBuilder: (context, index) =>
+                          _ScoutEventRow(event: events[index]),
+                    ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ScoutEventRow extends StatelessWidget {
+  const _ScoutEventRow({required this.event});
+
+  final ScoutEvent event;
+
+  @override
+  Widget build(BuildContext context) {
+    final local = event.at.toLocal();
+    String two(int value) => value.toString().padLeft(2, '0');
+    final time = '${two(local.hour)}:${two(local.minute)}:${two(local.second)}';
+    return ListTile(
+      dense: true,
+      title: Text(
+        _label(event),
+        style: const TextStyle(fontFamily: 'monospace'),
+      ),
+      trailing: Text(time, style: Theme.of(context).textTheme.bodySmall),
+    );
+  }
+
+  static String _label(ScoutEvent event) {
+    final kind = switch (event.kind) {
+      ScoutEventKind.batchSubmitted => 'batch submitted',
+      ScoutEventKind.hit => 'hit',
+      ScoutEventKind.conditional => 'conditional',
+      ScoutEventKind.asleep => 'asleep',
+      ScoutEventKind.batchTimedOut => 'batch timed out',
+      ScoutEventKind.enqueueRejected => 'enqueue rejected',
+      ScoutEventKind.inventoryStep => 'inventory step',
+    };
+    final parts = [
+      kind,
+      if (event.ecuId != null) event.ecuId!,
+      if (event.detail != null) event.detail!,
+    ];
+    return parts.join(' ');
   }
 }
 
