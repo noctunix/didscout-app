@@ -209,6 +209,23 @@ void main() {
       expect(find.text('Scouting'), findsOneWidget);
     });
 
+    testWidgets('shows a reads/min KPI next to progress and hits', (
+      tester,
+    ) async {
+      final controller = _fakeController();
+      await pumpPage(tester, controller: controller);
+
+      await _startRecording(tester, controller);
+
+      expect(find.text('reads/min'), findsOneWidget);
+      // Nothing has been read yet right after starting -- the KPI still
+      // shows a number, just zero.
+      expect(
+        find.text('${controller.discoveryUiState!.readsPerMinute}'),
+        findsOneWidget,
+      );
+    });
+
     testWidgets('share profile draft button is tappable with nothing '
         'discovered yet (writeProfileDraft returns null, no share sheet '
         'opens)', (tester) async {

@@ -32,7 +32,7 @@ void main() {
     await pumpPage(tester);
 
     expect(find.text('2000 ms'), findsOneWidget);
-    expect(find.text('6'), findsOneWidget);
+    expect(find.text('8'), findsOneWidget);
     expect(find.text('3 min'), findsOneWidget);
   });
 

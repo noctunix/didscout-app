@@ -107,9 +107,11 @@ class _RecordingPageState extends State<RecordingPage> {
   }
 
   Future<void> _openSettings() async {
-    await Navigator.of(
-      context,
-    ).push<void>(MaterialPageRoute(builder: (context) => SettingsPage()));
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute(
+        builder: (context) => SettingsPage(recordingController: _controller),
+      ),
+    );
   }
 
   Future<void> _openRecordings() async {
@@ -600,13 +602,27 @@ class _ScoutingCard extends StatelessWidget {
               ],
             ),
             const SizedBox(height: 8),
-            Text(
-              '${state.ecuCount} known ECUs — '
-              '${state.progressPercent.toStringAsFixed(0)}% scanned',
-            ),
-            Text(
-              '${state.totalHits} DIDs found total, '
-              '${state.sessionHits} this session',
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.center,
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        '${state.ecuCount} known ECUs — '
+                        '${state.progressPercent.toStringAsFixed(0)}% scanned',
+                      ),
+                      Text(
+                        '${state.totalHits} DIDs found total, '
+                        '${state.sessionHits} this session',
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 12),
+                _ReadsPerMinuteKpi(value: state.readsPerMinute),
+              ],
             ),
             const SizedBox(height: 4),
             Text(
@@ -616,6 +632,25 @@ class _ScoutingCard extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+}
+
+/// The Scouting card's prominent reads/min KPI: a large number over the
+/// "reads/min" label, next to the progress/hits summary.
+class _ReadsPerMinuteKpi extends StatelessWidget {
+  const _ReadsPerMinuteKpi({required this.value});
+
+  final int value;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text('$value', style: Theme.of(context).textTheme.headlineMedium),
+        Text('reads/min', style: Theme.of(context).textTheme.bodySmall),
+      ],
     );
   }
 }
