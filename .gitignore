@@ -57,3 +57,7 @@ app.*.map.json
 # Release signing (see keystore.properties.example).
 keystore.properties
 *.jks
+
+# Real recordings shared from the phone; never committed.
+logs/
+*.jsonl
