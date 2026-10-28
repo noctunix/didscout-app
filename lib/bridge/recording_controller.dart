@@ -17,6 +17,7 @@ import '../discovery/discovery_state_store.dart';
 import '../discovery/discovery_ui_state.dart';
 import '../discovery/probe.dart' show signalIdFor;
 import '../discovery/profile_export.dart';
+import '../discovery/scout_status.dart';
 import '../session/charge_reminder.dart';
 import '../session/session_markers.dart';
 import '../settings/app_settings.dart';
@@ -167,6 +168,14 @@ class RecordingController extends ChangeNotifier {
   /// discovery isn't currently running (not recording, or "scout while
   /// recording" is off).
   DiscoveryUiState? get discoveryUiState => _discoveryUiState;
+
+  /// Live scouting activity for the recording page's compact status line --
+  /// null under the same conditions as [discoveryUiState].
+  ScoutStatus? get scoutStatus => _discoveryEngine?.scoutStatus(_now());
+
+  /// The discovery engine's own scouting event log, newest first -- empty
+  /// whenever discovery isn't currently running.
+  List<ScoutEvent> get scoutEventLog => _discoveryEngine?.eventLog ?? const [];
 
   /// The discovery executor currently serving a recording, if any -- tests
   /// use this to simulate [ObdEventsApi.onOneShotResult] via
@@ -668,12 +677,10 @@ class RecordingController extends ChangeNotifier {
     final allowedToRun = stationary || _settings.scoutWhileDriving;
     if (allowedToRun) {
       final before = jsonEncode(discoveryState.toJson());
-      try {
-        await engine.pump(stationary: stationary, now: now);
-      } on BridgeReadExecutorException {
-        // The one-shot queue was full or the recording just ended under
-        // us -- skip this tick, retry on the next one.
-      }
+      // A rejected enqueue (queue full, or no active recording) is handled
+      // inside `engine.pump` itself -- backed off and retried, or the
+      // engine suspends itself -- so this never throws.
+      await engine.pump(stationary: stationary, now: now);
       if (jsonEncode(discoveryState.toJson()) != before) {
         await _saveDiscoveryState(discoveryState);
       }
