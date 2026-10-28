@@ -168,6 +168,11 @@ class DiscoveryEngine {
   final Map<String, List<int>> _orderCache = {};
   late final StreamSubscription<ProbeResult> _subscription;
 
+  /// Index into `state.ecus.keys` [pump] starts its next round from -- see
+  /// [pump]'s doc comment on why this rotates instead of always starting
+  /// at the first key.
+  int _roundRobinCursor = 0;
+
   /// Once true (a batch was rejected with
   /// [SubmitRejectionReason.noActiveRecording]), [pump] never submits
   /// anything again for the rest of this engine's lifetime -- the caller
@@ -808,6 +813,13 @@ class DiscoveryEngine {
   /// over time instead of flooding it. A no-op once [suspended] -- a
   /// batch was rejected with [SubmitRejectionReason.noActiveRecording],
   /// which only a fresh engine for the next recording can recover from.
+  ///
+  /// Each round starts scanning known ECUs from just after wherever the
+  /// previous round left off ([_roundRobinCursor]) rather than always from
+  /// the first known ECU: an ECU with a long scan order always has more
+  /// work left than one near the end of its own, so starting from the
+  /// front every time would let the earliest few ECUs monopolize every
+  /// round once they fill it to [maxQueueDepth], starving the rest.
   Future<void> pump({required bool stationary, required DateTime now}) async {
     if (_suspended) {
       return;
@@ -823,8 +835,16 @@ class DiscoveryEngine {
     if (executor.queueDepth >= minQueueDepth) {
       return;
     }
+    final keys = state.ecus.keys.toList();
+    if (keys.isEmpty) {
+      return;
+    }
     final round = <String>[];
-    for (final ecuId in state.ecus.keys) {
+    var lastIndexConsidered = _roundRobinCursor % keys.length;
+    for (var step = 0; step < keys.length; step++) {
+      final index = (_roundRobinCursor + step) % keys.length;
+      final ecuId = keys[index];
+      lastIndexConsidered = index;
       if (!stationary && movingDiscoveryBlocked(state.ecus[ecuId]!.f197Name)) {
         continue;
       }
@@ -836,6 +856,7 @@ class DiscoveryEngine {
         break;
       }
     }
+    _roundRobinCursor = (lastIndexConsidered + 1) % keys.length;
     if (round.isEmpty) {
       return;
     }

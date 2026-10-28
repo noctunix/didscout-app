@@ -553,6 +553,51 @@ void main() {
         engine.dispose();
       },
     );
+
+    test('pump rotates which known ECUs it offers a batch to, round to round, '
+        'instead of only ever picking the first few', () async {
+      final executor = FakeExecutor();
+      final state = DiscoveryState(inventoryStagesDone: {'ecus11', 'ecus29'});
+      final ids = [for (var i = 0; i < 10; i++) 'ecu$i'];
+      for (var i = 0; i < ids.length; i++) {
+        state.ecus[ids[i]] = EcuInfo(
+          requestHeader: 'H$i',
+          protocol: 6,
+          // Far more DIDs than one batch covers, so every one of these
+          // ECUs always has work left -- the only thing that can stop
+          // an earlier one from monopolizing every round is rotation.
+          discoverRanges: [(0x2A00, 0x2AFF)],
+        );
+      }
+      final engine = DiscoveryEngine(
+        executor: executor,
+        state: state,
+        onHit: (_, _, _) {},
+        // 2 ECUs' worth (16 DIDs each) per round.
+        maxQueueDepth: 32,
+      );
+      executor.respond = (step) => ProbeResult(
+        signalId: step.signalId,
+        status: const ProbeOk(),
+        at: now,
+      );
+
+      // 10 ECUs at 2 per round takes exactly 5 rounds to reach all of
+      // them once each.
+      for (var round = 0; round < 5; round++) {
+        await engine.pump(stationary: true, now: now);
+      }
+
+      for (final id in ids) {
+        expect(
+          state.ecus[id]!.scanPosition,
+          16,
+          reason: '$id must have been offered exactly one batch',
+        );
+      }
+
+      engine.dispose();
+    });
   });
 
   group('scanProgress', () {
