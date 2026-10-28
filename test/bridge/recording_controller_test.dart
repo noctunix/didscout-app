@@ -10,7 +10,9 @@ import 'package:obdbridge/src/obdbridge_api.g.dart' show NativeObdApi;
 import 'package:didscout_app/bridge/connection_status.dart';
 import 'package:didscout_app/bridge/didscout_policy.dart';
 import 'package:didscout_app/bridge/recording_controller.dart';
+import 'package:didscout_app/bridge/vag_ppe_plan_data.dart';
 import 'package:didscout_app/session/session_markers.dart';
+import 'package:didscout_app/settings/app_settings.dart';
 import 'package:permission_handler/permission_handler.dart' as ph;
 
 /// Records every call made through it instead of ever reaching a real
@@ -374,122 +376,217 @@ void main() {
       await Future<void>.delayed(const Duration(milliseconds: 20));
 
       expect(controller.connectionStatus, isNotNull);
-      expect(controller.connectionStatus!.state, RecordingConnectionState.connected);
+      expect(
+        controller.connectionStatus!.state,
+        RecordingConnectionState.connected,
+      );
 
       await controller.stop();
     });
 
-    test(
-      'a lost link while recording reports reconnecting, with an '
-      'increasing attempt count',
-      () async {
-        fakeNative.liveStateResult = _liveStateWithLink(
-          ObdLinkStateValueMessage.disconnected,
-        );
-        fakeNative.recordingStateResult = ObdRecordingStateMessage(
-          state: ObdRecordingStateValueMessage.recording,
-          lastFlushedSequence: 0,
-          bufferBytes: 0,
-          gapCount: 1,
-          resumedAfterRestart: false,
-        );
-        controller = RecordingController(
-          requestRuntimePermissions: (_) async {},
-          bridge: ObdBridge(DidscoutPolicy(), nativeApi: fakeNative),
-          recordingsDirectory: () async => tempDir,
-          sessionIdFactory: () => 'fixed-session-id',
-          tickInterval: const Duration(milliseconds: 1),
-        );
+    test('a lost link while recording reports reconnecting, with an '
+        'increasing attempt count', () async {
+      fakeNative.liveStateResult = _liveStateWithLink(
+        ObdLinkStateValueMessage.disconnected,
+      );
+      fakeNative.recordingStateResult = ObdRecordingStateMessage(
+        state: ObdRecordingStateValueMessage.recording,
+        lastFlushedSequence: 0,
+        bufferBytes: 0,
+        gapCount: 1,
+        resumedAfterRestart: false,
+      );
+      controller = RecordingController(
+        requestRuntimePermissions: (_) async {},
+        bridge: ObdBridge(DidscoutPolicy(), nativeApi: fakeNative),
+        recordingsDirectory: () async => tempDir,
+        sessionIdFactory: () => 'fixed-session-id',
+        tickInterval: const Duration(milliseconds: 1),
+      );
 
-        await controller.start();
-        await Future<void>.delayed(const Duration(milliseconds: 30));
+      await controller.start();
+      await Future<void>.delayed(const Duration(milliseconds: 30));
 
-        final status = controller.connectionStatus!;
-        expect(status.state, RecordingConnectionState.reconnecting);
-        expect(status.reconnectingSince, isNotNull);
-        expect(status.reconnectAttempt, greaterThan(1));
+      final status = controller.connectionStatus!;
+      expect(status.state, RecordingConnectionState.reconnecting);
+      expect(status.reconnectingSince, isNotNull);
+      expect(status.reconnectAttempt, greaterThan(1));
 
-        await controller.stop();
-      },
-    );
+      await controller.stop();
+    });
   });
 
   group('recording ended by native', () {
-    test(
-      'switches out of recording immediately, with a banner, and keeps the '
-      'buffer shareable',
-      () async {
-        fakeNative.liveStateResult = _liveStateWithLink(
-          ObdLinkStateValueMessage.connected,
-        );
-        fakeNative.recordingStateResult = ObdRecordingStateMessage(
-          state: ObdRecordingStateValueMessage.interrupted,
-          lastFlushedSequence: 12,
-          bufferBytes: 1000,
-          gapCount: 3,
-          writeError: 'reconnect attempts exhausted',
-          resumedAfterRestart: false,
-        );
-        controller = RecordingController(
-          requestRuntimePermissions: (_) async {},
+    test('switches out of recording immediately, with a banner, and keeps the '
+        'buffer shareable', () async {
+      fakeNative.liveStateResult = _liveStateWithLink(
+        ObdLinkStateValueMessage.connected,
+      );
+      fakeNative.recordingStateResult = ObdRecordingStateMessage(
+        state: ObdRecordingStateValueMessage.interrupted,
+        lastFlushedSequence: 12,
+        bufferBytes: 1000,
+        gapCount: 3,
+        writeError: 'reconnect attempts exhausted',
+        resumedAfterRestart: false,
+      );
+      controller = RecordingController(
+        requestRuntimePermissions: (_) async {},
+        bridge: ObdBridge(DidscoutPolicy(), nativeApi: fakeNative),
+        recordingsDirectory: () async => tempDir,
+        sessionIdFactory: () => 'fixed-session-id',
+        tickInterval: const Duration(milliseconds: 1),
+      );
+
+      await controller.start();
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+
+      expect(controller.phase, RecordingPhase.finished);
+      expect(controller.canStart, isTrue);
+      expect(controller.canShare, isTrue);
+      expect(controller.nativeStopBanner, isNotNull);
+      expect(
+        controller.nativeStopBanner,
+        contains('reconnect attempts exhausted'),
+      );
+      expect(
+        controller.connectionStatus!.state,
+        RecordingConnectionState.stopped,
+      );
+    });
+
+    test('readings entered after native stopped the recording are flagged '
+        'recording_active: false', () async {
+      fakeNative.liveStateResult = _liveStateWithLink(
+        ObdLinkStateValueMessage.connected,
+      );
+      fakeNative.recordingStateResult = ObdRecordingStateMessage(
+        state: ObdRecordingStateValueMessage.interrupted,
+        lastFlushedSequence: 0,
+        bufferBytes: 0,
+        gapCount: 1,
+        writeError: 'reconnect attempts exhausted',
+        resumedAfterRestart: false,
+      );
+      controller = RecordingController(
+        requestRuntimePermissions: (_) async {},
+        bridge: ObdBridge(DidscoutPolicy(), nativeApi: fakeNative),
+        recordingsDirectory: () async => tempDir,
+        sessionIdFactory: () => 'fixed-session-id',
+        tickInterval: const Duration(milliseconds: 1),
+      );
+
+      await controller.start();
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      expect(controller.phase, RecordingPhase.finished);
+
+      controller.addNote('typed after the fact');
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+
+      final lines = await File(controller.markersFilePath!).readAsLines();
+      final noteLine = lines
+          .map(jsonDecode)
+          .whereType<Map<String, dynamic>>()
+          .firstWhere((m) => m['type'] == 'note');
+      expect(noteLine['recording_active'], isFalse);
+    });
+  });
+
+  group('settings applied at start', () {
+    const customSettings = AppSettings(
+      readTimeoutMs: 3000,
+      reconnectBackoffMinS: 5,
+      reconnectBackoffMaxS: 90,
+      neverGiveUpReconnecting: false,
+      reconnectAttempts: 7,
+      stopAfterNoVehicleDataMinutes: 10,
+      maxReadsPerSecond: 4,
+      surveyIntervalMinutes: 8,
+      chargeReminderIntervalMinutes: 2,
+      autoStartOnPower: false,
+      recordOnlyWhilePoweredOn: false,
+    );
+
+    RecordingController controllerWithSettings(AppSettings settings) =>
+        RecordingController(
+          requestRuntimePermissions: (permissions) async =>
+              requestedPermissions.add(permissions),
           bridge: ObdBridge(DidscoutPolicy(), nativeApi: fakeNative),
           recordingsDirectory: () async => tempDir,
           sessionIdFactory: () => 'fixed-session-id',
-          tickInterval: const Duration(milliseconds: 1),
+          loadSettings: () async => settings,
         );
 
-        await controller.start();
-        await Future<void>.delayed(const Duration(milliseconds: 20));
+    test('applies the loaded settings to the plan limits', () async {
+      controller = controllerWithSettings(customSettings);
 
-        expect(controller.phase, RecordingPhase.finished);
-        expect(controller.canStart, isTrue);
-        expect(controller.canShare, isTrue);
-        expect(controller.nativeStopBanner, isNotNull);
-        expect(
-          controller.nativeStopBanner,
-          contains('reconnect attempts exhausted'),
-        );
-        expect(controller.connectionStatus!.state, RecordingConnectionState.stopped);
-      },
+      await controller.start();
+
+      final limits = fakeNative.lastStartRecordingRequest!.plan.limits;
+      expect(limits.adapterStepDeadlineMs, 3000);
+      expect(limits.vehicleReadDeadlineMs, 3000);
+      expect(limits.reconnectBackoffMinMs, 5000);
+      expect(limits.reconnectBackoffMaxMs, 90000);
+      expect(limits.maxReconnectAttemptsPerGap, 7);
+      expect(limits.idleVehicleStopAfterMs, 10 * 60000);
+      expect(limits.maxReadsPerSecond, 4);
+    });
+
+    test('overrides only the DID steps generated at the survey interval, '
+        'leaving watch/once DIDs at their generated interval', () async {
+      controller = controllerWithSettings(customSettings);
+
+      await controller.start();
+
+      final steps = fakeNative.lastStartRecordingRequest!.plan.steps;
+      // gateway/F189 is generated at 600000ms (a "once" DID) and must stay
+      // untouched by the survey-interval setting.
+      final onceStep = steps.firstWhere((s) => s.signalId == 'module6_22f189');
+      expect(onceStep.intervalMs, 600000);
+      // gateway/2A04 is generated at the survey default (180000ms) and
+      // must take the configured 8-minute interval instead.
+      final surveyStep = steps.firstWhere(
+        (s) => s.signalId == 'module6_222a04',
+      );
+      expect(surveyStep.intervalMs, customSettings.surveyIntervalMs);
+      expect(surveyStep.intervalMs, 8 * 60000);
+    });
+
+    test('an unavailable settings store falls back to defaults instead of '
+        'failing the start', () async {
+      controller = RecordingController(
+        requestRuntimePermissions: (_) async {},
+        bridge: ObdBridge(DidscoutPolicy(), nativeApi: fakeNative),
+        recordingsDirectory: () async => tempDir,
+        sessionIdFactory: () => 'fixed-session-id',
+        loadSettings: () async => throw StateError('store unavailable'),
+      );
+
+      await controller.start();
+
+      expect(controller.phase, RecordingPhase.recording);
+      final limits = fakeNative.lastStartRecordingRequest!.plan.limits;
+      expect(limits.maxReconnectAttemptsPerGap, 100000);
+    });
+  });
+
+  test('buildPlanForTesting honors an explicit settings override', () {
+    final plan = RecordingController.buildPlanForTesting(
+      settings: const AppSettings.defaultValues().copyWith(
+        maxReadsPerSecond: 8,
+        surveyIntervalMinutes: 1,
+      ),
     );
 
-    test(
-      'readings entered after native stopped the recording are flagged '
-      'recording_active: false',
-      () async {
-        fakeNative.liveStateResult = _liveStateWithLink(
-          ObdLinkStateValueMessage.connected,
-        );
-        fakeNative.recordingStateResult = ObdRecordingStateMessage(
-          state: ObdRecordingStateValueMessage.interrupted,
-          lastFlushedSequence: 0,
-          bufferBytes: 0,
-          gapCount: 1,
-          writeError: 'reconnect attempts exhausted',
-          resumedAfterRestart: false,
-        );
-        controller = RecordingController(
-          requestRuntimePermissions: (_) async {},
-          bridge: ObdBridge(DidscoutPolicy(), nativeApi: fakeNative),
-          recordingsDirectory: () async => tempDir,
-          sessionIdFactory: () => 'fixed-session-id',
-          tickInterval: const Duration(milliseconds: 1),
-        );
-
-        await controller.start();
-        await Future<void>.delayed(const Duration(milliseconds: 20));
-        expect(controller.phase, RecordingPhase.finished);
-
-        controller.addNote('typed after the fact');
-        await Future<void>.delayed(const Duration(milliseconds: 20));
-
-        final lines = await File(controller.markersFilePath!).readAsLines();
-        final noteLine =
-            lines.map(jsonDecode).whereType<Map<String, dynamic>>().firstWhere(
-              (m) => m['type'] == 'note',
-            );
-        expect(noteLine['recording_active'], isFalse);
-      },
+    expect(plan.limits.maxReadsPerSecond, 8);
+    final surveyStep = plan.steps.firstWhere(
+      (s) => s.signalId == 'module6_222a04',
     );
+    expect(surveyStep.intervalMs, 60000);
+    // Sanity check the fixture DID used above is really generated at the
+    // survey default, matching vag_ppe_plan_data.dart.
+    final gateway = vagPpeModules.firstWhere((m) => m.id == 'gateway');
+    final spec = gateway.dids.firstWhere((d) => d.did == '2A04');
+    expect(spec.intervalMs, 180000);
   });
 }

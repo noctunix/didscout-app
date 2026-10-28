@@ -120,8 +120,7 @@ class AppSettings {
       reconnectBackoffMaxS:
           json['reconnectBackoffMaxS'] as int? ?? d.reconnectBackoffMaxS,
       neverGiveUpReconnecting:
-          json['neverGiveUpReconnecting'] as bool? ??
-          d.neverGiveUpReconnecting,
+          json['neverGiveUpReconnecting'] as bool? ?? d.neverGiveUpReconnecting,
       reconnectAttempts:
           json['reconnectAttempts'] as int? ?? d.reconnectAttempts,
       stopAfterNoVehicleDataMinutes:

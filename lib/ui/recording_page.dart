@@ -345,7 +345,9 @@ class _StatusCard extends StatelessWidget {
               Text(
                 describeConnectionStatus(connectionStatus),
                 style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  color: connectionStatus.state == RecordingConnectionState.connected
+                  color:
+                      connectionStatus.state ==
+                          RecordingConnectionState.connected
                       ? null
                       : Theme.of(context).colorScheme.error,
                 ),

@@ -24,7 +24,7 @@ class PowerMonitor {
     BatteryState.charging ||
     BatteryState.full ||
     BatteryState.connectedNotCharging => PowerConnection.connected,
-    BatteryState.discharging || BatteryState.unknown =>
-      PowerConnection.disconnected,
+    BatteryState.discharging ||
+    BatteryState.unknown => PowerConnection.disconnected,
   };
 }
