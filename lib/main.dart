@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import 'power/power_monitor.dart';
 import 'ui/recording_page.dart';
 import 'ui/theme.dart';
 
@@ -17,7 +18,7 @@ class DidscoutApp extends StatelessWidget {
       theme: didscoutLightTheme(),
       darkTheme: didscoutDarkTheme(),
       themeMode: ThemeMode.system,
-      home: RecordingPage(),
+      home: RecordingPage(powerMonitor: PowerMonitor()),
     );
   }
 }

@@ -7,8 +7,11 @@ import 'package:share_plus/share_plus.dart';
 import '../bridge/connection_status.dart';
 import '../bridge/recording_controller.dart';
 import '../capture/readings.dart';
+import '../power/power_monitor.dart';
+import '../power/power_recording_coordinator.dart';
 import '../session/session_markers.dart';
 import 'recordings_page.dart';
+import 'settings_page.dart';
 
 /// The default [RecordingPage.onShare]: hands [paths] to the platform share
 /// sheet as files.
@@ -40,6 +43,7 @@ class RecordingPage extends StatefulWidget {
     RecordingController? controller,
     this.onShare,
     this.onReminderVibration,
+    this.powerMonitor,
   }) : controller = controller ?? RecordingController();
 
   final RecordingController controller;
@@ -52,6 +56,13 @@ class RecordingPage extends StatefulWidget {
   /// tests don't have to go through the real haptics channel.
   final Future<void> Function()? onReminderVibration;
 
+  /// Wires a [PowerRecordingCoordinator] for the "start/stop with power"
+  /// settings while this page is alive; left null (the default, and what
+  /// every test uses) skips that entirely, so plain widget tests never touch
+  /// the real `battery_plus` platform channel. The production app's entry
+  /// point passes a real [PowerMonitor] to opt in.
+  final PowerMonitor? powerMonitor;
+
   @override
   State<RecordingPage> createState() => _RecordingPageState();
 }
@@ -60,9 +71,23 @@ class _RecordingPageState extends State<RecordingPage> {
   RecordingController get _controller => widget.controller;
 
   bool _lastReminderVisible = false;
+  PowerRecordingCoordinator? _powerCoordinator;
+
+  @override
+  void initState() {
+    super.initState();
+    final powerMonitor = widget.powerMonitor;
+    if (powerMonitor != null) {
+      _powerCoordinator = PowerRecordingCoordinator(
+        controller: _controller,
+        powerMonitor: powerMonitor,
+      );
+    }
+  }
 
   @override
   void dispose() {
+    _powerCoordinator?.dispose();
     _controller.dispose();
     super.dispose();
   }
@@ -70,6 +95,12 @@ class _RecordingPageState extends State<RecordingPage> {
   Future<void> _share() async {
     final share = widget.onShare ?? _shareFiles;
     await share(_controller.shareableFiles);
+  }
+
+  Future<void> _openSettings() async {
+    await Navigator.of(
+      context,
+    ).push<void>(MaterialPageRoute(builder: (context) => SettingsPage()));
   }
 
   Future<void> _openRecordings() async {
@@ -141,6 +172,11 @@ class _RecordingPageState extends State<RecordingPage> {
       appBar: AppBar(
         title: const Text('didscout'),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.settings),
+            tooltip: 'Settings',
+            onPressed: _openSettings,
+          ),
           IconButton(
             icon: const Icon(Icons.history),
             tooltip: 'Recordings',
