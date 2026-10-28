@@ -7,6 +7,7 @@ import 'package:share_plus/share_plus.dart';
 import '../bridge/connection_status.dart';
 import '../bridge/recording_controller.dart';
 import '../capture/readings.dart';
+import '../discovery/discovery_ui_state.dart';
 import '../power/power_monitor.dart';
 import '../power/power_recording_coordinator.dart';
 import '../session/session_markers.dart';
@@ -97,6 +98,13 @@ class _RecordingPageState extends State<RecordingPage> {
     await share(_controller.shareableFiles);
   }
 
+  Future<void> _shareProfileDraft() async {
+    final path = await _controller.writeProfileDraft();
+    if (path == null) return;
+    final share = widget.onShare ?? _shareFiles;
+    await share([path]);
+  }
+
   Future<void> _openSettings() async {
     await Navigator.of(
       context,
@@ -110,6 +118,7 @@ class _RecordingPageState extends State<RecordingPage> {
           recordingsDirectory: _controller.resolveRecordingsDirectory,
           currentBufferPath: _controller.currentRecordingPath,
           onShare: widget.onShare,
+          exportProfileDraft: _controller.writeProfileDraft,
         ),
       ),
     );
@@ -207,6 +216,10 @@ class _RecordingPageState extends State<RecordingPage> {
                     onStartNew: _controller.start,
                   ),
                 ],
+                if (_controller.discoveryUiState != null) ...[
+                  const SizedBox(height: 16),
+                  _ScoutingCard(state: _controller.discoveryUiState!),
+                ],
                 const SizedBox(height: 16),
                 _PhaseButtonGrid(controller: _controller),
                 if (reminderVisible) ...[
@@ -241,6 +254,15 @@ class _RecordingPageState extends State<RecordingPage> {
                       ),
                     ),
                   ],
+                ),
+                const SizedBox(height: 16),
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton.icon(
+                    onPressed: _shareProfileDraft,
+                    icon: const Icon(Icons.description_outlined),
+                    label: const Text('Share profile draft'),
+                  ),
                 ),
                 const SizedBox(height: 16),
                 Text('Markers', style: Theme.of(context).textTheme.titleMedium),
@@ -519,6 +541,62 @@ class _ChargeReminderBanner extends StatelessWidget {
               onPressed: onDismiss,
               icon: const Icon(Icons.close),
               tooltip: 'Dismiss',
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Human-readable label for [DiscoveryUiState.activity].
+String _discoveryActivityText(DiscoveryUiState state) =>
+    switch (state.activity) {
+      DiscoveryActivity.inventory => 'Looking for ECUs',
+      DiscoveryActivity.scanning => 'Scanning ${state.scanningEcuName}',
+      DiscoveryActivity.waitingMoving => 'Waiting: vehicle moving',
+      DiscoveryActivity.waitingAsleep => 'Waiting: ECU asleep',
+      DiscoveryActivity.idle => 'Idle',
+    };
+
+class _ScoutingCard extends StatelessWidget {
+  const _ScoutingCard({required this.state});
+
+  final DiscoveryUiState state;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Icon(Icons.radar),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Scouting',
+                    style: Theme.of(context).textTheme.titleMedium,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Text(
+              '${state.ecuCount} known ECUs — '
+              '${state.progressPercent.toStringAsFixed(0)}% scanned',
+            ),
+            Text(
+              '${state.totalHits} DIDs found total, '
+              '${state.sessionHits} this session',
+            ),
+            const SizedBox(height: 4),
+            Text(
+              _discoveryActivityText(state),
+              style: Theme.of(context).textTheme.bodySmall,
             ),
           ],
         ),

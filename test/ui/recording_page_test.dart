@@ -195,6 +195,34 @@ void main() {
     },
   );
 
+  group('scouting card', () {
+    testWidgets('hidden while idle, shown once recording starts', (
+      tester,
+    ) async {
+      final controller = _fakeController();
+      await pumpPage(tester, controller: controller);
+
+      expect(find.text('Scouting'), findsNothing);
+
+      await _startRecording(tester, controller);
+
+      expect(find.text('Scouting'), findsOneWidget);
+    });
+
+    testWidgets('share profile draft button is tappable with nothing '
+        'discovered yet (writeProfileDraft returns null, no share sheet '
+        'opens)', (tester) async {
+      final controller = _fakeController();
+      await pumpPage(tester, controller: controller);
+      await _startRecording(tester, controller);
+
+      await tester.tap(find.text('Share profile draft'));
+      await tester.pumpAndSettle();
+
+      expect(tester.takeException(), isNull);
+    });
+  });
+
   testWidgets('tapping a phase button adds and highlights that phase', (
     tester,
   ) async {

@@ -26,6 +26,7 @@ class RecordingsPage extends StatefulWidget {
     this.onShare,
     this.listRecordings = recording_summary.listRecordings,
     this.deleteRecording = recording_summary.deleteRecording,
+    this.exportProfileDraft,
   });
 
   final Future<Directory> Function() recordingsDirectory;
@@ -35,6 +36,11 @@ class RecordingsPage extends StatefulWidget {
   final String? currentBufferPath;
 
   final Future<void> Function(List<String> paths)? onShare;
+
+  /// Writes whatever discovery has found so far to a profile-draft file
+  /// and returns its path (or null if there's nothing to export yet); null
+  /// hides the action entirely. See `RecordingController.writeProfileDraft`.
+  final Future<String?> Function()? exportProfileDraft;
 
   /// Overridable so tests don't have to touch the real filesystem.
   final Future<List<RecordingSummary>> Function(Directory directory)
@@ -61,9 +67,7 @@ class _RecordingsPageState extends State<RecordingsPage> {
     if (!mounted) return;
     setState(() {
       _recordings = recordings;
-      _selected.removeWhere(
-        (id) => !recordings.any((r) => r.sessionId == id),
-      );
+      _selected.removeWhere((id) => !recordings.any((r) => r.sessionId == id));
     });
   }
 
@@ -90,6 +94,15 @@ class _RecordingsPageState extends State<RecordingsPage> {
       ],
     ];
     await share(paths);
+  }
+
+  Future<void> _shareProfileDraft() async {
+    final export = widget.exportProfileDraft;
+    if (export == null) return;
+    final path = await export();
+    if (path == null) return;
+    final share = widget.onShare ?? _shareFiles;
+    await share([path]);
   }
 
   Future<bool> _confirmDelete(int count) async {
@@ -155,6 +168,14 @@ class _RecordingsPageState extends State<RecordingsPage> {
                   onPressed: selectedSummaries.any(_isCurrent)
                       ? null
                       : () => _deleteSelected(selectedSummaries),
+                ),
+              ]
+            : widget.exportProfileDraft != null
+            ? [
+                IconButton(
+                  icon: const Icon(Icons.description_outlined),
+                  tooltip: 'Share profile draft',
+                  onPressed: _shareProfileDraft,
                 ),
               ]
             : null,

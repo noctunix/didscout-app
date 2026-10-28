@@ -27,6 +27,7 @@ void main() {
     String? currentBufferPath,
     List<List<String>>? sharedCalls,
     List<RecordingSummary>? deletedCalls,
+    Future<String?> Function()? exportProfileDraft,
   }) async {
     await tester.pumpWidget(
       MaterialApp(
@@ -41,6 +42,7 @@ void main() {
           onShare: (paths) async {
             sharedCalls?.add(paths);
           },
+          exportProfileDraft: exportProfileDraft,
         ),
       ),
     );
@@ -115,11 +117,7 @@ void main() {
     tester,
   ) async {
     final deleted = <RecordingSummary>[];
-    await pumpPage(
-      tester,
-      recordings: [_summary('s1')],
-      deletedCalls: deleted,
-    );
+    await pumpPage(tester, recordings: [_summary('s1')], deletedCalls: deleted);
 
     await tester.tap(find.byIcon(Icons.delete_outline));
     await tester.pumpAndSettle();
@@ -161,5 +159,32 @@ void main() {
 
     expect(deleted, hasLength(2));
     expect(find.text('No recordings yet.'), findsOneWidget);
+  });
+
+  group('profile draft', () {
+    testWidgets('no export action without exportProfileDraft', (tester) async {
+      await pumpPage(tester, recordings: []);
+
+      expect(find.byTooltip('Share profile draft'), findsNothing);
+    });
+
+    testWidgets('tapping the export action shares the written file', (
+      tester,
+    ) async {
+      final shared = <List<String>>[];
+      await pumpPage(
+        tester,
+        recordings: [],
+        sharedCalls: shared,
+        exportProfileDraft: () async => '/tmp/profile-draft.toml',
+      );
+
+      await tester.tap(find.byTooltip('Share profile draft'));
+      await tester.pumpAndSettle();
+
+      expect(shared, [
+        ['/tmp/profile-draft.toml'],
+      ]);
+    });
   });
 }
