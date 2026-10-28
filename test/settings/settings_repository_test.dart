@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -31,12 +33,29 @@ void main() {
       recordOnlyWhilePoweredOn: false,
       scoutWhileRecording: false,
       scoutWhileDriving: false,
+      recordingMode: RecordingMode.scoutAndRecordKnown,
+      keepSamplingFoundDids: false,
     );
 
     await repository.save(settings);
     final loaded = await repository.load();
 
     expect(loaded, settings);
+  });
+
+  test('loading a blob saved before recording mode existed migrates to '
+      'defaults for the new keys', () async {
+    final legacy = const AppSettings.defaultValues().toJson()
+      ..remove('recordingMode')
+      ..remove('keepSamplingFoundDids');
+    SharedPreferences.setMockInitialValues({
+      'didscout_app_settings_v1': jsonEncode(legacy),
+    });
+
+    final settings = await repository.load();
+
+    expect(settings.recordingMode, RecordingMode.scoutOnly);
+    expect(settings.keepSamplingFoundDids, isTrue);
   });
 
   test(

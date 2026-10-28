@@ -20,6 +20,8 @@ void main() {
       expect(defaults.recordOnlyWhilePoweredOn, isFalse);
       expect(defaults.scoutWhileRecording, isTrue);
       expect(defaults.scoutWhileDriving, isTrue);
+      expect(defaults.recordingMode, RecordingMode.scoutOnly);
+      expect(defaults.keepSamplingFoundDids, isTrue);
     });
 
     test('derived values convert to the units ObdLimitsMessage expects', () {
@@ -69,6 +71,8 @@ void main() {
       recordOnlyWhilePoweredOn: true,
       scoutWhileRecording: false,
       scoutWhileDriving: false,
+      recordingMode: RecordingMode.scoutAndRecordKnown,
+      keepSamplingFoundDids: false,
     );
 
     final roundTripped = AppSettings.fromJson(settings.toJson());
@@ -87,5 +91,18 @@ void main() {
     expect(settings.autoStartOnPower, isFalse);
     expect(settings.scoutWhileRecording, isTrue);
     expect(settings.scoutWhileDriving, isTrue);
+    expect(settings.recordingMode, RecordingMode.scoutOnly);
+    expect(settings.keepSamplingFoundDids, isTrue);
   });
+
+  test(
+    'fromJson falls back to defaults for an unknown recordingMode value',
+    () {
+      final settings = AppSettings.fromJson(const {
+        'recordingMode': 'somethingFuture',
+      });
+
+      expect(settings.recordingMode, RecordingMode.scoutOnly);
+    },
+  );
 }

@@ -6,6 +6,9 @@ import 'package:didscout_app/settings/app_settings.dart';
 import 'package:didscout_app/settings/settings_repository.dart';
 import 'package:didscout_app/ui/settings_page.dart';
 
+const _scoutAndRecordKnownLabel = 'Scout and record known signals';
+const _keepSamplingLabel = 'Keep sampling found DIDs';
+
 void main() {
   setUp(() {
     SharedPreferences.setMockInitialValues({});
@@ -83,6 +86,59 @@ void main() {
 
     final saved = await const SettingsRepository().load();
     expect(saved.scoutWhileRecording, isFalse);
+  });
+
+  testWidgets('shows the recording mode and found-DID switch from loaded '
+      'settings', (tester) async {
+    await pumpPage(tester);
+
+    expect(
+      tester
+          .widget<RadioGroup<RecordingMode>>(
+            find.byType(RadioGroup<RecordingMode>),
+          )
+          .groupValue,
+      RecordingMode.scoutOnly,
+    );
+    expect(
+      tester
+          .widget<SwitchListTile>(
+            find.widgetWithText(SwitchListTile, _keepSamplingLabel),
+          )
+          .value,
+      isTrue,
+    );
+  });
+
+  testWidgets('selecting a recording mode and saving persists it', (
+    tester,
+  ) async {
+    await pumpPage(tester);
+
+    await tester.tap(
+      find.widgetWithText(
+        RadioListTile<RecordingMode>,
+        _scoutAndRecordKnownLabel,
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('Save'));
+    await tester.pumpAndSettle();
+
+    final saved = await const SettingsRepository().load();
+    expect(saved.recordingMode, RecordingMode.scoutAndRecordKnown);
+  });
+
+  testWidgets('toggling keep sampling found DIDs persists it', (tester) async {
+    await pumpPage(tester);
+
+    await tester.tap(find.widgetWithText(SwitchListTile, _keepSamplingLabel));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('Save'));
+    await tester.pumpAndSettle();
+
+    final saved = await const SettingsRepository().load();
+    expect(saved.keepSamplingFoundDids, isFalse);
   });
 
   testWidgets('reset to defaults restores a changed value', (tester) async {

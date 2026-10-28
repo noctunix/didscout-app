@@ -1,3 +1,16 @@
+/// What a recurring recording plan reads beyond the speed signal.
+enum RecordingMode {
+  /// Only the speed signal (needed for motion-aware scouting) plus,
+  /// optionally, discovered DIDs ([AppSettings.keepSamplingFoundDids]). The
+  /// generated vag-ppe DIDs and the fixed energy/range/odometer/
+  /// outside-temperature/12V/accelerator steps are omitted.
+  scoutOnly,
+
+  /// Today's full plan: the fixed base signals plus every generated
+  /// vag-ppe DID, on top of whatever [scoutOnly] already reads.
+  scoutAndRecordKnown,
+}
+
 /// All didscout settings, persisted as one blob by [SettingsRepository] and
 /// read fresh by [RecordingController.start] every time a recording starts.
 /// Immutable — call sites replace their copy wholesale via [copyWith] rather
@@ -17,6 +30,8 @@ class AppSettings {
     required this.recordOnlyWhilePoweredOn,
     required this.scoutWhileRecording,
     required this.scoutWhileDriving,
+    required this.recordingMode,
+    required this.keepSamplingFoundDids,
   });
 
   const AppSettings.defaultValues()
@@ -32,7 +47,9 @@ class AppSettings {
       autoStartOnPower = false,
       recordOnlyWhilePoweredOn = false,
       scoutWhileRecording = true,
-      scoutWhileDriving = true;
+      scoutWhileDriving = true,
+      recordingMode = RecordingMode.scoutOnly,
+      keepSamplingFoundDids = true;
 
   /// Timeout per request, applied to both
   /// `ObdLimitsMessage.adapterStepDeadlineMs` and `.vehicleReadDeadlineMs`.
@@ -65,6 +82,15 @@ class AppSettings {
   /// of this setting.
   final bool scoutWhileDriving;
 
+  /// What the recurring plan reads beyond the speed signal.
+  final RecordingMode recordingMode;
+
+  /// Whether DIDs discovery finds are kept in the recurring plan
+  /// afterwards -- finding a DID only proves it exists; sampling it over
+  /// time together with the owner's own readings is what reveals what it
+  /// means.
+  final bool keepSamplingFoundDids;
+
   /// The plugin's reconnect-attempt counter only ever counts up within a
   /// gap, never down, so "never give up" needs a budget that is effectively
   /// unlimited rather than a literal cap.
@@ -92,6 +118,8 @@ class AppSettings {
     bool? recordOnlyWhilePoweredOn,
     bool? scoutWhileRecording,
     bool? scoutWhileDriving,
+    RecordingMode? recordingMode,
+    bool? keepSamplingFoundDids,
   }) => AppSettings(
     readTimeoutMs: readTimeoutMs ?? this.readTimeoutMs,
     reconnectBackoffMinS: reconnectBackoffMinS ?? this.reconnectBackoffMinS,
@@ -110,6 +138,8 @@ class AppSettings {
         recordOnlyWhilePoweredOn ?? this.recordOnlyWhilePoweredOn,
     scoutWhileRecording: scoutWhileRecording ?? this.scoutWhileRecording,
     scoutWhileDriving: scoutWhileDriving ?? this.scoutWhileDriving,
+    recordingMode: recordingMode ?? this.recordingMode,
+    keepSamplingFoundDids: keepSamplingFoundDids ?? this.keepSamplingFoundDids,
   );
 
   Map<String, dynamic> toJson() => {
@@ -126,6 +156,8 @@ class AppSettings {
     'recordOnlyWhilePoweredOn': recordOnlyWhilePoweredOn,
     'scoutWhileRecording': scoutWhileRecording,
     'scoutWhileDriving': scoutWhileDriving,
+    'recordingMode': recordingMode.name,
+    'keepSamplingFoundDids': keepSamplingFoundDids,
   };
 
   /// Missing keys (an older version's blob, or a corrupt one a caller has
@@ -160,6 +192,12 @@ class AppSettings {
           json['scoutWhileRecording'] as bool? ?? d.scoutWhileRecording,
       scoutWhileDriving:
           json['scoutWhileDriving'] as bool? ?? d.scoutWhileDriving,
+      recordingMode: RecordingMode.values.firstWhere(
+        (mode) => mode.name == json['recordingMode'],
+        orElse: () => d.recordingMode,
+      ),
+      keepSamplingFoundDids:
+          json['keepSamplingFoundDids'] as bool? ?? d.keepSamplingFoundDids,
     );
   }
 
@@ -178,7 +216,9 @@ class AppSettings {
       other.autoStartOnPower == autoStartOnPower &&
       other.recordOnlyWhilePoweredOn == recordOnlyWhilePoweredOn &&
       other.scoutWhileRecording == scoutWhileRecording &&
-      other.scoutWhileDriving == scoutWhileDriving;
+      other.scoutWhileDriving == scoutWhileDriving &&
+      other.recordingMode == recordingMode &&
+      other.keepSamplingFoundDids == keepSamplingFoundDids;
 
   @override
   int get hashCode => Object.hash(
@@ -195,5 +235,7 @@ class AppSettings {
     recordOnlyWhilePoweredOn,
     scoutWhileRecording,
     scoutWhileDriving,
+    recordingMode,
+    keepSamplingFoundDids,
   );
 }

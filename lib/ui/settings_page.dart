@@ -196,6 +196,46 @@ class _SettingsPageState extends State<SettingsPage> {
                 ),
                 const Divider(),
                 const _SectionHeader('Scouting'),
+                RadioGroup<RecordingMode>(
+                  groupValue: settings.recordingMode,
+                  onChanged: (v) => _update(
+                    (s) => s.copyWith(recordingMode: v ?? s.recordingMode),
+                  ),
+                  child: const Column(
+                    children: [
+                      RadioListTile<RecordingMode>(
+                        title: Text('Scout only'),
+                        subtitle: Text(
+                          'The recurring plan reads only the speed signal '
+                          'plus whatever discovery finds -- no vag-ppe or '
+                          'fixed vehicle signals.',
+                        ),
+                        value: RecordingMode.scoutOnly,
+                      ),
+                      RadioListTile<RecordingMode>(
+                        title: Text('Scout and record known signals'),
+                        subtitle: Text(
+                          'The recurring plan also reads every known '
+                          'vag-ppe DID plus the fixed energy/range/'
+                          'odometer/outside-temperature/12V/accelerator '
+                          'signals.',
+                        ),
+                        value: RecordingMode.scoutAndRecordKnown,
+                      ),
+                    ],
+                  ),
+                ),
+                SwitchListTile(
+                  title: const Text('Keep sampling found DIDs'),
+                  subtitle: const Text(
+                    'Finding a DID only proves it exists; sampling it over '
+                    'time together with your readings reveals what it '
+                    'means.',
+                  ),
+                  value: settings.keepSamplingFoundDids,
+                  onChanged: (v) =>
+                      _update((s) => s.copyWith(keepSamplingFoundDids: v)),
+                ),
                 SwitchListTile(
                   title: const Text('Scout while recording'),
                   subtitle: const Text(
