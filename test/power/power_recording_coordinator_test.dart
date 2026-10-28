@@ -48,6 +48,21 @@ class _FakeNativeObdApi extends NativeObdApi {
   Future<void> stopRecording(String sessionId) async {}
 }
 
+/// Waits until [condition] holds (or fails after [timeout]) instead of a fixed
+/// sleep, which flakes when the suite runs under load.
+Future<void> waitFor(
+  bool Function() condition, {
+  Duration timeout = const Duration(seconds: 5),
+}) async {
+  final deadline = DateTime.now().add(timeout);
+  while (!condition()) {
+    if (DateTime.now().isAfter(deadline)) {
+      fail('condition not met within $timeout');
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+  }
+}
+
 void main() {
   // `RecordingController.start` wires `ObdEventsApi` (for discovery
   // results) through a real `BasicMessageChannel`, which needs a binding.
@@ -91,7 +106,7 @@ void main() {
             const AppSettings.defaultValues().copyWith(autoStartOnPower: true),
       );
 
-      await Future<void>.delayed(const Duration(milliseconds: 50));
+      await waitFor(() => controller.phase == RecordingPhase.recording);
 
       expect(controller.phase, RecordingPhase.recording);
       coordinator.dispose();
@@ -130,7 +145,7 @@ void main() {
       ),
     );
 
-    await Future<void>.delayed(const Duration(milliseconds: 50));
+    await waitFor(() => controller.phase == RecordingPhase.finished);
 
     expect(controller.phase, RecordingPhase.finished);
     expect(controller.nativeStopBanner, contains('power disconnected'));
@@ -150,7 +165,7 @@ void main() {
       loadSettings: () async => const AppSettings.defaultValues(),
     );
 
-    await Future<void>.delayed(const Duration(milliseconds: 50));
+    await waitFor(() => controller.phase == RecordingPhase.recording);
 
     expect(controller.phase, RecordingPhase.recording);
     coordinator.dispose();
