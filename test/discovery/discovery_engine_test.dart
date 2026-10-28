@@ -638,6 +638,62 @@ void main() {
       expect(progress.percent, lessThan(100));
       engine.dispose();
     });
+
+    test('percent is denominated against the priority ranges, not the full '
+        '64k DID space, so it reaches 100% once those are scanned', () {
+      final state = DiscoveryState(inventoryStagesDone: {'ecus11', 'ecus29'});
+      final ranges = [(0x2A00, 0x2A0F)];
+      final priorityLength = priorityDidOrder(ranges).length;
+      state.ecus['only'] = EcuInfo(
+        requestHeader: '7A1',
+        responseHeader: '7A9',
+        protocol: 6,
+        discoverRanges: ranges,
+        // Past the priority order's own length, but nowhere near the
+        // full order's -- a real recording would never scan this far
+        // within one session, which is exactly the bug this fixes.
+        scanPosition: priorityLength,
+      );
+      final engine = DiscoveryEngine(
+        executor: FakeExecutor(),
+        state: state,
+        onHit: (_, _, _) {},
+      );
+      // The vag-ppe seed ECUs the engine adds on construction all start
+      // at scanPosition 0, which would dilute the average below 100% --
+      // drop them so this test isolates 'only's own percentage.
+      state.ecus.removeWhere((key, _) => key != 'only');
+
+      final progress = engine.scanProgress();
+
+      expect(progress.percent, 100);
+      engine.dispose();
+    });
+
+    test('totalChecked sums scanPosition across every known ECU', () {
+      final state = DiscoveryState(inventoryStagesDone: {'ecus11', 'ecus29'});
+      state.ecus['a'] = EcuInfo(
+        requestHeader: '7A1',
+        protocol: 6,
+        discoverRanges: [(0x2A00, 0x2AFF)],
+        scanPosition: 30,
+      );
+      state.ecus['b'] = EcuInfo(
+        requestHeader: '7B1',
+        protocol: 6,
+        discoverRanges: [(0x2B00, 0x2BFF)],
+        scanPosition: 12,
+      );
+      final engine = DiscoveryEngine(
+        executor: FakeExecutor(),
+        state: state,
+        onHit: (_, _, _) {},
+      );
+
+      // vag-ppe seed ECUs all start at scanPosition 0, so they add nothing.
+      expect(engine.scanProgress().totalChecked, 42);
+      engine.dispose();
+    });
   });
 
   group('batch deadline and enqueue rejection', () {

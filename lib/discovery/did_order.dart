@@ -27,17 +27,15 @@ const List<(int, int)> discoveryExcludedRanges = [
 
 const (int, int) discoveryFullRange = (0x0000, 0xFFFF);
 
-/// The DID scan order for one ECU's discovery: [profileRanges] first, then
-/// the standardized [discoveryPriorityRanges], then the rest of the DID
-/// space ascending -- skipping [vinDids], [serialNumberDid], and
-/// [discoveryExcludedRanges], and never visiting the same DID twice even
-/// if it falls in more than one range.
-List<int> discoveryDidOrder(List<(int, int)> profileRanges) {
+/// Builds a DID order from [ranges] in order -- skipping [vinDids],
+/// [serialNumberDid], and [discoveryExcludedRanges], and never visiting the
+/// same DID twice even if it falls in more than one range.
+List<int> _didOrderFrom(Iterable<(int, int)> ranges) {
   final ordered = <int>[];
   final seen = <int>{};
 
-  void addRange(int start, int end) {
-    for (var did = start; did <= end; did++) {
+  for (final range in ranges) {
+    for (var did = range.$1; did <= range.$2; did++) {
       if (!seen.add(did)) {
         continue;
       }
@@ -46,23 +44,30 @@ List<int> discoveryDidOrder(List<(int, int)> profileRanges) {
         continue;
       }
       if (discoveryExcludedRanges.any(
-        (range) => did >= range.$1 && did <= range.$2,
+        (excluded) => did >= excluded.$1 && did <= excluded.$2,
       )) {
         continue;
       }
       ordered.add(did);
     }
   }
-
-  for (final range in profileRanges) {
-    addRange(range.$1, range.$2);
-  }
-  for (final range in discoveryPriorityRanges) {
-    addRange(range.$1, range.$2);
-  }
-  addRange(discoveryFullRange.$1, discoveryFullRange.$2);
   return ordered;
 }
+
+/// The DIDs most likely to answer for one ECU: [profileRanges] first, then
+/// the standardized [discoveryPriorityRanges] -- a prefix of
+/// [discoveryDidOrder], used to size scan progress against the DIDs worth
+/// chasing rather than the whole 64k DID space.
+List<int> priorityDidOrder(List<(int, int)> profileRanges) =>
+    _didOrderFrom([...profileRanges, ...discoveryPriorityRanges]);
+
+/// The DID scan order for one ECU's discovery: [priorityDidOrder], then the
+/// rest of the DID space ascending.
+List<int> discoveryDidOrder(List<(int, int)> profileRanges) => _didOrderFrom([
+  ...profileRanges,
+  ...discoveryPriorityRanges,
+  discoveryFullRange,
+]);
 
 /// Substrings (case-insensitive) of an F197 system name that block
 /// discovery on that ECU while the vehicle is moving, regardless of any

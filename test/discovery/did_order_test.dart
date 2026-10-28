@@ -59,6 +59,23 @@ void main() {
     });
   });
 
+  group('priorityDidOrder', () {
+    test('is a prefix of discoveryDidOrder, without the full-space tail', () {
+      final profileRanges = [(0x3000, 0x3002)];
+      final priority = priorityDidOrder(profileRanges);
+      final full = discoveryDidOrder(profileRanges);
+      expect(full.sublist(0, priority.length), priority);
+      expect(priority.length, lessThan(full.length));
+    });
+
+    test('excludes VIN DIDs and the serial number, same as the full order', () {
+      final priority = priorityDidOrder([]);
+      expect(priority.contains(0xF190), isFalse);
+      expect(priority.contains(0xF802), isFalse);
+      expect(priority.contains(0xF18C), isFalse);
+    });
+  });
+
   group('movingDiscoveryBlocked', () {
     test('an unknown name is not blocked', () {
       expect(movingDiscoveryBlocked(null), isFalse);

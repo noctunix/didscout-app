@@ -32,6 +32,7 @@ class DiscoveryUiState {
   const DiscoveryUiState({
     required this.ecuCount,
     required this.progressPercent,
+    required this.totalChecked,
     required this.totalHits,
     required this.sessionHits,
     required this.readsPerMinute,
@@ -42,8 +43,15 @@ class DiscoveryUiState {
   /// Number of ECUs known so far (seeded plus discovered).
   final int ecuCount;
 
-  /// Overall DID scan progress across every known ECU, 0-100.
+  /// Overall DID scan progress against every known ECU's priority DID
+  /// ranges, 0-100 (see `DiscoveryEngine.scanProgress`).
   final double progressPercent;
+
+  /// Total DIDs checked (any outcome) across every known ECU, regardless
+  /// of range -- shown alongside [progressPercent] since that percentage,
+  /// denominated against priority ranges only, caps at 100% long before
+  /// scanning is actually exhausted.
+  final int totalChecked;
 
   /// Total DIDs discovered across every known ECU, ever (persisted).
   final int totalHits;
@@ -89,6 +97,7 @@ DiscoveryUiState buildDiscoveryUiState({
     return DiscoveryUiState(
       ecuCount: progress.ecuCount,
       progressPercent: progress.percent,
+      totalChecked: progress.totalChecked,
       totalHits: totalHits,
       sessionHits: sessionHits,
       readsPerMinute: readsPerMinute,
@@ -105,6 +114,7 @@ DiscoveryUiState buildDiscoveryUiState({
     return DiscoveryUiState(
       ecuCount: progress.ecuCount,
       progressPercent: progress.percent,
+      totalChecked: progress.totalChecked,
       totalHits: totalHits,
       sessionHits: sessionHits,
       readsPerMinute: readsPerMinute,
@@ -121,6 +131,7 @@ DiscoveryUiState buildDiscoveryUiState({
     return DiscoveryUiState(
       ecuCount: progress.ecuCount,
       progressPercent: progress.percent,
+      totalChecked: progress.totalChecked,
       totalHits: totalHits,
       sessionHits: sessionHits,
       readsPerMinute: readsPerMinute,
@@ -148,6 +159,7 @@ DiscoveryUiState buildDiscoveryUiState({
   return DiscoveryUiState(
     ecuCount: progress.ecuCount,
     progressPercent: progress.percent,
+    totalChecked: progress.totalChecked,
     totalHits: totalHits,
     sessionHits: sessionHits,
     readsPerMinute: readsPerMinute,

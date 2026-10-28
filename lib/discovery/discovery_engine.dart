@@ -89,11 +89,8 @@ String hex4(int value) => value.toRadixString(16).toUpperCase().padLeft(4, '0');
 
 /// Reported once a DID scan confirms an ECU answers a given DID -- lets
 /// the caller add it to its own recurring reads.
-typedef DiscoveryHit = void Function(
-  String ecuId,
-  String did,
-  List<int> payload,
-);
+typedef DiscoveryHit =
+    void Function(String ecuId, String did, List<int> payload);
 
 /// Drives ECU inventory and DID discovery against [executor], persisting
 /// progress into [state]. Motion-gates discovery per [didscout's safety
@@ -166,6 +163,7 @@ class DiscoveryEngine {
 
   final Map<String, Completer<ProbeResult>> _pending = {};
   final Map<String, List<int>> _orderCache = {};
+  final Map<String, List<int>> _priorityOrderCache = {};
   late final StreamSubscription<ProbeResult> _subscription;
 
   /// Index into `state.ecus.keys` [pump] starts its next round from -- see
@@ -380,6 +378,9 @@ class DiscoveryEngine {
   List<int> _orderFor(String ecuId, List<(int, int)> ranges) =>
       _orderCache.putIfAbsent(ecuId, () => discoveryDidOrder(ranges));
 
+  List<int> _priorityOrderFor(String ecuId, List<(int, int)> ranges) =>
+      _priorityOrderCache.putIfAbsent(ecuId, () => priorityDidOrder(ranges));
+
   /// Sweeps the 11-bit manufacturer-ECU request range for any header not
   /// already known in [state], identifies each newly found ECU, and
   /// records the result. Safe to call repeatedly -- a header already
@@ -446,9 +447,9 @@ class DiscoveryEngine {
       for (final ecu in state.ecus.values)
         if (ecu.protocol == 7 &&
             RegExp(r'^18DA([0-9A-F]{2})F1$').hasMatch(ecu.requestHeader))
-          RegExp(r'^18DA([0-9A-F]{2})F1$')
-              .firstMatch(ecu.requestHeader)!
-              .group(1)!,
+          RegExp(
+            r'^18DA([0-9A-F]{2})F1$',
+          ).firstMatch(ecu.requestHeader)!.group(1)!,
     };
     final candidates = ecu29Ids.where((id) => !knownIds.contains(id)).toList();
 
@@ -782,24 +783,38 @@ class DiscoveryEngine {
     }
   }
 
-  /// Overall DID scan progress across every known ECU: the ECU count, and
-  /// the percentage (0-100) of each ECU's own scan order already visited,
-  /// averaged by position rather than per-ECU -- an ECU with a longer scan
-  /// order counts proportionally more.
-  ({int ecuCount, double percent}) scanProgress() {
+  /// Overall DID scan progress across every known ECU: the ECU count, the
+  /// percentage (0-100) of each ECU's own *priority* scan order
+  /// ([priorityDidOrder] -- profile ranges plus the standardized
+  /// high-value ranges) already visited, averaged by position rather than
+  /// per-ECU -- an ECU with a longer priority order counts proportionally
+  /// more -- and [totalChecked], the raw DID count read across every
+  /// known ECU regardless of range. The percentage is denominated against
+  /// [priorityDidOrder] rather than the full 64k-DID [discoveryDidOrder]:
+  /// the latter would barely move within one recording and make the
+  /// Scouting card look stuck at 0% even after thousands of reads.
+  ({int ecuCount, double percent, int totalChecked}) scanProgress() {
     if (state.ecus.isEmpty) {
-      return (ecuCount: 0, percent: 0);
+      return (ecuCount: 0, percent: 0, totalChecked: 0);
     }
     var totalPositions = 0;
-    var totalLength = 0;
+    var totalPriorityLength = 0;
+    var totalChecked = 0;
     for (final entry in state.ecus.entries) {
-      final length = _orderFor(entry.key, entry.value.discoverRanges).length;
-      totalLength += length;
-      totalPositions += entry.value.scanPosition.clamp(0, length);
+      final priorityLength = _priorityOrderFor(
+        entry.key,
+        entry.value.discoverRanges,
+      ).length;
+      totalPriorityLength += priorityLength;
+      totalPositions += entry.value.scanPosition.clamp(0, priorityLength);
+      totalChecked += entry.value.scanPosition;
     }
     return (
       ecuCount: state.ecus.length,
-      percent: totalLength == 0 ? 0 : totalPositions / totalLength * 100,
+      percent: totalPriorityLength == 0
+          ? 0
+          : totalPositions / totalPriorityLength * 100,
+      totalChecked: totalChecked,
     );
   }
 

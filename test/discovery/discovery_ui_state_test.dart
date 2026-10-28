@@ -191,6 +191,31 @@ void main() {
     engine.dispose();
   });
 
+  test('totalChecked mirrors the engine\'s own scanProgress', () {
+    final state = DiscoveryState(inventoryStagesDone: {'ecus11', 'ecus29'});
+    state.ecus['ecu1'] = EcuInfo(
+      requestHeader: '7B0',
+      protocol: 6,
+      scanPosition: 37,
+    );
+    final engine = DiscoveryEngine(
+      executor: FakeExecutor(),
+      state: state,
+      onHit: (_, _, _) {},
+    );
+
+    final uiState = buildDiscoveryUiState(
+      engine: engine,
+      stationary: true,
+      now: now,
+      sessionHits: 0,
+    );
+
+    expect(uiState.totalChecked, engine.scanProgress().totalChecked);
+    expect(uiState.totalChecked, greaterThanOrEqualTo(37));
+    engine.dispose();
+  });
+
   test('readsPerMinute mirrors the engine\'s own scoutStatus', () async {
     final executor = FakeExecutor();
     final state = DiscoveryState();

@@ -611,7 +611,8 @@ class _ScoutingCard extends StatelessWidget {
                     children: [
                       Text(
                         '${state.ecuCount} known ECUs — '
-                        '${state.progressPercent.toStringAsFixed(0)}% scanned',
+                        '${state.progressPercent.toStringAsFixed(0)}% scanned '
+                        '(${state.totalChecked} DIDs checked)',
                       ),
                       Text(
                         '${state.totalHits} DIDs found total, '
