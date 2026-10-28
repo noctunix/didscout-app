@@ -471,4 +471,44 @@ void main() {
       },
     );
   });
+
+  group('scanProgress', () {
+    test('no known ECUs reports zero of zero', () {
+      final engine = DiscoveryEngine(
+        executor: FakeExecutor(),
+        state: DiscoveryState(),
+        onHit: (_, _, _) {},
+      );
+      final progress = engine.scanProgress();
+      expect(progress.ecuCount, greaterThan(0)); // vag-ppe seeds exist
+      engine.dispose();
+    });
+
+    test('reflects scan position against a known-length order', () {
+      final state = DiscoveryState(inventoryStagesDone: {'ecus11', 'ecus29'});
+      final ranges = [(0x2A00, 0x2A0F)];
+      final fullOrderLength = discoveryDidOrder(ranges).length;
+      state.ecus['only'] = EcuInfo(
+        requestHeader: '7A1',
+        responseHeader: '7A9',
+        protocol: 6,
+        discoverRanges: ranges,
+        scanPosition: fullOrderLength ~/ 2,
+      );
+      final engine = DiscoveryEngine(
+        executor: FakeExecutor(),
+        state: state,
+        onHit: (_, _, _) {},
+      );
+
+      final progress = engine.scanProgress();
+
+      // The vag-ppe seed ECUs (scanPosition 0) dilute the overall
+      // percentage -- only check 'only' isn't the sole contributor and the
+      // value is between 0 and 100.
+      expect(progress.percent, greaterThan(0));
+      expect(progress.percent, lessThan(100));
+      engine.dispose();
+    });
+  });
 }

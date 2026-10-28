@@ -465,6 +465,27 @@ class DiscoveryEngine {
     }
   }
 
+  /// Overall DID scan progress across every known ECU: the ECU count, and
+  /// the percentage (0-100) of each ECU's own scan order already visited,
+  /// averaged by position rather than per-ECU -- an ECU with a longer scan
+  /// order counts proportionally more.
+  ({int ecuCount, double percent}) scanProgress() {
+    if (state.ecus.isEmpty) {
+      return (ecuCount: 0, percent: 0);
+    }
+    var totalPositions = 0;
+    var totalLength = 0;
+    for (final entry in state.ecus.entries) {
+      final length = _orderFor(entry.key, entry.value.discoverRanges).length;
+      totalLength += length;
+      totalPositions += entry.value.scanPosition.clamp(0, length);
+    }
+    return (
+      ecuCount: state.ecus.length,
+      percent: totalLength == 0 ? 0 : totalPositions / totalLength * 100,
+    );
+  }
+
   /// One scheduler tick: while stationary, tops up any pending ECU
   /// (re)discovery; then groups one batch from every currently eligible
   /// ECU into a single submission -- so the executor's queue is topped
