@@ -50,6 +50,41 @@ void main() {
     expect(saved.recordOnlyWhilePoweredOn, isTrue);
   });
 
+  testWidgets('toggling scout while recording off disables scout while '
+      'driving', (tester) async {
+    await pumpPage(tester);
+
+    final scoutWhileDriving = find.widgetWithText(
+      SwitchListTile,
+      'Scout while driving',
+    );
+    expect(
+      tester.widget<SwitchListTile>(scoutWhileDriving).onChanged,
+      isNotNull,
+    );
+
+    await tester.tap(
+      find.widgetWithText(SwitchListTile, 'Scout while recording'),
+    );
+    await tester.pumpAndSettle();
+
+    expect(tester.widget<SwitchListTile>(scoutWhileDriving).onChanged, isNull);
+  });
+
+  testWidgets('toggling scout while recording persists it', (tester) async {
+    await pumpPage(tester);
+
+    await tester.tap(
+      find.widgetWithText(SwitchListTile, 'Scout while recording'),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('Save'));
+    await tester.pumpAndSettle();
+
+    final saved = await const SettingsRepository().load();
+    expect(saved.scoutWhileRecording, isFalse);
+  });
+
   testWidgets('reset to defaults restores a changed value', (tester) async {
     await const SettingsRepository().save(
       const AppSettings.defaultValues().copyWith(readTimeoutMs: 9000),

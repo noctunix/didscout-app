@@ -29,6 +29,8 @@ void main() {
       chargeReminderIntervalMinutes: 8,
       autoStartOnPower: true,
       recordOnlyWhilePoweredOn: false,
+      scoutWhileRecording: false,
+      scoutWhileDriving: false,
     );
 
     await repository.save(settings);

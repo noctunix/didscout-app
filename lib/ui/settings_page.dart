@@ -194,6 +194,30 @@ class _SettingsPageState extends State<SettingsPage> {
                   onChanged: (v) =>
                       _update((s) => s.copyWith(recordOnlyWhilePoweredOn: v)),
                 ),
+                const Divider(),
+                const _SectionHeader('Scouting'),
+                SwitchListTile(
+                  title: const Text('Scout while recording'),
+                  subtitle: const Text(
+                    'Looks for new ECUs and DIDs in the background during a '
+                    'recording; anything found is added to future recordings.',
+                  ),
+                  value: settings.scoutWhileRecording,
+                  onChanged: (v) =>
+                      _update((s) => s.copyWith(scoutWhileRecording: v)),
+                ),
+                SwitchListTile(
+                  title: const Text('Scout while driving'),
+                  subtitle: const Text(
+                    'Safety systems (ABS, ESC, steering, airbag, parking '
+                    'lock) are only scouted when stationary, regardless of '
+                    'this setting.',
+                  ),
+                  value: settings.scoutWhileDriving,
+                  onChanged: settings.scoutWhileRecording
+                      ? (v) => _update((s) => s.copyWith(scoutWhileDriving: v))
+                      : null,
+                ),
               ],
             ),
     );

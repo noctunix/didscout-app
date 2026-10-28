@@ -15,6 +15,8 @@ class AppSettings {
     required this.chargeReminderIntervalMinutes,
     required this.autoStartOnPower,
     required this.recordOnlyWhilePoweredOn,
+    required this.scoutWhileRecording,
+    required this.scoutWhileDriving,
   });
 
   const AppSettings.defaultValues()
@@ -28,7 +30,9 @@ class AppSettings {
       surveyIntervalMinutes = 3,
       chargeReminderIntervalMinutes = 5,
       autoStartOnPower = false,
-      recordOnlyWhilePoweredOn = false;
+      recordOnlyWhilePoweredOn = false,
+      scoutWhileRecording = true,
+      scoutWhileDriving = true;
 
   /// Timeout per request, applied to both
   /// `ObdLimitsMessage.adapterStepDeadlineMs` and `.vehicleReadDeadlineMs`.
@@ -51,6 +55,15 @@ class AppSettings {
   final int chargeReminderIntervalMinutes;
   final bool autoStartOnPower;
   final bool recordOnlyWhilePoweredOn;
+
+  /// Whether the discovery engine runs at all while recording.
+  final bool scoutWhileRecording;
+
+  /// Whether discovery keeps running while the vehicle is moving (fresh
+  /// live speed non-zero or unknown) -- ECU/DID scanning only, never the
+  /// safety-system blocklist in `did_order.dart`, which applies regardless
+  /// of this setting.
+  final bool scoutWhileDriving;
 
   /// The plugin's reconnect-attempt counter only ever counts up within a
   /// gap, never down, so "never give up" needs a budget that is effectively
@@ -77,6 +90,8 @@ class AppSettings {
     int? chargeReminderIntervalMinutes,
     bool? autoStartOnPower,
     bool? recordOnlyWhilePoweredOn,
+    bool? scoutWhileRecording,
+    bool? scoutWhileDriving,
   }) => AppSettings(
     readTimeoutMs: readTimeoutMs ?? this.readTimeoutMs,
     reconnectBackoffMinS: reconnectBackoffMinS ?? this.reconnectBackoffMinS,
@@ -93,6 +108,8 @@ class AppSettings {
     autoStartOnPower: autoStartOnPower ?? this.autoStartOnPower,
     recordOnlyWhilePoweredOn:
         recordOnlyWhilePoweredOn ?? this.recordOnlyWhilePoweredOn,
+    scoutWhileRecording: scoutWhileRecording ?? this.scoutWhileRecording,
+    scoutWhileDriving: scoutWhileDriving ?? this.scoutWhileDriving,
   );
 
   Map<String, dynamic> toJson() => {
@@ -107,6 +124,8 @@ class AppSettings {
     'chargeReminderIntervalMinutes': chargeReminderIntervalMinutes,
     'autoStartOnPower': autoStartOnPower,
     'recordOnlyWhilePoweredOn': recordOnlyWhilePoweredOn,
+    'scoutWhileRecording': scoutWhileRecording,
+    'scoutWhileDriving': scoutWhileDriving,
   };
 
   /// Missing keys (an older version's blob, or a corrupt one a caller has
@@ -137,6 +156,10 @@ class AppSettings {
       recordOnlyWhilePoweredOn:
           json['recordOnlyWhilePoweredOn'] as bool? ??
           d.recordOnlyWhilePoweredOn,
+      scoutWhileRecording:
+          json['scoutWhileRecording'] as bool? ?? d.scoutWhileRecording,
+      scoutWhileDriving:
+          json['scoutWhileDriving'] as bool? ?? d.scoutWhileDriving,
     );
   }
 
@@ -153,7 +176,9 @@ class AppSettings {
       other.surveyIntervalMinutes == surveyIntervalMinutes &&
       other.chargeReminderIntervalMinutes == chargeReminderIntervalMinutes &&
       other.autoStartOnPower == autoStartOnPower &&
-      other.recordOnlyWhilePoweredOn == recordOnlyWhilePoweredOn;
+      other.recordOnlyWhilePoweredOn == recordOnlyWhilePoweredOn &&
+      other.scoutWhileRecording == scoutWhileRecording &&
+      other.scoutWhileDriving == scoutWhileDriving;
 
   @override
   int get hashCode => Object.hash(
@@ -168,5 +193,7 @@ class AppSettings {
     chargeReminderIntervalMinutes,
     autoStartOnPower,
     recordOnlyWhilePoweredOn,
+    scoutWhileRecording,
+    scoutWhileDriving,
   );
 }

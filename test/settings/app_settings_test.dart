@@ -18,6 +18,8 @@ void main() {
       expect(defaults.chargeReminderIntervalMinutes, 5);
       expect(defaults.autoStartOnPower, isFalse);
       expect(defaults.recordOnlyWhilePoweredOn, isFalse);
+      expect(defaults.scoutWhileRecording, isTrue);
+      expect(defaults.scoutWhileDriving, isTrue);
     });
 
     test('derived values convert to the units ObdLimitsMessage expects', () {
@@ -65,6 +67,8 @@ void main() {
       chargeReminderIntervalMinutes: 10,
       autoStartOnPower: true,
       recordOnlyWhilePoweredOn: true,
+      scoutWhileRecording: false,
+      scoutWhileDriving: false,
     );
 
     final roundTripped = AppSettings.fromJson(settings.toJson());
@@ -81,5 +85,7 @@ void main() {
       const AppSettings.defaultValues().reconnectBackoffMinS,
     );
     expect(settings.autoStartOnPower, isFalse);
+    expect(settings.scoutWhileRecording, isTrue);
+    expect(settings.scoutWhileDriving, isTrue);
   });
 }
