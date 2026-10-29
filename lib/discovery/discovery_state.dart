@@ -74,6 +74,49 @@ class EcuInfo {
         : value;
   }
 
+  /// Folds [other], an entry for the same ECU stored under a different
+  /// id, into this one: found and conditional DIDs are united, the scan
+  /// resumes from whichever entry got further, a name only [other] knows
+  /// is kept, and the later sleep pause wins.
+  void absorb(EcuInfo other) {
+    responseHeader ??= other.responseHeader;
+    for (final MapEntry(:key, :value) in other.identification.entries) {
+      identification.putIfAbsent(key, () => value);
+    }
+    if (f197Name == null && other.f197Name != null) {
+      identification['F197'] = other.f197Name!;
+    }
+    if (_sameRanges(discoverRanges, other.discoverRanges) &&
+        other.scanPosition > scanPosition) {
+      scanPosition = other.scanPosition;
+    }
+    discovered.addAll(other.discovered);
+    conditional
+      ..addAll(other.conditional)
+      ..removeAll(discovered);
+    retryQueue = {
+      ...retryQueue,
+      ...other.retryQueue,
+    }.where(conditional.contains).toList()..sort();
+    final otherAsleepUntil = other.asleepUntil;
+    if (otherAsleepUntil != null &&
+        (asleepUntil == null || otherAsleepUntil.isAfter(asleepUntil!))) {
+      asleepUntil = otherAsleepUntil;
+    }
+  }
+
+  static bool _sameRanges(List<(int, int)> a, List<(int, int)> b) {
+    if (a.length != b.length) {
+      return false;
+    }
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) {
+        return false;
+      }
+    }
+    return true;
+  }
+
   Map<String, dynamic> toJson() => {
     'requestHeader': requestHeader,
     'responseHeader': responseHeader,
@@ -107,6 +150,31 @@ class EcuInfo {
   );
 }
 
+/// Folds every ECU in [ecus] that shares a protocol and request header
+/// with an earlier one into a single entry, keyed by the vag-ppe seed id
+/// for that header when there is one. An inventory sweep that ran before
+/// the seeds existed stored such ECUs under its own `ecus11-`/`ecus29-`
+/// id, so each was scanned and sampled twice.
+Map<String, EcuInfo> _mergeByRequestHeader(Map<String, EcuInfo> ecus) {
+  final seedIdByHeader = {
+    for (final seed in vagPpeSeedEcus()) (seed.protocol, seed.request): seed.id,
+  };
+  final idByHeader = <(int, String), String>{};
+  final merged = <String, EcuInfo>{};
+  for (final MapEntry(key: id, value: ecu) in ecus.entries) {
+    final header = (ecu.protocol, ecu.requestHeader);
+    final mergedId = idByHeader[header];
+    if (mergedId != null) {
+      merged[mergedId]!.absorb(ecu);
+      continue;
+    }
+    final targetId = seedIdByHeader[header] ?? id;
+    idByHeader[header] = targetId;
+    merged[targetId] = ecu;
+  }
+  return merged;
+}
+
 /// Persisted discovery state for one vehicle: known ECUs and their scan
 /// progress, inventory stages already completed, and the last
 /// rediscovery time. JSON-serialisable; the caller owns where the file
@@ -135,14 +203,15 @@ class DiscoveryState {
   };
 
   /// Drops a [phantomEcu11EcuId] entry an earlier sweep persisted, so it is
-  /// neither scanned again nor added to a recording's plan.
+  /// neither scanned again nor added to a recording's plan, and merges
+  /// entries that address the same ECU ([_mergeByRequestHeader]).
   factory DiscoveryState.fromJson(Map<String, dynamic> json) => DiscoveryState(
-    ecus: {
+    ecus: _mergeByRequestHeader({
       for (final MapEntry(:key, :value)
           in (json['ecus'] as Map<dynamic, dynamic>? ?? {}).entries)
         if (key != phantomEcu11EcuId)
           key as String: EcuInfo.fromJson(value as Map<String, dynamic>),
-    },
+    }),
     inventoryStagesDone: Set<String>.from(
       json['inventoryStagesDone'] as List<dynamic>? ?? [],
     ),
