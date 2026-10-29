@@ -10,7 +10,9 @@ import '../capture/recording_summary.dart';
 /// The default [RecordingsPage.onShare]: hands [paths] to the platform
 /// share sheet as files.
 Future<void> _shareFiles(List<String> paths) async {
-  await Share.shareXFiles([for (final path in paths) XFile(path)]);
+  await SharePlus.instance.share(
+    ShareParams(files: [for (final path in paths) XFile(path)]),
+  );
 }
 
 /// Lists every past (and the currently running, if any) recording in

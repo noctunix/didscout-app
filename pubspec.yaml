@@ -14,10 +14,10 @@ dependencies:
     git:
       url: https://github.com/noctunix/obdbridge.git
       ref: v0.2.1
-  battery_plus: ^6.0.0
+  battery_plus: ^7.1.2
   path_provider: ^2.1.0
   permission_handler: ^13.0.2
-  share_plus: ^10.0.0
+  share_plus: ^13.3.1
   shared_preferences: ^2.3.0
   uuid: ^4.5.0
 

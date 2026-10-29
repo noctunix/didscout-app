@@ -18,7 +18,9 @@ import 'settings_page.dart';
 /// The default [RecordingPage.onShare]: hands [paths] to the platform share
 /// sheet as files.
 Future<void> _shareFiles(List<String> paths) async {
-  await Share.shareXFiles([for (final path in paths) XFile(path)]);
+  await SharePlus.instance.share(
+    ShareParams(files: [for (final path in paths) XFile(path)]),
+  );
 }
 
 /// The default [RecordingPage.onReminderVibration]: a short haptic buzz.
