@@ -33,6 +33,14 @@ void main() {
     }
   });
 
+  test('a module that keeps answering NO DATA is held back', () {
+    expect(plan.limits.quietModuleBackoffMs, quietModuleBackoffMs);
+    expect(
+      quietModuleBackoffMs,
+      lessThan(const AppSettings.defaultValues().surveyIntervalMs),
+    );
+  });
+
   test('a failure burst resyncs and keeps recording', () {
     expect(
       plan.limits.onConsecutiveFailures,

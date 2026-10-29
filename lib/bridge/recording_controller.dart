@@ -97,6 +97,12 @@ List<String> _adapterSequence(AppSettings settings) => [
 /// generated with a different (watch/once) interval are left alone.
 const int _generatedSurveyIntervalMs = 180000;
 
+/// How long the native poller holds back a module whose planned reads keep
+/// answering NO DATA before probing it again (see
+/// `ObdLimitsMessage.quietModuleBackoffMs`) -- shorter than the survey
+/// interval, so a module that wakes up loses at most one survey round.
+const int quietModuleBackoffMs = 120000;
+
 /// [RecordingController]'s state machine. UI code decides what to show and
 /// which buttons to enable purely from [RecordingController.phase] (plus
 /// [RecordingController.canStart]/[canStop]/[canShare]), never by re-deriving
@@ -1174,6 +1180,7 @@ class RecordingController extends ChangeNotifier {
         onConsecutiveFailures:
             ObdConsecutiveFailuresPolicyMessage.resyncAndContinue,
         idleVehicleStopAfterMs: settings.idleVehicleStopAfterMs,
+        quietModuleBackoffMs: quietModuleBackoffMs,
         reconnectBackoffMinMs: settings.reconnectBackoffMinMs,
         reconnectBackoffMaxMs: settings.reconnectBackoffMaxMs,
         maxReconnectAttemptsPerGap: settings.maxReconnectAttemptsPerGap,
