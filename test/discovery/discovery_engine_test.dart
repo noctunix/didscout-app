@@ -288,6 +288,56 @@ void main() {
       engine.dispose();
     });
 
+    test('consecutive NO-DATA-asleep batches double the pause up to its cap, '
+        'and a batch with answers resets it', () async {
+      final executor = FakeExecutor();
+      final state = DiscoveryState();
+      state.ecus['test'] = EcuInfo(
+        requestHeader: '7A1',
+        responseHeader: '7A9',
+        protocol: 6,
+        discoverRanges: [(0x2A00, 0x2A0F)],
+      );
+      final engine = buildEngine(executor, state, []);
+      final ecu = state.ecus['test']!;
+
+      final pauses = <Duration>[];
+      var at = now;
+      for (var i = 0; i < 7; i++) {
+        await engine.runDiscoveryBatch('test', at);
+        pauses.add(ecu.asleepUntil!.difference(at));
+        at = ecu.asleepUntil!;
+      }
+      expect(pauses, const [
+        Duration(minutes: 5),
+        Duration(minutes: 10),
+        Duration(minutes: 20),
+        Duration(minutes: 40),
+        Duration(minutes: 80),
+        Duration(hours: 2),
+        Duration(hours: 2),
+      ]);
+
+      executor.respond = (step) => ProbeResult(
+        signalId: step.signalId,
+        status: const ProbeNrc(0x31),
+        at: at,
+      );
+      await engine.runDiscoveryBatch('test', at);
+      expect(ecu.noDataStreak, 0);
+      expect(ecu.scanPosition, 16);
+
+      executor.respond = (step) => ProbeResult(
+        signalId: step.signalId,
+        status: const ProbeNoData(),
+        at: at,
+      );
+      await engine.runDiscoveryBatch('test', at);
+      expect(ecu.asleepUntil, at.add(noDataAsleepPauseDuration));
+
+      engine.dispose();
+    });
+
     test('a batch with at least one OK reply is never NO-DATA-asleep, however '
         'much of the rest is NO DATA', () async {
       final executor = FakeExecutor();

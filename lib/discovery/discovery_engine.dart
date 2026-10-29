@@ -26,8 +26,22 @@ const Duration asleepPauseDuration = Duration(seconds: 60);
 /// answer at all (e.g. tyre pressure sensors while parked) rather than
 /// actively refusing the service, which calls for a longer pause than
 /// [asleepPauseDuration]: it's more likely to stay quiet for a while than
-/// to wake up again within a minute.
+/// to wake up again within a minute. Doubles with every further such batch
+/// in a row ([EcuInfo.noDataStreak]), up to [maxNoDataAsleepPauseDuration]
+/// -- some headers never answer on a given vehicle, and each NO DATA waits
+/// out the adapter's full response timeout.
 const Duration noDataAsleepPauseDuration = Duration(minutes: 5);
+
+/// Upper bound of the doubling [noDataAsleepPauseDuration].
+const Duration maxNoDataAsleepPauseDuration = Duration(hours: 2);
+
+/// The pause after the [streak]th NO-DATA-asleep batch in a row.
+Duration noDataAsleepPause(int streak) {
+  final pause = noDataAsleepPauseDuration * (1 << (streak - 1).clamp(0, 16));
+  return pause < maxNoDataAsleepPauseDuration
+      ? pause
+      : maxNoDataAsleepPauseDuration;
+}
 
 /// Default per-step addition to a batch's result-wait deadline (see
 /// [DiscoveryEngine.batchDeadlinePerStep]).
@@ -695,14 +709,16 @@ class DiscoveryEngine {
       statusCounts[bucket] = (statusCounts[bucket] ?? 0) + 1;
     }
 
+    if (batchLooksNoDataAsleep(statusCounts, dids.length)) {
+      ecu.noDataStreak += 1;
+      ecu.asleepUntil = now.add(noDataAsleepPause(ecu.noDataStreak));
+      _logEvent(ScoutEventKind.asleep, ecuId: ecuId, detail: 'no data');
+      return [];
+    }
+    ecu.noDataStreak = 0;
     if (batchIsAsleep(statusCounts, dids.length)) {
       ecu.asleepUntil = now.add(asleepPauseDuration);
       _logEvent(ScoutEventKind.asleep, ecuId: ecuId);
-      return [];
-    }
-    if (batchLooksNoDataAsleep(statusCounts, dids.length)) {
-      ecu.asleepUntil = now.add(noDataAsleepPauseDuration);
-      _logEvent(ScoutEventKind.asleep, ecuId: ecuId, detail: 'no data');
       return [];
     }
 

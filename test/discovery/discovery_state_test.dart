@@ -51,6 +51,7 @@ void main() {
         conditional: {'2A26'},
         retryQueue: ['2A26'],
         asleepUntil: DateTime.utc(2026, 10, 28, 9, 31),
+        noDataStreak: 3,
       );
       original.ecus['ecus29-04'] = EcuInfo(
         requestHeader: '18DA04F1',
@@ -77,6 +78,7 @@ void main() {
       expect(gateway.conditional, {'2A26'});
       expect(gateway.retryQueue, ['2A26']);
       expect(gateway.asleepUntil, DateTime.utc(2026, 10, 28, 9, 31));
+      expect(gateway.noDataStreak, 3);
       expect(gateway.f197Name, 'Gateway');
 
       final other = loaded.ecus['ecus29-04']!;

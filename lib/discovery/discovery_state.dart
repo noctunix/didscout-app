@@ -23,6 +23,7 @@ class EcuInfo {
     Set<String>? conditional,
     List<String>? retryQueue,
     this.asleepUntil,
+    this.noDataStreak = 0,
   }) : discoverRanges = discoverRanges ?? const [],
        identification = identification ?? {},
        discovered = discovered ?? {},
@@ -64,6 +65,10 @@ class EcuInfo {
   /// ECU pauses until this time.
   DateTime? asleepUntil;
 
+  /// Discovery batches in a row that looked NO-DATA-asleep; scales the
+  /// next such pause (see `noDataAsleepPause`).
+  int noDataStreak;
+
   /// The decoded F197 system name, or null if never identified or the
   /// read didn't return a name -- used by the moving-vehicle safety
   /// blocklist.
@@ -77,7 +82,7 @@ class EcuInfo {
   /// Folds [other], an entry for the same ECU stored under a different
   /// id, into this one: found and conditional DIDs are united, the scan
   /// resumes from whichever entry got further, a name only [other] knows
-  /// is kept, and the later sleep pause wins.
+  /// is kept, and the later sleep pause and longer NO-DATA streak win.
   void absorb(EcuInfo other) {
     responseHeader ??= other.responseHeader;
     for (final MapEntry(:key, :value) in other.identification.entries) {
@@ -102,6 +107,9 @@ class EcuInfo {
     if (otherAsleepUntil != null &&
         (asleepUntil == null || otherAsleepUntil.isAfter(asleepUntil!))) {
       asleepUntil = otherAsleepUntil;
+    }
+    if (other.noDataStreak > noDataStreak) {
+      noDataStreak = other.noDataStreak;
     }
   }
 
@@ -128,6 +136,7 @@ class EcuInfo {
     'conditional': conditional.toList(),
     'retryQueue': retryQueue,
     'asleepUntil': asleepUntil?.toUtc().toIso8601String(),
+    'noDataStreak': noDataStreak,
   };
 
   factory EcuInfo.fromJson(Map<String, dynamic> json) => EcuInfo(
@@ -147,6 +156,7 @@ class EcuInfo {
     asleepUntil: json['asleepUntil'] != null
         ? DateTime.parse(json['asleepUntil'] as String)
         : null,
+    noDataStreak: json['noDataStreak'] as int? ?? 0,
   );
 }
 
