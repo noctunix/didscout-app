@@ -79,6 +79,34 @@ void main() {
       },
     );
 
+    test('11-bit sweep never probes the phantom 0x700 header', () async {
+      final executor = FakeExecutor();
+      final state = DiscoveryState();
+      final engine = DiscoveryEngine(
+        executor: executor,
+        state: state,
+        onHit: (_, _, _) {},
+      );
+      executor.respond = (step) => ProbeResult(
+        signalId: step.signalId,
+        status: moduleIdOf(step.signalId) == 'ecu11-700'
+            ? const ProbeOk()
+            : const ProbeNoData(),
+        responderHeader: '77A',
+        at: now,
+      );
+
+      await engine.runEcu11Inventory();
+
+      expect(
+        executor.submittedSteps.map((s) => moduleIdOf(s.signalId)),
+        isNot(contains('ecu11-700')),
+      );
+      expect(state.ecus.containsKey('ecus11-700'), isFalse);
+
+      engine.dispose();
+    });
+
     test('29-bit sweep finds and identifies a new ECU', () async {
       final executor = FakeExecutor();
       final state = DiscoveryState();

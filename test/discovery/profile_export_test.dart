@@ -47,9 +47,9 @@ class _ParsedToml {
 void main() {
   test('exports a parseable draft with every known ECU and hit', () {
     final state = DiscoveryState();
-    state.ecus['ecus11-700'] = EcuInfo(
-      requestHeader: '700',
-      responseHeader: '708',
+    state.ecus['ecus11-70E'] = EcuInfo(
+      requestHeader: '70E',
+      responseHeader: '778',
       protocol: 6,
       discovered: {'2A04', '2A15'},
     );
@@ -73,9 +73,9 @@ void main() {
     expect(parsed.topLevel['protocol'], '6');
 
     expect(parsed.modules.length, 2);
-    final gateway = parsed.modules.firstWhere((m) => m['id'] == 'ecus11-700');
-    expect(gateway['request'], '700');
-    expect(gateway['response'], '708');
+    final gateway = parsed.modules.firstWhere((m) => m['id'] == 'ecus11-70E');
+    expect(gateway['request'], '70E');
+    expect(gateway['response'], '778');
     expect(
       gateway.containsKey('protocol'),
       isFalse,

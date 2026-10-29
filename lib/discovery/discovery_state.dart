@@ -1,6 +1,8 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'inventory.dart';
+
 /// Everything the discovery engine knows about one ECU: how to address
 /// it, what it identified as, and how far its DID scan has gotten.
 class EcuInfo {
@@ -120,13 +122,15 @@ class DiscoveryState {
     'lastRediscoveryTime': lastRediscoveryTime?.toUtc().toIso8601String(),
   };
 
+  /// Drops a [phantomEcu11EcuId] entry an earlier sweep persisted, so it is
+  /// neither scanned again nor added to a recording's plan.
   factory DiscoveryState.fromJson(Map<String, dynamic> json) => DiscoveryState(
-    ecus: (json['ecus'] as Map<dynamic, dynamic>? ?? {}).map(
-      (key, value) => MapEntry(
-        key as String,
-        EcuInfo.fromJson(value as Map<String, dynamic>),
-      ),
-    ),
+    ecus: {
+      for (final MapEntry(:key, :value)
+          in (json['ecus'] as Map<dynamic, dynamic>? ?? {}).entries)
+        if (key != phantomEcu11EcuId)
+          key as String: EcuInfo.fromJson(value as Map<String, dynamic>),
+    },
     inventoryStagesDone: Set<String>.from(
       json['inventoryStagesDone'] as List<dynamic>? ?? [],
     ),

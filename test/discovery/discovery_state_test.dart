@@ -40,9 +40,9 @@ void main() {
         inventoryStagesDone: {'ecus11', 'ecus29'},
         lastRediscoveryTime: DateTime.utc(2026, 10, 28, 9, 30),
       );
-      original.ecus['ecus11-700'] = EcuInfo(
-        requestHeader: '700',
-        responseHeader: '708',
+      original.ecus['ecus11-70E'] = EcuInfo(
+        requestHeader: '70E',
+        responseHeader: '778',
         protocol: 6,
         discoverRanges: [(0x2A00, 0x2AFF)],
         identification: {'F187': 'OK', 'F197': 'Gateway'},
@@ -66,9 +66,9 @@ void main() {
       expect(loaded.lastRediscoveryTime, original.lastRediscoveryTime);
       expect(loaded.ecus.keys.toSet(), original.ecus.keys.toSet());
 
-      final gateway = loaded.ecus['ecus11-700']!;
-      expect(gateway.requestHeader, '700');
-      expect(gateway.responseHeader, '708');
+      final gateway = loaded.ecus['ecus11-70E']!;
+      expect(gateway.requestHeader, '70E');
+      expect(gateway.responseHeader, '778');
       expect(gateway.protocol, 6);
       expect(gateway.discoverRanges, [(0x2A00, 0x2AFF)]);
       expect(gateway.identification, {'F187': 'OK', 'F197': 'Gateway'});
@@ -82,6 +82,29 @@ void main() {
       final other = loaded.ecus['ecus29-04']!;
       expect(other.responseHeader, '18DAF104');
       expect(other.asleepUntil, isNull);
+    });
+
+    test('a persisted phantom 0x700 ECU is dropped on load', () async {
+      final original = DiscoveryState(inventoryStagesDone: {'ecus11'});
+      original.ecus['ecus11-700'] = EcuInfo(
+        requestHeader: '700',
+        responseHeader: '77A',
+        protocol: 6,
+        scanPosition: 645,
+        discovered: {'2A04'},
+      );
+      original.ecus['gateway'] = EcuInfo(
+        requestHeader: '710',
+        responseHeader: '77A',
+        protocol: 6,
+      );
+
+      final file = File('${tempDir.path}/vehicle-a6.json');
+      await original.saveToFile(file);
+      final loaded = await DiscoveryState.loadFromFile(file);
+
+      expect(loaded.ecus.keys, ['gateway']);
+      expect(loaded.inventoryStagesDone, {'ecus11'});
     });
   });
 }

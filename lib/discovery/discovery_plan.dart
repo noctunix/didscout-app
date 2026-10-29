@@ -33,7 +33,7 @@ class DiscoveredEcuPlan {
 /// already seeds (see `DiscoveryEngine._seedVagPpeEcus`, which keys it by
 /// the vag-ppe module's own id) is matched by that same id -- only its new
 /// DIDs are added; an ECU discovery found on its own (ids like
-/// `ecus11-700`/`ecus29-04`, see `inventory.dart`) is added whole. An ECU
+/// `ecus11-70E`/`ecus29-04`, see `inventory.dart`) is added whole. An ECU
 /// whose responder header was never identified is skipped -- there is no
 /// header to address it by.
 List<DiscoveredEcuPlan> discoveredPlanAdditions(DiscoveryState state) {

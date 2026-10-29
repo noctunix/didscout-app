@@ -7,11 +7,20 @@ library;
 import '../bridge/vag_ppe_plan_data.dart';
 import 'probe.dart';
 
+/// 11-bit request id the sweep never probes: the gateway answers requests
+/// sent there too (NO DATA instead of NRC 31 for unsupported DIDs), so a hit
+/// is a phantom ECU, not a physical one.
+const int phantomEcu11RequestId = 0x700;
+
+/// Module id a sweep hit at [phantomEcu11RequestId] was persisted under.
+const String phantomEcu11EcuId = 'ecus11-700';
+
 /// 11-bit manufacturer-ECU request ids: 0x700-0x7EF, excluding the
-/// legislative functional broadcast 0x7DF (mode 01/OBDonUDS, not here).
+/// legislative functional broadcast 0x7DF (mode 01/OBDonUDS, not here) and
+/// [phantomEcu11RequestId].
 final List<int> ecu11RequestIds = [
   for (var request = 0x700; request < 0x7F0; request++)
-    if (request != 0x7DF) request,
+    if (request != 0x7DF && request != phantomEcu11RequestId) request,
 ];
 
 /// 29-bit normal-fixed-addressing target ids: every two-hex id except the
@@ -26,7 +35,7 @@ final List<String> ecu29Ids = [
 const List<String> identificationDids = ['F187', 'F189', 'F191', 'F197'];
 
 /// Module id for the 11-bit sweep probe at request header [requestHex]
-/// (3 hex digits, e.g. `"700"`).
+/// (3 hex digits, e.g. `"70E"`).
 String ecu11ModuleId(String requestHex) => 'ecu11-$requestHex';
 
 /// Module id for an identified 11-bit ECU.
