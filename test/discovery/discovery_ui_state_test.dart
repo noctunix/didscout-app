@@ -144,14 +144,19 @@ void main() {
   test('allowedToRun: false short-circuits to waiting: moving even with '
       'eligible, non-blocklisted work', () {
     final state = DiscoveryState(inventoryStagesDone: {'ecus11', 'ecus29'});
+    state.ecus['gw'] = EcuInfo(
+      requestHeader: '7B0',
+      responseHeader: '7B8',
+      protocol: 6,
+      identification: {'F197': 'Gateway'},
+    );
     final engine = DiscoveryEngine(
       executor: FakeExecutor(),
       state: state,
       onHit: (_, _, _) {},
     );
-    // The seeded vag-ppe ECUs have pending work and no F197 name, so
-    // they're not safety-blocklisted -- `selectNextEcuForScan` alone
-    // would report `scanning`.
+    // 'gw' has pending work and a name off the safety blocklist --
+    // `selectNextEcuForScan` alone would report `scanning`.
     expect(engine.selectNextEcuForScan(stationary: false, now: now), isNotNull);
 
     final uiState = buildDiscoveryUiState(

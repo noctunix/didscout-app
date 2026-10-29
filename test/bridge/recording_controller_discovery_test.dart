@@ -137,6 +137,19 @@ ObdLiveStateMessage _liveStateWithSpeed(int speedKmh) {
   );
 }
 
+/// Persisted state naming the gateway, so it is scanned while the speed
+/// is unknown (treated as moving) -- an unnamed ECU never is.
+DiscoveryState _namedGatewayState() => DiscoveryState(
+  ecus: {
+    'gateway': EcuInfo(
+      requestHeader: '710',
+      responseHeader: '77A',
+      protocol: 6,
+      identification: {'F197': 'Gateway'},
+    ),
+  },
+);
+
 void main() {
   // `RecordingController.start` wires `ObdEventsApi` (for discovery
   // results) through a real `BasicMessageChannel`, which needs a binding.
@@ -215,6 +228,7 @@ void main() {
         }
         return null;
       };
+      persistedState = _namedGatewayState();
       final controller = makeController();
 
       await controller.start();
@@ -247,6 +261,7 @@ void main() {
         }
         return null;
       };
+      persistedState = _namedGatewayState();
       final first = makeController();
       await first.start();
       await waitFor(
@@ -349,6 +364,7 @@ void main() {
     // Never set up: every enqueued one-shot step is simply never
     // answered, same as a result the plugin dropped mid-recording.
     fakeNative.respondToOneShot = null;
+    persistedState = _namedGatewayState();
     final controller = makeController();
 
     await controller.start();
@@ -371,6 +387,7 @@ void main() {
       // conditional, nothing discovered yet.
       return '77A 03 7F22 22';
     };
+    persistedState = _namedGatewayState();
     final controller = makeController();
     await controller.start();
     await waitFor(

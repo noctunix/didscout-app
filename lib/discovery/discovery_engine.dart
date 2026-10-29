@@ -94,9 +94,9 @@ typedef DiscoveryHit =
 
 /// Drives ECU inventory and DID discovery against [executor], persisting
 /// progress into [state]. Motion-gates discovery per [didscout's safety
-/// blocklist] (see `did_order.dart`): while moving, only scans ECUs whose
-/// identified F197 name doesn't match the blocklist, and never runs ECU
-/// (re)discovery.
+/// blocklist] (see `did_order.dart`): while moving, only scans ECUs with
+/// an identified F197 name that doesn't match the blocklist, and never
+/// runs ECU (re)discovery.
 class DiscoveryEngine {
   DiscoveryEngine({
     required this.executor,
@@ -170,6 +170,9 @@ class DiscoveryEngine {
   /// [pump]'s doc comment on why this rotates instead of always starting
   /// at the first key.
   int _roundRobinCursor = 0;
+
+  /// ECUs [nameUnnamedEcus] already tried during this engine's lifetime.
+  final Set<String> _namingAttempted = {};
 
   /// Once true (a batch was rejected with
   /// [SubmitRejectionReason.noActiveRecording]), [pump] never submits
@@ -514,18 +517,65 @@ class DiscoveryEngine {
         did: did,
       );
       final results = await _submitAndAwait([probe.$1], [probe.$2]);
-      final result = results.single;
-      if (result == null) {
-        values[did] = 'MISSING';
-      } else if (did == 'F197' &&
-          result.status is ProbeOk &&
-          result.payload != null) {
-        values[did] = String.fromCharCodes(result.payload!);
-      } else {
-        values[did] = _statusBucket(result.status);
-      }
+      values[did] = _identificationValue(did, results.single);
     }
     return values;
+  }
+
+  String _identificationValue(String did, ProbeResult? result) {
+    if (result == null) {
+      return 'MISSING';
+    }
+    if (did == 'F197' && result.status is ProbeOk && result.payload != null) {
+      return String.fromCharCodes(result.payload!);
+    }
+    return _statusBucket(result.status);
+  }
+
+  /// Reads F197 once per engine from every awake, addressable ECU that has
+  /// no system name yet -- a vag-ppe seed, or an ECU whose identification
+  /// read failed -- in a single batch. Until it has a name,
+  /// [movingDiscoveryBlocked] keeps the ECU out of scanning while moving.
+  Future<void> nameUnnamedEcus(DateTime now) async {
+    final targets = <String>[];
+    final modules = <ProbeModule>[];
+    final steps = <ProbeStep>[];
+    for (final MapEntry(key: ecuId, value: ecu) in state.ecus.entries) {
+      final responseHeader = ecu.responseHeader;
+      if (ecu.f197Name != null ||
+          responseHeader == null ||
+          (ecu.asleepUntil != null && now.isBefore(ecu.asleepUntil!)) ||
+          !_namingAttempted.add(ecuId)) {
+        continue;
+      }
+      final probe = identificationProbe(
+        moduleId: ecuId,
+        requestHeader: ecu.requestHeader,
+        responseHeader: responseHeader,
+        protocol: ecu.protocol,
+        did: 'F197',
+      );
+      targets.add(ecuId);
+      modules.add(probe.$1);
+      steps.add(probe.$2);
+    }
+    if (targets.isEmpty) {
+      return;
+    }
+    final results = await _submitAndAwait(modules, steps);
+    if (_suspended) {
+      return;
+    }
+    for (var i = 0; i < targets.length; i++) {
+      state.ecus[targets[i]]?.identification['F197'] = _identificationValue(
+        'F197',
+        results[i],
+      );
+    }
+    _logEvent(
+      ScoutEventKind.inventoryStep,
+      detail: 'names: ${targets.length} read',
+    );
   }
 
   /// Re-probes for ECUs that only wake in some vehicle states -- ecus11
@@ -573,7 +623,7 @@ class DiscoveryEngine {
 
   /// The next ECU [pump]'s discovery scan should run a batch on: honors a
   /// sleeping-ECU pause and, while moving, only offers an ECU whose F197
-  /// name doesn't match [movingDiscoveryBlocked] -- ECU (re)discovery
+  /// name is known and doesn't match [movingDiscoveryBlocked] -- ECU (re)discovery
   /// itself never runs while moving (the caller gates that separately).
   String? selectNextEcuForScan({
     required bool stationary,
@@ -819,7 +869,7 @@ class DiscoveryEngine {
   }
 
   /// One scheduler tick: while stationary, tops up any pending ECU
-  /// (re)discovery; then groups one batch from every currently eligible
+  /// (re)discovery and names unnamed ECUs ([nameUnnamedEcus]); then groups one batch from every currently eligible
   /// ECU into a single submission -- so the executor's queue is topped
   /// up by several ECUs at once, bounded by [maxQueueDepth] -- and
   /// returns. The caller invokes this repeatedly (e.g. once per
@@ -846,8 +896,9 @@ class DiscoveryEngine {
       if (!state.inventoryStagesDone.contains('ecus29')) {
         await runEcu29Inventory();
       }
+      await nameUnnamedEcus(now);
     }
-    if (executor.queueDepth >= minQueueDepth) {
+    if (_suspended || executor.queueDepth >= minQueueDepth) {
       return;
     }
     final keys = state.ecus.keys.toList();

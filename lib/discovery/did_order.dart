@@ -87,10 +87,12 @@ const List<String> movingDiscoveryBlockedNameParts = [
 ];
 
 /// True if [f197Name] (an ECU's identified system name, or null if
-/// unknown) matches [movingDiscoveryBlockedNameParts].
+/// unknown) matches [movingDiscoveryBlockedNameParts] -- or is unknown: an
+/// ECU that hasn't told us what it is may well be a steering or braking
+/// system, so it fails closed.
 bool movingDiscoveryBlocked(String? f197Name) {
   if (f197Name == null) {
-    return false;
+    return true;
   }
   final lowered = f197Name.toLowerCase();
   return movingDiscoveryBlockedNameParts.any(lowered.contains);

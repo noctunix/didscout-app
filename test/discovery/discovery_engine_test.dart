@@ -441,6 +441,7 @@ void main() {
           requestHeader: '710',
           responseHeader: '718',
           protocol: 6,
+          identification: {'F197': 'Gateway'},
         );
         final engine = DiscoveryEngine(
           executor: executor,
@@ -459,6 +460,91 @@ void main() {
         expect(engine.selectNextEcuForScan(stationary: true, now: now), 'abs');
         expect(engine.hasDiscoveryWork('abs', now), isTrue);
         expect(engine.hasDiscoveryWork('gw', now), isTrue);
+
+        engine.dispose();
+      },
+    );
+
+    test('an ECU without a usable F197 name is excluded while moving', () {
+      final state = DiscoveryState();
+      state.ecus['unnamed'] = EcuInfo(
+        requestHeader: '7A1',
+        responseHeader: '7A9',
+        protocol: 6,
+      );
+      state.ecus['failed'] = EcuInfo(
+        requestHeader: '7A2',
+        responseHeader: '7AA',
+        protocol: 6,
+        identification: {'F197': 'NO DATA'},
+      );
+      final engine = DiscoveryEngine(
+        executor: FakeExecutor(),
+        state: state,
+        onHit: (_, _, _) {},
+      );
+      state.ecus.removeWhere((id, _) => id != 'unnamed' && id != 'failed');
+
+      expect(engine.selectNextEcuForScan(stationary: false, now: now), isNull);
+      expect(engine.selectNextEcuForScan(stationary: true, now: now), isNotNull);
+
+      engine.dispose();
+    });
+
+    test(
+      'a stationary pump reads F197 once per engine from unnamed ECUs, '
+      'which then become scannable while moving',
+      () async {
+        final executor = FakeExecutor();
+        final state = DiscoveryState(inventoryStagesDone: {'ecus11', 'ecus29'});
+        final engine = DiscoveryEngine(
+          executor: executor,
+          state: state,
+          onHit: (_, _, _) {},
+        );
+        state.ecus
+          ..clear()
+          // Both scans are already past the identification range, so any
+          // F197 read below is the naming read, not a scan step.
+          ..['door'] = EcuInfo(
+            requestHeader: '74A',
+            responseHeader: '7B4',
+            protocol: 6,
+            scanPosition: 200,
+          )
+          ..['mute'] = EcuInfo(
+            requestHeader: '713',
+            responseHeader: '77D',
+            protocol: 6,
+            scanPosition: 200,
+          );
+        // Every other DID is refused rather than met with silence, so no
+        // scan batch looks asleep.
+        executor.respond = (step) => ProbeResult(
+          signalId: step.signalId,
+          status: switch (step.signalId) {
+            'door_22f197' => const ProbeOk(),
+            'mute_22f197' => const ProbeNoData(),
+            _ => const ProbeNrc(0x31),
+          },
+          payload: step.signalId == 'door_22f197' ? 'TSG FS'.codeUnits : null,
+          at: now,
+        );
+
+        await engine.pump(stationary: true, now: now);
+
+        expect(state.ecus['door']!.f197Name, 'TSG FS');
+        expect(state.ecus['mute']!.f197Name, isNull);
+        expect(state.ecus['mute']!.identification['F197'], 'NO DATA');
+        expect(engine.selectNextEcuForScan(stationary: false, now: now), 'door');
+
+        executor.submittedSteps.clear();
+        await engine.pump(stationary: true, now: now);
+        expect(
+          executor.submittedSteps.where((s) => s.command == '22F197'),
+          isEmpty,
+          reason: 'an ECU is only asked for its name once per engine',
+        );
 
         engine.dispose();
       },

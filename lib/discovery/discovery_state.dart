@@ -3,6 +3,12 @@ import 'dart:io';
 
 import 'inventory.dart';
 
+/// What the discovery engine stores under an identification DID in
+/// place of a decoded value when the read didn't return one.
+final RegExp _identificationStatus = RegExp(
+  r'^(OK|MISSING|NO DATA|NRC [0-9A-F]{2}|TIMEOUT|TRANSPORT_ERROR|CANCELLED)$',
+);
+
 /// Everything the discovery engine knows about one ECU: how to address
 /// it, what it identified as, and how far its DID scan has gotten.
 class EcuInfo {
@@ -58,9 +64,15 @@ class EcuInfo {
   /// ECU pauses until this time.
   DateTime? asleepUntil;
 
-  /// The decoded F197 system name, or null if never identified -- used by
-  /// the moving-vehicle safety blocklist.
-  String? get f197Name => identification['F197'];
+  /// The decoded F197 system name, or null if never identified or the
+  /// read didn't return a name -- used by the moving-vehicle safety
+  /// blocklist.
+  String? get f197Name {
+    final value = identification['F197'];
+    return value == null || _identificationStatus.hasMatch(value)
+        ? null
+        : value;
+  }
 
   Map<String, dynamic> toJson() => {
     'requestHeader': requestHeader,

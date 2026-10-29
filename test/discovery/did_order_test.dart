@@ -77,8 +77,8 @@ void main() {
   });
 
   group('movingDiscoveryBlocked', () {
-    test('an unknown name is not blocked', () {
-      expect(movingDiscoveryBlocked(null), isFalse);
+    test('an unknown name is blocked', () {
+      expect(movingDiscoveryBlocked(null), isTrue);
     });
 
     test(
