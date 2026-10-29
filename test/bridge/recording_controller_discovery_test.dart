@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -11,6 +12,7 @@ import 'package:obdbridge/src/obdbridge_api.g.dart' show NativeObdApi;
 import 'package:didscout_app/bridge/bridge_read_executor.dart';
 import 'package:didscout_app/bridge/didscout_policy.dart';
 import 'package:didscout_app/bridge/recording_controller.dart';
+import 'package:didscout_app/discovery/did_stability.dart';
 import 'package:didscout_app/discovery/discovery_state.dart';
 import 'package:didscout_app/discovery/discovery_ui_state.dart';
 import 'package:didscout_app/session/session_markers.dart';
@@ -290,6 +292,76 @@ void main() {
       await second.stop();
     },
   );
+
+  test('start learns from finished recordings before planning, even with '
+      'scouting off', () async {
+    persistedState = DiscoveryState(
+      ecus: {
+        'door-front-left': EcuInfo(
+          requestHeader: '74A',
+          responseHeader: '7B4',
+          protocol: 6,
+          discovered: {'2A00', '2A01'},
+        ),
+      },
+    );
+    // Two earlier recordings in which 2A00 never changes and 2A01 does.
+    String hexOf(String text) =>
+        text.codeUnits.map((c) => c.toRadixString(16).padLeft(2, '0')).join();
+    for (final (index, sessionId) in ['earlier-1', 'earlier-2'].indexed) {
+      final buffer = File('${tempDir.path}/$sessionId.jsonl');
+      buffer.writeAsStringSync(
+        [
+          jsonEncode({'sessionId': sessionId, 'createdUtcMs': index}),
+          for (var i = 0; i < 5; i++) ...[
+            jsonEncode({
+              'signalId': 'door-front-left_222a00',
+              'raw': hexOf('7B4 04 62 2A 00 01'),
+              'transport': 'ok',
+            }),
+            jsonEncode({
+              'signalId': 'door-front-left_222a01',
+              'raw': hexOf('7B4 04 62 2A 01 0$i'),
+              'transport': 'ok',
+            }),
+          ],
+        ].join('\n'),
+      );
+      File('${buffer.path}.markers.jsonl').writeAsStringSync(
+        jsonEncode({
+          'type': 'plan',
+          'modules': [
+            {
+              'id': 'door-front-left',
+              'request': '74A',
+              'response': '7B4',
+              'protocol': '6',
+            },
+          ],
+        }),
+      );
+    }
+    final controller = makeController(
+      settings: const AppSettings.defaultValues().copyWith(
+        scoutWhileRecording: false,
+      ),
+    );
+
+    await controller.start();
+
+    final intervals = {
+      for (final step in fakeNative.lastStartRecordingRequest!.plan.steps)
+        step.signalId: step.intervalMs,
+    };
+    expect(intervals['door-front-left_222a00'], stableDidIntervalMs);
+    expect(
+      intervals['door-front-left_222a01'],
+      const AppSettings.defaultValues().surveyIntervalMs,
+    );
+    expect(persistedState!.learnedRecordings, {'earlier-1', 'earlier-2'});
+
+    await controller.stop();
+  });
 
   test(
     'moving with scoutWhileDriving off never submits a one-shot read',

@@ -4,6 +4,7 @@ import 'package:obdbridge/obdbridge.dart';
 import 'package:didscout_app/bridge/didscout_policy.dart';
 import 'package:didscout_app/bridge/recording_controller.dart';
 import 'package:didscout_app/bridge/vag_ppe_plan_data.dart';
+import 'package:didscout_app/discovery/did_stability.dart';
 import 'package:didscout_app/discovery/discovery_state.dart';
 import 'package:didscout_app/settings/app_settings.dart';
 
@@ -117,6 +118,33 @@ void main() {
       expect(
         withDiscovery.steps.map((s) => s.signalId),
         containsAll(['module7_22f40d', 'ecus11-7B0_222a00']),
+      );
+    });
+
+    test('a discovered DID that kept one value is sampled at the stable '
+        'interval', () {
+      final state = DiscoveryState();
+      state.ecus['ecus11-7B0'] =
+          EcuInfo(requestHeader: '7B0', responseHeader: '7B8', protocol: 6)
+            ..discovered.addAll(['2A00', '2A01', 'F187'])
+            ..sampleStats['2A00'] = DidSampleStats(
+              lastPayloadHash: 1,
+              stableSamples: stableSampleCount,
+              stableRecordings: stableRecordingCount,
+            );
+
+      final withDiscovery = RecordingController.buildPlanForTesting(
+        discoveryState: state,
+      );
+
+      final intervals = {
+        for (final s in withDiscovery.steps) s.signalId: s.intervalMs,
+      };
+      expect(intervals['ecus11-7B0_222a00'], stableDidIntervalMs);
+      expect(intervals['ecus11-7B0_22f187'], stableDidIntervalMs);
+      expect(
+        intervals['ecus11-7B0_222a01'],
+        const AppSettings.defaultValues().surveyIntervalMs,
       );
     });
 

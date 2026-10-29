@@ -9,6 +9,61 @@ final RegExp _identificationStatus = RegExp(
   r'^(OK|MISSING|NO DATA|NRC [0-9A-F]{2}|TIMEOUT|TRANSPORT_ERROR|CANCELLED)$',
 );
 
+/// How one discovered DID's value has behaved across the recurring reads
+/// of past recordings (see `did_stability.dart`).
+class DidSampleStats {
+  DidSampleStats({
+    this.lastPayloadHash,
+    this.stableSamples = 0,
+    this.stableRecordings = 0,
+    this.everChanged = false,
+  });
+
+  /// Hash of the most recent positive payload -- the payload itself is
+  /// not kept.
+  int? lastPayloadHash;
+
+  /// Samples in a row, up to and including the latest, that carried the
+  /// payload hashed as [lastPayloadHash].
+  int stableSamples;
+
+  /// Recordings those [stableSamples] were spread over.
+  int stableRecordings;
+
+  /// Whether two consecutive samples ever differed.
+  bool everChanged;
+
+  /// Counts one positive sample hashing to [payloadHash];
+  /// [firstInRecording] marks the DID's first sample of a recording.
+  void record(int payloadHash, {required bool firstInRecording}) {
+    if (payloadHash == lastPayloadHash) {
+      stableSamples += 1;
+      if (firstInRecording) {
+        stableRecordings += 1;
+      }
+      return;
+    }
+    everChanged = everChanged || lastPayloadHash != null;
+    lastPayloadHash = payloadHash;
+    stableSamples = 1;
+    stableRecordings = 1;
+  }
+
+  Map<String, dynamic> toJson() => {
+    'lastPayloadHash': lastPayloadHash,
+    'stableSamples': stableSamples,
+    'stableRecordings': stableRecordings,
+    'everChanged': everChanged,
+  };
+
+  factory DidSampleStats.fromJson(Map<String, dynamic> json) => DidSampleStats(
+    lastPayloadHash: json['lastPayloadHash'] as int?,
+    stableSamples: json['stableSamples'] as int? ?? 0,
+    stableRecordings: json['stableRecordings'] as int? ?? 0,
+    everChanged: json['everChanged'] as bool? ?? false,
+  );
+}
+
 /// Everything the discovery engine knows about one ECU: how to address
 /// it, what it identified as, and how far its DID scan has gotten.
 class EcuInfo {
@@ -24,7 +79,9 @@ class EcuInfo {
     List<String>? retryQueue,
     this.asleepUntil,
     this.noDataStreak = 0,
-  }) : discoverRanges = discoverRanges ?? const [],
+    Map<String, DidSampleStats>? sampleStats,
+  }) : sampleStats = sampleStats ?? {},
+       discoverRanges = discoverRanges ?? const [],
        identification = identification ?? {},
        discovered = discovered ?? {},
        conditional = conditional ?? {},
@@ -69,6 +126,9 @@ class EcuInfo {
   /// next such pause (see `noDataAsleepPause`).
   int noDataStreak;
 
+  /// Recurring-read statistics per discovered DID (4 hex digits).
+  Map<String, DidSampleStats> sampleStats;
+
   /// The decoded F197 system name, or null if never identified or the
   /// read didn't return a name -- used by the moving-vehicle safety
   /// blocklist.
@@ -81,8 +141,9 @@ class EcuInfo {
 
   /// Folds [other], an entry for the same ECU stored under a different
   /// id, into this one: found and conditional DIDs are united, the scan
-  /// resumes from whichever entry got further, a name only [other] knows
-  /// is kept, and the later sleep pause and longer NO-DATA streak win.
+  /// resumes from whichever entry got further, a name or sample statistics
+  /// only [other] has are kept, and the later sleep pause and longer
+  /// NO-DATA streak win.
   void absorb(EcuInfo other) {
     responseHeader ??= other.responseHeader;
     for (final MapEntry(:key, :value) in other.identification.entries) {
@@ -111,6 +172,9 @@ class EcuInfo {
     if (other.noDataStreak > noDataStreak) {
       noDataStreak = other.noDataStreak;
     }
+    for (final MapEntry(:key, :value) in other.sampleStats.entries) {
+      sampleStats.putIfAbsent(key, () => value);
+    }
   }
 
   static bool _sameRanges(List<(int, int)> a, List<(int, int)> b) {
@@ -137,6 +201,9 @@ class EcuInfo {
     'retryQueue': retryQueue,
     'asleepUntil': asleepUntil?.toUtc().toIso8601String(),
     'noDataStreak': noDataStreak,
+    'sampleStats': sampleStats.map(
+      (did, stats) => MapEntry(did, stats.toJson()),
+    ),
   };
 
   factory EcuInfo.fromJson(Map<String, dynamic> json) => EcuInfo(
@@ -157,6 +224,11 @@ class EcuInfo {
         ? DateTime.parse(json['asleepUntil'] as String)
         : null,
     noDataStreak: json['noDataStreak'] as int? ?? 0,
+    sampleStats: {
+      for (final MapEntry(:key, :value)
+          in (json['sampleStats'] as Map<dynamic, dynamic>? ?? {}).entries)
+        key as String: DidSampleStats.fromJson(value as Map<String, dynamic>),
+    },
   );
 }
 
@@ -194,8 +266,10 @@ class DiscoveryState {
     Map<String, EcuInfo>? ecus,
     Set<String>? inventoryStagesDone,
     this.lastRediscoveryTime,
+    Set<String>? learnedRecordings,
   }) : ecus = ecus ?? {},
-       inventoryStagesDone = inventoryStagesDone ?? {};
+       inventoryStagesDone = inventoryStagesDone ?? {},
+       learnedRecordings = learnedRecordings ?? {};
 
   /// Known ECUs, keyed by module id.
   Map<String, EcuInfo> ecus;
@@ -206,10 +280,15 @@ class DiscoveryState {
   /// Wall-clock time of the last ECU rediscovery sweep.
   DateTime? lastRediscoveryTime;
 
+  /// Session ids of the recordings already folded into
+  /// [EcuInfo.sampleStats].
+  Set<String> learnedRecordings;
+
   Map<String, dynamic> toJson() => {
     'ecus': ecus.map((key, value) => MapEntry(key, value.toJson())),
     'inventoryStagesDone': inventoryStagesDone.toList(),
     'lastRediscoveryTime': lastRediscoveryTime?.toUtc().toIso8601String(),
+    'learnedRecordings': learnedRecordings.toList(),
   };
 
   /// Drops a [phantomEcu11EcuId] entry an earlier sweep persisted, so it is
@@ -228,6 +307,9 @@ class DiscoveryState {
     lastRediscoveryTime: json['lastRediscoveryTime'] != null
         ? DateTime.parse(json['lastRediscoveryTime'] as String)
         : null,
+    learnedRecordings: Set<String>.from(
+      json['learnedRecordings'] as List<dynamic>? ?? [],
+    ),
   );
 
   /// Loads state from [file], or a fresh empty state if it doesn't exist

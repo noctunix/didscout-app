@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' show max;
 
 import 'package:flutter/foundation.dart';
 import 'package:obdbridge/obdbridge.dart';
@@ -10,6 +11,7 @@ import 'package:uuid/uuid.dart';
 
 import '../capture/isotp.dart';
 import '../capture/readings.dart';
+import '../discovery/did_stability.dart';
 import '../discovery/discovery_engine.dart';
 import '../discovery/discovery_plan.dart';
 import '../discovery/discovery_state.dart';
@@ -544,6 +546,14 @@ class RecordingController extends ChangeNotifier {
         // discovered DIDs this time.
         discoveryState = DiscoveryState();
       }
+      try {
+        if (await learnFromRecordings(discoveryState, directory)) {
+          await _saveDiscoveryState(discoveryState);
+        }
+      } on FileSystemException {
+        // Learning only stretches sampling intervals; an unreadable
+        // recording must never stop a new one from starting.
+      }
 
       _setPhase(RecordingPhase.startingRecording);
       final plan = _buildPlan(_settings, discoveryState);
@@ -996,8 +1006,10 @@ class RecordingController extends ChangeNotifier {
     ];
   }
 
-  /// One survey-interval read step per discovered DID not already covered
-  /// by [_knownDidSteps] -- empty whenever
+  /// One read step per discovered DID not already covered by
+  /// [_knownDidSteps], at the survey interval or, for a DID that has kept
+  /// one value ([DiscoveredEcuPlan.stableDids]), at [stableDidIntervalMs]
+  /// if that is longer -- empty whenever
   /// [AppSettings.keepSamplingFoundDids] is off.
   static List<ObdStepMessage> _discoveredSteps(
     List<DiscoveredEcuPlan> additions,
@@ -1014,7 +1026,9 @@ class RecordingController extends ChangeNotifier {
             moduleId: _effectiveModuleId(addition.moduleId),
             command: '22$did',
             responseHeader: addition.responseHeader,
-            intervalMs: settings.surveyIntervalMs,
+            intervalMs: addition.stableDids.contains(did)
+                ? max(settings.surveyIntervalMs, stableDidIntervalMs)
+                : settings.surveyIntervalMs,
           ),
   ];
 

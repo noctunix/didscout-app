@@ -5,6 +5,7 @@
 library;
 
 import '../bridge/vag_ppe_plan_data.dart';
+import 'did_stability.dart';
 import 'discovery_state.dart';
 
 /// One ECU's extra DIDs to add to the next recording's plan, not already
@@ -16,6 +17,7 @@ class DiscoveredEcuPlan {
     required this.responseHeader,
     required this.protocol,
     required this.dids,
+    required this.stableDids,
   });
 
   final String moduleId;
@@ -26,6 +28,9 @@ class DiscoveredEcuPlan {
   /// DIDs (4 hex digits, sorted) to add, deduplicated against whatever the
   /// vag-ppe generator already polls for this module.
   final List<String> dids;
+
+  /// The subset of [dids] that [didLooksStable].
+  final Set<String> stableDids;
 }
 
 /// Every ECU in [state] with at least one discovered DID not already
@@ -62,6 +67,10 @@ List<DiscoveredEcuPlan> discoveredPlanAdditions(DiscoveryState state) {
         responseHeader: responseHeader,
         protocol: ecu.protocol,
         dids: newDids,
+        stableDids: {
+          for (final did in newDids)
+            if (didLooksStable(did, ecu.sampleStats[did])) did,
+        },
       ),
     );
   }

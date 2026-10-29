@@ -39,6 +39,7 @@ void main() {
       final original = DiscoveryState(
         inventoryStagesDone: {'ecus11', 'ecus29'},
         lastRediscoveryTime: DateTime.utc(2026, 10, 28, 9, 30),
+        learnedRecordings: {'session-a'},
       );
       original.ecus['ecus11-7A1'] = EcuInfo(
         requestHeader: '7A1',
@@ -52,6 +53,14 @@ void main() {
         retryQueue: ['2A26'],
         asleepUntil: DateTime.utc(2026, 10, 28, 9, 31),
         noDataStreak: 3,
+        sampleStats: {
+          '2A04': DidSampleStats(
+            lastPayloadHash: 0xDEADBEEF,
+            stableSamples: 12,
+            stableRecordings: 3,
+            everChanged: true,
+          ),
+        },
       );
       original.ecus['ecus29-04'] = EcuInfo(
         requestHeader: '18DA04F1',
@@ -79,6 +88,12 @@ void main() {
       expect(gateway.retryQueue, ['2A26']);
       expect(gateway.asleepUntil, DateTime.utc(2026, 10, 28, 9, 31));
       expect(gateway.noDataStreak, 3);
+      final stats = gateway.sampleStats['2A04']!;
+      expect(stats.lastPayloadHash, 0xDEADBEEF);
+      expect(stats.stableSamples, 12);
+      expect(stats.stableRecordings, 3);
+      expect(stats.everChanged, isTrue);
+      expect(loaded.learnedRecordings, {'session-a'});
       expect(gateway.f197Name, 'Gateway');
 
       final other = loaded.ecus['ecus29-04']!;

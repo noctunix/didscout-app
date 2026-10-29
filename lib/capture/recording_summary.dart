@@ -42,20 +42,27 @@ class RecordingSummary {
   final int markerCount;
 }
 
-/// Scans [directory] for recording buffers (`<sessionId>.jsonl`, excluding
-/// their `.markers.jsonl` sidecars) and summarizes each one, newest first.
-/// An empty or missing directory yields an empty list.
-Future<List<RecordingSummary>> listRecordings(Directory directory) async {
+/// Every recording buffer (`<sessionId>.jsonl`, excluding its
+/// `.markers.jsonl` sidecar) in [directory], in no particular order. An
+/// empty or missing directory yields an empty list.
+Future<List<File>> listRecordingBuffers(Directory directory) async {
   if (!await directory.exists()) return [];
-  final summaries = <RecordingSummary>[];
-  for (final entity in await directory.list().toList()) {
-    if (entity is! File) continue;
-    if (!entity.path.endsWith('.jsonl') ||
-        entity.path.endsWith('.markers.jsonl')) {
-      continue;
-    }
-    summaries.add(await summarizeRecording(entity));
-  }
+  return [
+    await for (final entity in directory.list())
+      if (entity is File &&
+          entity.path.endsWith('.jsonl') &&
+          !entity.path.endsWith('.markers.jsonl'))
+        entity,
+  ];
+}
+
+/// Scans [directory] for recording buffers ([listRecordingBuffers]) and
+/// summarizes each one, newest first.
+Future<List<RecordingSummary>> listRecordings(Directory directory) async {
+  final summaries = [
+    for (final buffer in await listRecordingBuffers(directory))
+      await summarizeRecording(buffer),
+  ];
   summaries.sort((a, b) => b.startedAt.compareTo(a.startedAt));
   return summaries;
 }
@@ -64,7 +71,7 @@ Future<List<RecordingSummary>> listRecordings(Directory directory) async {
 /// `.markers.jsonl` sidecar alongside it if one exists.
 Future<RecordingSummary> summarizeRecording(File bufferFile) async {
   final path = bufferFile.path;
-  final sessionId = _sessionIdFromPath(path);
+  final sessionId = sessionIdOfBuffer(path);
   final markersFile = File('$path.markers.jsonl');
   final hasMarkersFile = await markersFile.exists();
 
@@ -144,7 +151,8 @@ Future<List<Map<String, dynamic>>> _readJsonLines(File file) async {
   return result;
 }
 
-String _sessionIdFromPath(String path) {
+/// The session id a `<sessionId>.jsonl` buffer at [path] is named after.
+String sessionIdOfBuffer(String path) {
   final name = path.split(Platform.pathSeparator).last;
   return name.endsWith('.jsonl')
       ? name.substring(0, name.length - '.jsonl'.length)
