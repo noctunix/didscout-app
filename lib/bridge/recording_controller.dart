@@ -1074,6 +1074,67 @@ class RecordingController extends ChangeNotifier {
 
     final adapterSequence = _adapterSequence(settings);
 
+    final knownSteps = [
+      // The speed signal is always planned, driving or not -- discovery
+      // is motion-aware and needs it even in RecordingMode.scoutOnly.
+      ObdStepMessage(
+        signalId: 'module7_22f40d',
+        moduleId: 'module7',
+        command: '22F40D',
+        responseHeader: _module7ResponseHeader,
+        intervalMs: settings.speedPollIntervalMs,
+      ),
+      // Energy, range and odometer are planned in every mode as well: they
+      // are what readings typed off the vehicle's displays are checked
+      // against.
+      ObdStepMessage(
+        signalId: 'module6_222ab8',
+        moduleId: 'module6',
+        command: '222AB8',
+        responseHeader: _module6ResponseHeader,
+        intervalMs: 15000,
+      ),
+      ObdStepMessage(
+        signalId: 'module6_222ab6',
+        moduleId: 'module6',
+        command: '222AB6',
+        responseHeader: _module6ResponseHeader,
+        intervalMs: 60000,
+      ),
+      ObdStepMessage(
+        signalId: 'module8_22f4a6',
+        moduleId: 'module8',
+        command: '22F4A6',
+        responseHeader: _module8ResponseHeader,
+        intervalMs: 60000,
+      ),
+      if (recordKnown) ...[
+        ObdStepMessage(
+          signalId: 'module7_22f446',
+          moduleId: 'module7',
+          command: '22F446',
+          responseHeader: _module7ResponseHeader,
+          intervalMs: 60000,
+        ),
+        ObdStepMessage(
+          signalId: 'module7_22f449',
+          moduleId: 'module7',
+          command: '22F449',
+          responseHeader: _module7ResponseHeader,
+          intervalMs: 5000,
+        ),
+        ObdStepMessage(
+          signalId: 'module7_22f442',
+          moduleId: 'module7',
+          command: '22F442',
+          responseHeader: _module7ResponseHeader,
+          intervalMs: 60000,
+        ),
+        ..._knownDidSteps(settings),
+      ],
+    ];
+    final knownSignalIds = {for (final step in knownSteps) step.signalId};
+
     return ObdPlanMessage(
       planId: 'didscout-fixed-plan',
       planVersion: 1,
@@ -1082,61 +1143,11 @@ class RecordingController extends ChangeNotifier {
       resync: adapterSequence,
       modules: [...knownModules, ...discoveredModules],
       steps: [
-        // The speed signal is always planned, driving or not -- discovery
-        // is motion-aware and needs it even in RecordingMode.scoutOnly.
-        ObdStepMessage(
-          signalId: 'module7_22f40d',
-          moduleId: 'module7',
-          command: '22F40D',
-          responseHeader: _module7ResponseHeader,
-          intervalMs: settings.speedPollIntervalMs,
-        ),
-        if (recordKnown) ...[
-          ObdStepMessage(
-            signalId: 'module6_222ab8',
-            moduleId: 'module6',
-            command: '222AB8',
-            responseHeader: _module6ResponseHeader,
-            intervalMs: 15000,
-          ),
-          ObdStepMessage(
-            signalId: 'module6_222ab6',
-            moduleId: 'module6',
-            command: '222AB6',
-            responseHeader: _module6ResponseHeader,
-            intervalMs: 60000,
-          ),
-          ObdStepMessage(
-            signalId: 'module7_22f446',
-            moduleId: 'module7',
-            command: '22F446',
-            responseHeader: _module7ResponseHeader,
-            intervalMs: 60000,
-          ),
-          ObdStepMessage(
-            signalId: 'module8_22f4a6',
-            moduleId: 'module8',
-            command: '22F4A6',
-            responseHeader: _module8ResponseHeader,
-            intervalMs: 60000,
-          ),
-          ObdStepMessage(
-            signalId: 'module7_22f449',
-            moduleId: 'module7',
-            command: '22F449',
-            responseHeader: _module7ResponseHeader,
-            intervalMs: 5000,
-          ),
-          ObdStepMessage(
-            signalId: 'module7_22f442',
-            moduleId: 'module7',
-            command: '22F442',
-            responseHeader: _module7ResponseHeader,
-            intervalMs: 60000,
-          ),
-          ..._knownDidSteps(settings),
-        ],
-        ..._discoveredSteps(discoveredAdditions, settings),
+        ...knownSteps,
+        // A gateway scan hit on a fixed module6 DID maps onto that step's
+        // own signal id.
+        for (final step in _discoveredSteps(discoveredAdditions, settings))
+          if (!knownSignalIds.contains(step.signalId)) step,
       ],
       limits: ObdLimitsMessage(
         maxResponseBytes: 4096,

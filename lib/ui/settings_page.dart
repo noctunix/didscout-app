@@ -212,9 +212,9 @@ class _SettingsPageState extends State<SettingsPage> {
                       RadioListTile<RecordingMode>(
                         title: Text('Scout only'),
                         subtitle: Text(
-                          'The recurring plan reads only the speed signal '
-                          'plus whatever discovery finds -- no vag-ppe or '
-                          'fixed vehicle signals.',
+                          'The recurring plan reads only speed, energy, '
+                          'range and odometer plus whatever discovery finds '
+                          '-- no other vag-ppe or fixed vehicle signals.',
                         ),
                         value: RecordingMode.scoutOnly,
                       ),
@@ -222,9 +222,8 @@ class _SettingsPageState extends State<SettingsPage> {
                         title: Text('Scout and record known signals'),
                         subtitle: Text(
                           'The recurring plan also reads every known '
-                          'vag-ppe DID plus the fixed energy/range/'
-                          'odometer/outside-temperature/12V/accelerator '
-                          'signals.',
+                          'vag-ppe DID plus the fixed outside-temperature/'
+                          '12V/accelerator signals.',
                         ),
                         value: RecordingMode.scoutAndRecordKnown,
                       ),

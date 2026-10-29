@@ -62,9 +62,39 @@ void main() {
   group('RecordingMode.scoutOnly (the default)', () {
     final scoutOnlyPlan = RecordingController.buildPlanForTesting();
 
-    test('reads only the speed signal', () {
-      expect(scoutOnlyPlan.steps, hasLength(1));
-      expect(scoutOnlyPlan.steps.single.signalId, 'module7_22f40d');
+    const baseSignalIds = [
+      'module7_22f40d',
+      'module6_222ab8',
+      'module6_222ab6',
+      'module8_22f4a6',
+    ];
+
+    test('reads only speed, energy, range and odometer', () {
+      expect(scoutOnlyPlan.steps.map((s) => s.signalId), baseSignalIds);
+      final intervals = {
+        for (final s in scoutOnlyPlan.steps) s.signalId: s.intervalMs,
+      };
+      expect(intervals['module6_222ab8'], 15000);
+      expect(intervals['module6_222ab6'], 60000);
+      expect(intervals['module8_22f4a6'], 60000);
+    });
+
+    test('a discovered gateway DID matching a base signal is planned once', () {
+      final state = DiscoveryState();
+      state.ecus['gateway'] = EcuInfo(
+        requestHeader: '710',
+        responseHeader: '77A',
+        protocol: 6,
+      )..discovered.addAll({'2AB8', '2A00'});
+
+      final withDiscovery = RecordingController.buildPlanForTesting(
+        discoveryState: state,
+      );
+
+      final ids = withDiscovery.steps.map((s) => s.signalId).toList();
+      expect(ids.where((id) => id == 'module6_222ab8'), hasLength(1));
+      expect(ids, contains('module6_222a00'));
+      expect(ids.toSet().length, ids.length);
     });
 
     test('omits the generated vag-ppe DID modules', () {
@@ -105,8 +135,7 @@ void main() {
         discoveryState: state,
       );
 
-      expect(withoutDiscovery.steps, hasLength(1));
-      expect(withoutDiscovery.steps.single.signalId, 'module7_22f40d');
+      expect(withoutDiscovery.steps.map((s) => s.signalId), baseSignalIds);
     });
   });
 
