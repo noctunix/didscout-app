@@ -17,6 +17,8 @@ import 'package:didscout_app/session/session_markers.dart';
 import 'package:didscout_app/settings/app_settings.dart';
 import 'package:permission_handler/permission_handler.dart' as ph;
 
+import '../support/wait_for.dart';
+
 /// Records every call made through it, same "everything works" baseline as
 /// `recording_controller_test.dart`'s fake, plus a hook for one-shot reads
 /// so discovery can be driven deterministically: [respondToOneShot]
@@ -216,7 +218,16 @@ void main() {
       final controller = makeController();
 
       await controller.start();
-      await Future<void>.delayed(const Duration(milliseconds: 200));
+      await waitFor(
+        () =>
+            controller
+                .discoveryEngineForTesting
+                ?.state
+                .ecus['gateway']
+                ?.discovered
+                .contains('F180') ??
+            false,
+      );
       await controller.stop();
 
       final engine = controller.discoveryEngineForTesting;
@@ -238,7 +249,12 @@ void main() {
       };
       final first = makeController();
       await first.start();
-      await Future<void>.delayed(const Duration(milliseconds: 200));
+      await waitFor(
+        () =>
+            first.discoveryEngineForTesting?.state.ecus['gateway']?.discovered
+                .contains('F180') ??
+            false,
+      );
       await first.stop();
       expect(persistedState!.ecus['gateway']?.discovered, contains('F180'));
 
@@ -296,9 +312,7 @@ void main() {
       );
 
       await controller.start();
-      await Future<void>.delayed(const Duration(milliseconds: 600));
-
-      expect(fakeNative.enqueuedSteps, isNotEmpty);
+      await waitFor(() => fakeNative.enqueuedSteps.isNotEmpty);
 
       await controller.stop();
     },
@@ -338,8 +352,7 @@ void main() {
     final controller = makeController();
 
     await controller.start();
-    await Future<void>.delayed(const Duration(milliseconds: 50));
-    expect(fakeNative.enqueuedSteps, isNotEmpty);
+    await waitFor(() => fakeNative.enqueuedSteps.isNotEmpty);
 
     final stopwatch = Stopwatch()..start();
     await controller.stop();
@@ -360,11 +373,19 @@ void main() {
     };
     final controller = makeController();
     await controller.start();
-    await Future<void>.delayed(const Duration(milliseconds: 100));
+    await waitFor(
+      () =>
+          controller
+              .discoveryEngineForTesting
+              ?.state
+              .ecus['gateway']
+              ?.conditional
+              .isNotEmpty ??
+          false,
+    );
 
     final engine = controller.discoveryEngineForTesting!;
     final gateway = engine.state.ecus['gateway']!;
-    expect(gateway.conditional, isNotEmpty);
     expect(gateway.retryQueue, isEmpty);
 
     controller.addPhase(MarkerPhase.drive);

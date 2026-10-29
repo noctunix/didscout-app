@@ -14,6 +14,8 @@ import 'package:didscout_app/power/power_monitor.dart';
 import 'package:didscout_app/power/power_recording_coordinator.dart';
 import 'package:didscout_app/settings/app_settings.dart';
 
+import '../support/wait_for.dart';
+
 /// A native API that resolves every call immediately with the
 /// "everything works" result, same fake shape as
 /// `recording_controller_test.dart`'s own.
@@ -46,21 +48,6 @@ class _FakeNativeObdApi extends NativeObdApi {
 
   @override
   Future<void> stopRecording(String sessionId) async {}
-}
-
-/// Waits until [condition] holds (or fails after [timeout]) instead of a fixed
-/// sleep, which flakes when the suite runs under load.
-Future<void> waitFor(
-  bool Function() condition, {
-  Duration timeout = const Duration(seconds: 5),
-}) async {
-  final deadline = DateTime.now().add(timeout);
-  while (!condition()) {
-    if (DateTime.now().isAfter(deadline)) {
-      fail('condition not met within $timeout');
-    }
-    await Future<void>.delayed(const Duration(milliseconds: 10));
-  }
 }
 
 void main() {
