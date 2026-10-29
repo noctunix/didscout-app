@@ -286,6 +286,81 @@ void main() {
     },
   );
 
+  test(
+    "a second recording's sidecar gets only markers no earlier sidecar has",
+    () async {
+      var sessionCount = 0;
+      final twoSessions = RecordingController(
+        requestRuntimePermissions: (_) async {},
+        bridge: ObdBridge(DidscoutPolicy(), nativeApi: fakeNative),
+        recordingsDirectory: () async => tempDir,
+        sessionIdFactory: () => 'session-${++sessionCount}',
+        clock: () => DateTime.utc(2026, 1, 1, 12),
+      );
+      addTearDown(twoSessions.dispose);
+
+      await twoSessions.start();
+      twoSessions.addNote('first recording');
+      await twoSessions.stop();
+      twoSessions.addNote('after first stop');
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      final firstSidecar = twoSessions.markersFilePath!;
+
+      await twoSessions.start();
+      await twoSessions.stop();
+      final secondSidecar = twoSessions.markersFilePath!;
+      expect(secondSidecar, isNot(firstSidecar));
+
+      final first = (await File(firstSidecar).readAsLines())
+          .map((line) => jsonDecode(line) as Map<String, dynamic>)
+          .toList();
+      expect(first.map((line) => line['text']), [
+        null,
+        'first recording',
+        'after first stop',
+      ]);
+      expect(first[2]['recording_active'], isFalse);
+
+      final second = await File(secondSidecar).readAsLines();
+      expect(second, hasLength(1));
+      expect(jsonDecode(second[0])['type'], 'plan');
+      expect(twoSessions.markers.markers, hasLength(2));
+    },
+  );
+
+  test(
+    'markers added after a failed start are flushed into the next recording',
+    () async {
+      var sessionCount = 0;
+      final retried = RecordingController(
+        requestRuntimePermissions: (_) async {},
+        bridge: ObdBridge(DidscoutPolicy(), nativeApi: fakeNative),
+        recordingsDirectory: () async => tempDir,
+        sessionIdFactory: () => 'session-${++sessionCount}',
+        clock: () => DateTime.utc(2026, 1, 1, 12),
+      );
+      addTearDown(retried.dispose);
+
+      await retried.start();
+      retried.addNote('first recording');
+      await retried.stop();
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+
+      fakeNative.startRecordingResult = false;
+      await retried.start();
+      expect(retried.phase, RecordingPhase.error);
+      retried.addNote('before second recording');
+
+      fakeNative.startRecordingResult = true;
+      await retried.start();
+
+      final lines = await File(retried.markersFilePath!).readAsLines();
+      expect(lines, hasLength(2));
+      expect(jsonDecode(lines[1])['text'], 'before second recording');
+      expect(jsonDecode(lines[1]).containsKey('recording_active'), isFalse);
+    },
+  );
+
   test('markers added while recording are appended live', () async {
     await controller.start();
     controller.addPhase(MarkerPhase.charge);

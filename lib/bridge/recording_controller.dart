@@ -203,6 +203,10 @@ class RecordingController extends ChangeNotifier {
   AppSettings _settings = const AppSettings.defaultValues();
 
   final SessionMarkerLog markers;
+
+  /// Markers added while no sidecar existed, in order, awaiting the next
+  /// one [start] creates.
+  final List<SessionMarker> _unflushedMarkers = [];
   ChargeReminderScheduler _chargeReminder;
   Timer? _tickTimer;
 
@@ -429,8 +433,9 @@ class RecordingController extends ChangeNotifier {
 
   Future<void> _appendLatestMarker() async {
     if (_bufferFilePath == null) {
-      // No session has ever started — the marker stays in [markers] only
-      // and is flushed to the sidecar once [start] creates one.
+      // No sidecar exists right now — the marker is held back and flushed
+      // to the next one [start] creates.
+      _unflushedMarkers.add(markers.markers.last);
       return;
     }
     // Readings/notes/events can still be entered after a recording has
@@ -571,8 +576,11 @@ class RecordingController extends ChangeNotifier {
       await File(
         '$bufferFilePath.markers.jsonl',
       ).writeAsString('${jsonEncode(_planSidecarLine(plan))}\n');
-      // Flush markers recorded before the sidecar path existed.
-      for (final marker in markers.markers) {
+      // [markers] outlives a recording; only what no earlier sidecar has
+      // received yet belongs in this one.
+      final unflushed = List.of(_unflushedMarkers);
+      _unflushedMarkers.clear();
+      for (final marker in unflushed) {
         await _appendMarkerLine(marker);
       }
       _setPhase(
