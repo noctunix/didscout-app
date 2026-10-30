@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -11,6 +12,7 @@ import 'package:didscout_app/bridge/connection_status.dart';
 import 'package:didscout_app/bridge/didscout_policy.dart';
 import 'package:didscout_app/bridge/recording_controller.dart';
 import 'package:didscout_app/bridge/vag_ppe_plan_data.dart';
+import 'package:didscout_app/discovery/discovery_state.dart';
 import 'package:didscout_app/session/session_markers.dart';
 import 'package:didscout_app/settings/app_settings.dart';
 import 'package:permission_handler/permission_handler.dart' as ph;
@@ -78,8 +80,13 @@ class _FakeNativeObdApi extends NativeObdApi {
     lastStoppedSessionId = sessionId;
   }
 
+  /// When set, [liveState] waits for it before answering -- holds a poll in
+  /// flight for as long as a test needs.
+  Completer<void>? liveStateGate;
+
   @override
   Future<ObdLiveStateMessage> liveState(List<String> signalIds) async {
+    await liveStateGate?.future;
     final result = liveStateResult;
     if (result == null) throw StateError('no liveState result set');
     return result;
@@ -132,6 +139,33 @@ void main() {
     controller.dispose();
     await tempDir.delete(recursive: true);
   });
+
+  test(
+    'a live-state poll that finishes after dispose notifies nobody',
+    () async {
+      final gate = Completer<void>();
+      fakeNative
+        ..liveStateGate = gate
+        ..liveStateResult = _liveStateWithLink(
+          ObdLinkStateValueMessage.connected,
+        );
+      final disposed = RecordingController(
+        requestRuntimePermissions: (_) async {},
+        bridge: ObdBridge(DidscoutPolicy(), nativeApi: fakeNative),
+        recordingsDirectory: () async => tempDir,
+        sessionIdFactory: () => 'disposed-session-id',
+        tickInterval: const Duration(milliseconds: 1),
+        loadDiscoveryState: () async => DiscoveryState(),
+        saveDiscoveryState: (_) async {},
+      );
+      await disposed.start();
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+
+      disposed.dispose();
+      gate.complete();
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+    },
+  );
 
   test('starts idle, able to start, unable to stop or share', () {
     expect(controller.phase, RecordingPhase.idle);

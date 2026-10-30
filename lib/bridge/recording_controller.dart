@@ -638,9 +638,20 @@ class RecordingController extends ChangeNotifier {
 
   @override
   void dispose() {
+    _disposed = true;
     _stopTicking();
     unawaited(_teardownDiscovery());
     super.dispose();
+  }
+
+  bool _disposed = false;
+
+  /// A tick, live-state poll or discovery pump already awaiting the bridge
+  /// when [dispose] runs still finishes afterwards; its update has nobody
+  /// left to notify.
+  @override
+  void notifyListeners() {
+    if (!_disposed) super.notifyListeners();
   }
 
   void _startTicking() {
