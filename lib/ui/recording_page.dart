@@ -301,9 +301,8 @@ num? _liveValueFor(ReadingQuantity quantity, LiveVehicleInfo info) =>
       ReadingQuantity.outsideTemp => info.outsideTempC,
       ReadingQuantity.range => info.rangeKm,
       ReadingQuantity.odometer => info.odometerKm,
-      ReadingQuantity.soc ||
-      ReadingQuantity.batteryTemp ||
-      ReadingQuantity.chargePower => null,
+      ReadingQuantity.soc => info.socEstimatePercent,
+      ReadingQuantity.batteryTemp || ReadingQuantity.chargePower => null,
     };
 
 /// Human-readable status line and icon for [RecordingPhase].
@@ -801,6 +800,17 @@ class _LiveInfoCard extends StatelessWidget {
       rows.add(
         _LiveInfoRow(
           text: 'Vehicle shows stored energy: ${liveInfo.storedEnergyWh} Wh',
+        ),
+      );
+    }
+    if (liveInfo.socEstimatePercent != null) {
+      rows.add(
+        _LiveInfoRow(
+          text:
+              'Estimated SoC from stored energy: '
+              '${liveInfo.socEstimatePercent} %',
+          onConfirm: () =>
+              onConfirm(ReadingQuantity.soc, liveInfo.socEstimatePercent!),
         ),
       );
     }

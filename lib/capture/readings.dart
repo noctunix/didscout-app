@@ -67,6 +67,10 @@ class LiveVehicleInfo {
   final int? rangeKm;
   final int? storedEnergyWh;
 
+  /// [estimateSocPercent] of [storedEnergyWh], when known.
+  int? get socEstimatePercent =>
+      storedEnergyWh == null ? null : estimateSocPercent(storedEnergyWh!);
+
   bool get hasAnyValue =>
       speedKmh != null ||
       odometerKm != null ||
@@ -110,3 +114,12 @@ int? decodeStoredEnergyWh(Uint8List payload) {
   final raw = (payload[2] << 8) | payload[3];
   return raw * 25;
 }
+
+/// Estimates the state of charge the vehicle displays from
+/// [storedEnergyWh] (`222AB8`), clamped to 0-100 %. Not a decoded DID: a
+/// linear fit of the owner's typed SoC readings against stored energy on
+/// the one vehicle recorded so far. It stays within about 3 percentage
+/// points of the display, which drifts from stored energy with battery
+/// temperature.
+int estimateSocPercent(int storedEnergyWh) =>
+    (storedEnergyWh * 0.0011077 + 5.38).round().clamp(0, 100);

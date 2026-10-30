@@ -60,6 +60,27 @@ void main() {
     });
   });
 
+  group('estimateSocPercent', () {
+    test('maps stored energy onto the displayed SoC, rounded', () {
+      // 2443 * 25 Wh, read while the display showed 73 %.
+      expect(estimateSocPercent(61075), 73);
+      // 1230 * 25 Wh, read while the display showed 39 %.
+      expect(estimateSocPercent(30750), 39);
+    });
+
+    test('never exceeds 100 %', () {
+      expect(estimateSocPercent(200000), 100);
+    });
+
+    test('is what LiveVehicleInfo reports, and null without energy', () {
+      expect(
+        const LiveVehicleInfo(storedEnergyWh: 61075).socEstimatePercent,
+        73,
+      );
+      expect(LiveVehicleInfo.empty.socEstimatePercent, isNull);
+    });
+  });
+
   test('wireName matches the fixed sidecar spelling', () {
     expect(ReadingQuantity.soc.wireName, 'soc');
     expect(ReadingQuantity.batteryTemp.wireName, 'battery_temp');

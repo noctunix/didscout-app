@@ -28,6 +28,9 @@ class _FakeNativeObdApi extends NativeObdApi {
   /// the vehicle just answered it.
   String? outsideTempResponse;
 
+  /// Same as [outsideTempResponse], for the `222AB8` (stored energy) step.
+  String? storedEnergyResponse;
+
   @override
   Future<void> configure(ObdBridgeConfigMessage config) async {}
 
@@ -58,33 +61,28 @@ class _FakeNativeObdApi extends NativeObdApi {
   Future<void> stopRecording(String sessionId) async {}
 
   @override
-  Future<ObdLiveStateMessage> liveState(List<String> signalIds) async {
-    final response = outsideTempResponse;
-    if (response == null) {
-      return ObdLiveStateMessage(
+  Future<ObdLiveStateMessage> liveState(List<String> signalIds) async =>
+      ObdLiveStateMessage(
         link: ObdLinkStateMessage(
           state: ObdLinkStateValueMessage.connected,
           adapterHandle: 'cx',
         ),
         timebaseId: 't1',
-        exchanges: [],
+        exchanges: [
+          if (outsideTempResponse != null)
+            ObdSignalExchangeMessage(
+              signalId: 'module7_22f446',
+              transport: ObdTransportStatusMessage.ok,
+              rawResponseText: outsideTempResponse,
+            ),
+          if (storedEnergyResponse != null)
+            ObdSignalExchangeMessage(
+              signalId: 'module6_222ab8',
+              transport: ObdTransportStatusMessage.ok,
+              rawResponseText: storedEnergyResponse,
+            ),
+        ],
       );
-    }
-    return ObdLiveStateMessage(
-      link: ObdLinkStateMessage(
-        state: ObdLinkStateValueMessage.connected,
-        adapterHandle: 'cx',
-      ),
-      timebaseId: 't1',
-      exchanges: [
-        ObdSignalExchangeMessage(
-          signalId: 'module7_22f446',
-          transport: ObdTransportStatusMessage.ok,
-          rawResponseText: response,
-        ),
-      ],
-    );
-  }
 }
 
 RecordingController _fakeController({
@@ -402,6 +400,41 @@ void main() {
       expect(marker.source, ReadingSource.confirmed);
       expect(marker.value, 20);
       expect(marker.liveValue, 20);
+
+      await controller.stop();
+    });
+
+    testWidgets('the SoC estimate from stored energy can be confirmed', (
+      tester,
+    ) async {
+      final fakeNative = _FakeNativeObdApi()
+        // Single-frame ISO-TP: 07 (SF, 7 bytes) 62 2AB8, then stored energy
+        // at offset 2: 0x098B = 2443 * 25 Wh.
+        ..storedEnergyResponse = '77A07622AB80000098B';
+      final controller = _fakeController(
+        fakeNative: fakeNative,
+        tickInterval: const Duration(milliseconds: 1),
+      );
+      await pumpPage(tester, controller: controller);
+
+      await _startRecording(tester, controller);
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 20)),
+      );
+      await tester.pumpAndSettle();
+
+      expect(
+        find.textContaining('Estimated SoC from stored energy: 73'),
+        findsOneWidget,
+      );
+      await tester.tap(find.widgetWithText(TextButton, 'Matches display'));
+      await tester.pumpAndSettle();
+
+      final marker = controller.markers.markers.single as ReadingMarker;
+      expect(marker.quantity, ReadingQuantity.soc);
+      expect(marker.source, ReadingSource.confirmed);
+      expect(marker.value, 73);
+      expect(marker.liveValue, 73);
 
       await controller.stop();
     });
