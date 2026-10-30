@@ -136,6 +136,33 @@ void main() {
       expect(log.lastValueFor(ReadingQuantity.range), 150);
       expect(log.lastValueFor(ReadingQuantity.batteryTemp), isNull);
     });
+
+    test('lastValueFor with maxAge ignores a reading older than that', () {
+      final now = DateTime.utc(2026, 1, 1, 12);
+      final log = SessionMarkerLog(clock: () => now);
+      log.addReading(
+        quantity: ReadingQuantity.batteryTemp,
+        value: 13,
+        unit: '°C',
+        readAt: now.subtract(const Duration(minutes: 20)),
+        source: ReadingSource.typed,
+      );
+      log.addReading(
+        quantity: ReadingQuantity.outsideTemp,
+        value: 8,
+        unit: '°C',
+        readAt: now.subtract(const Duration(minutes: 21)),
+        source: ReadingSource.typed,
+      );
+
+      const maxAge = Duration(minutes: 20);
+      expect(log.lastValueFor(ReadingQuantity.batteryTemp, maxAge: maxAge), 13);
+      expect(
+        log.lastValueFor(ReadingQuantity.outsideTemp, maxAge: maxAge),
+        isNull,
+      );
+      expect(log.lastValueFor(ReadingQuantity.outsideTemp), 8);
+    });
   });
 
   group('marker sidecar JSON', () {

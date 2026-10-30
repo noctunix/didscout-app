@@ -67,9 +67,11 @@ class LiveVehicleInfo {
   final int? rangeKm;
   final int? storedEnergyWh;
 
-  /// [estimateSocPercent] of [storedEnergyWh], when known.
-  int? get socEstimatePercent =>
-      storedEnergyWh == null ? null : estimateSocPercent(storedEnergyWh!);
+  /// [estimateSocPercent] of [storedEnergyWh] at [batteryTempC] (°C, if
+  /// known), or null while [storedEnergyWh] is unknown.
+  int? socEstimatePercent({num? batteryTempC}) => storedEnergyWh == null
+      ? null
+      : estimateSocPercent(storedEnergyWh!, batteryTempC: batteryTempC);
 
   bool get hasAnyValue =>
       speedKmh != null ||
@@ -116,10 +118,15 @@ int? decodeStoredEnergyWh(Uint8List payload) {
 }
 
 /// Estimates the state of charge the vehicle displays from
-/// [storedEnergyWh] (`222AB8`), clamped to 0-100 %. Not a decoded DID: a
-/// linear fit of the owner's typed SoC readings against stored energy on
-/// the one vehicle recorded so far. It stays within about 3 percentage
-/// points of the display, which drifts from stored energy with battery
-/// temperature.
-int estimateSocPercent(int storedEnergyWh) =>
-    (storedEnergyWh * 0.0011077 + 5.38).round().clamp(0, 100);
+/// [storedEnergyWh] (`222AB8`) and returns it in percent, clamped to 0-100.
+/// Not a decoded DID: a linear fit of the owner's typed SoC readings on the
+/// one vehicle recorded so far. Stored energy reads lower with a cold
+/// battery while the display does not, so [batteryTempC] (°C), when given,
+/// is part of the fit and keeps the estimate within about 1.3 percentage
+/// points of the display; without it, the error reaches about 3.
+int estimateSocPercent(int storedEnergyWh, {num? batteryTempC}) {
+  final soc = batteryTempC == null
+      ? storedEnergyWh * 0.0011077 + 5.38
+      : storedEnergyWh * 0.00109229 - batteryTempC * 0.191163 + 9.8163;
+  return soc.round().clamp(0, 100);
+}

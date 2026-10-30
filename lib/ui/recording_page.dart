@@ -36,6 +36,11 @@ const List<ReadingQuantity> _tileQuantities = [
   ReadingQuantity.odometer,
 ];
 
+/// How old the owner's last battery temp. reading may be to still feed the
+/// SoC estimate: battery temperature moves by over 15 K within an hour of
+/// driving plus fast charging.
+const Duration _batteryTempMaxAge = Duration(minutes: 20);
+
 /// The main (and currently only) screen: adapter connection/recording
 /// status, phase buttons, the reading tile grid (with a bottom-sheet entry
 /// per tile), live vehicle info with one-tap confirmation, a free-text note
@@ -129,10 +134,19 @@ class _RecordingPageState extends State<RecordingPage> {
     );
   }
 
+  num? get _recentBatteryTempC => _controller.markers.lastValueFor(
+    ReadingQuantity.batteryTemp,
+    maxAge: _batteryTempMaxAge,
+  );
+
   Future<void> _openTileSheet(ReadingQuantity quantity) async {
     final readAt = DateTime.now();
     final prefill = _controller.markers.lastValueFor(quantity);
-    final liveValue = _liveValueFor(quantity, _controller.liveInfo);
+    final liveValue = _liveValueFor(
+      quantity,
+      _controller.liveInfo,
+      _recentBatteryTempC,
+    );
     final result = await showModalBottomSheet<_TileEntryResult>(
       context: context,
       isScrollControlled: true,
@@ -250,6 +264,7 @@ class _RecordingPageState extends State<RecordingPage> {
                 const SizedBox(height: 16),
                 _LiveInfoCard(
                   liveInfo: _controller.liveInfo,
+                  batteryTempC: _recentBatteryTempC,
                   onConfirm: _confirmLive,
                 ),
                 const SizedBox(height: 16),
@@ -296,14 +311,17 @@ class _RecordingPageState extends State<RecordingPage> {
   }
 }
 
-num? _liveValueFor(ReadingQuantity quantity, LiveVehicleInfo info) =>
-    switch (quantity) {
-      ReadingQuantity.outsideTemp => info.outsideTempC,
-      ReadingQuantity.range => info.rangeKm,
-      ReadingQuantity.odometer => info.odometerKm,
-      ReadingQuantity.soc => info.socEstimatePercent,
-      ReadingQuantity.batteryTemp || ReadingQuantity.chargePower => null,
-    };
+num? _liveValueFor(
+  ReadingQuantity quantity,
+  LiveVehicleInfo info,
+  num? batteryTempC,
+) => switch (quantity) {
+  ReadingQuantity.outsideTemp => info.outsideTempC,
+  ReadingQuantity.range => info.rangeKm,
+  ReadingQuantity.odometer => info.odometerKm,
+  ReadingQuantity.soc => info.socEstimatePercent(batteryTempC: batteryTempC),
+  ReadingQuantity.batteryTemp || ReadingQuantity.chargePower => null,
+};
 
 /// Human-readable status line and icon for [RecordingPhase].
 String _statusText(RecordingController controller) {
@@ -784,9 +802,18 @@ class _ScoutEventRow extends StatelessWidget {
 }
 
 class _LiveInfoCard extends StatelessWidget {
-  const _LiveInfoCard({required this.liveInfo, required this.onConfirm});
+  const _LiveInfoCard({
+    required this.liveInfo,
+    required this.batteryTempC,
+    required this.onConfirm,
+  });
 
   final LiveVehicleInfo liveInfo;
+
+  /// The owner's own recent battery temp. reading, if any; the vehicle's
+  /// own battery temperature isn't decoded.
+  final num? batteryTempC;
+
   final Future<void> Function(ReadingQuantity quantity, num liveValue)
   onConfirm;
 
@@ -803,14 +830,13 @@ class _LiveInfoCard extends StatelessWidget {
         ),
       );
     }
-    if (liveInfo.socEstimatePercent != null) {
+    final socEstimate = liveInfo.socEstimatePercent(batteryTempC: batteryTempC);
+    if (socEstimate != null) {
+      final atTemp = batteryTempC == null ? '' : ' at $batteryTempC °C battery';
       rows.add(
         _LiveInfoRow(
-          text:
-              'Estimated SoC from stored energy: '
-              '${liveInfo.socEstimatePercent} %',
-          onConfirm: () =>
-              onConfirm(ReadingQuantity.soc, liveInfo.socEstimatePercent!),
+          text: 'Estimated SoC from stored energy$atTemp: $socEstimate %',
+          onConfirm: () => onConfirm(ReadingQuantity.soc, socEstimate),
         ),
       );
     }

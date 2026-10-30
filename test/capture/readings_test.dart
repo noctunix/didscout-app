@@ -61,23 +61,39 @@ void main() {
   });
 
   group('estimateSocPercent', () {
-    test('maps stored energy onto the displayed SoC, rounded', () {
-      // 2443 * 25 Wh, read while the display showed 73 %.
+    test('without battery temp., uses the energy-only fit', () {
+      // 61075 * 0.0011077 + 5.38 = 73.033
       expect(estimateSocPercent(61075), 73);
-      // 1230 * 25 Wh, read while the display showed 39 %.
+      // 1230 * 25 Wh, read while the display showed 39 %:
+      // 30750 * 0.0011077 + 5.38 = 39.442
       expect(estimateSocPercent(30750), 39);
     });
 
-    test('never exceeds 100 %', () {
+    test('with battery temp., the same energy reads higher when cold', () {
+      // 61075 * 0.00109229 - 13 * 0.191163 + 9.8163 = 74.043
+      expect(estimateSocPercent(61075, batteryTempC: 13), 74);
+      // 61075 * 0.00109229 - 31 * 0.191163 + 9.8163 = 70.602
+      expect(estimateSocPercent(61075, batteryTempC: 31), 71);
+      // 58175 * 0.00109229 - 31 * 0.191163 + 9.8163 = 67.434
+      expect(estimateSocPercent(58175, batteryTempC: 31.0), 67);
+    });
+
+    test('is clamped to 0-100 %', () {
       expect(estimateSocPercent(200000), 100);
+      expect(estimateSocPercent(200000, batteryTempC: 20), 100);
+      // 0 * 0.00109229 - 60 * 0.191163 + 9.8163 = -1.653
+      expect(estimateSocPercent(0, batteryTempC: 60), 0);
     });
 
     test('is what LiveVehicleInfo reports, and null without energy', () {
+      const info = LiveVehicleInfo(storedEnergyWh: 61075);
+      expect(info.socEstimatePercent(), 73);
+      expect(info.socEstimatePercent(batteryTempC: 13), 74);
+      expect(LiveVehicleInfo.empty.socEstimatePercent(), isNull);
       expect(
-        const LiveVehicleInfo(storedEnergyWh: 61075).socEstimatePercent,
-        73,
+        LiveVehicleInfo.empty.socEstimatePercent(batteryTempC: 13),
+        isNull,
       );
-      expect(LiveVehicleInfo.empty.socEstimatePercent, isNull);
     });
   });
 

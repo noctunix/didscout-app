@@ -404,27 +404,44 @@ void main() {
       await controller.stop();
     });
 
-    testWidgets('the SoC estimate from stored energy can be confirmed', (
-      tester,
-    ) async {
-      final fakeNative = _FakeNativeObdApi()
+    RecordingController storedEnergyController() => _fakeController(
+      fakeNative: _FakeNativeObdApi()
         // Single-frame ISO-TP: 07 (SF, 7 bytes) 62 2AB8, then stored energy
-        // at offset 2: 0x098B = 2443 * 25 Wh.
-        ..storedEnergyResponse = '77A07622AB80000098B';
-      final controller = _fakeController(
-        fakeNative: fakeNative,
-        tickInterval: const Duration(milliseconds: 1),
-      );
-      await pumpPage(tester, controller: controller);
+        // at offset 2: 0x098B = 2443 * 25 Wh = 61075 Wh.
+        ..storedEnergyResponse = '77A07622AB80000098B',
+      tickInterval: const Duration(milliseconds: 1),
+    );
 
+    Future<void> startAndPoll(
+      WidgetTester tester,
+      RecordingController controller,
+    ) async {
+      await pumpPage(tester, controller: controller);
       await _startRecording(tester, controller);
       await tester.runAsync(
         () => Future<void>.delayed(const Duration(milliseconds: 20)),
       );
       await tester.pumpAndSettle();
+    }
 
+    void addBatteryTemp(RecordingController controller, Duration age) {
+      controller.addReading(
+        quantity: ReadingQuantity.batteryTemp,
+        value: 13,
+        readAt: DateTime.now().subtract(age),
+        source: ReadingSource.typed,
+      );
+    }
+
+    testWidgets('the SoC estimate from stored energy can be confirmed', (
+      tester,
+    ) async {
+      final controller = storedEnergyController();
+      await startAndPoll(tester, controller);
+
+      // 61075 * 0.0011077 + 5.38 = 73.033
       expect(
-        find.textContaining('Estimated SoC from stored energy: 73'),
+        find.text('Estimated SoC from stored energy: 73 %'),
         findsOneWidget,
       );
       await tester.tap(find.widgetWithText(TextButton, 'Matches display'));
@@ -435,6 +452,54 @@ void main() {
       expect(marker.source, ReadingSource.confirmed);
       expect(marker.value, 73);
       expect(marker.liveValue, 73);
+
+      await controller.stop();
+    });
+
+    testWidgets('a recent battery temp. reading feeds the SoC estimate', (
+      tester,
+    ) async {
+      final controller = storedEnergyController();
+      addBatteryTemp(controller, const Duration(minutes: 5));
+      await startAndPoll(tester, controller);
+
+      // 61075 * 0.00109229 - 13 * 0.191163 + 9.8163 = 74.043
+      expect(
+        find.text('Estimated SoC from stored energy at 13 °C battery: 74 %'),
+        findsOneWidget,
+      );
+      await tester.tap(find.widgetWithText(TextButton, 'Matches display'));
+      await tester.pumpAndSettle();
+
+      final confirmed = controller.markers.markers.last as ReadingMarker;
+      expect(confirmed.quantity, ReadingQuantity.soc);
+      expect(confirmed.value, 74);
+      expect(confirmed.liveValue, 74);
+
+      await tester.tap(find.text('State of charge'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+      await tester.pumpAndSettle();
+
+      final entered = controller.markers.markers.last as ReadingMarker;
+      expect(entered.source, isNot(ReadingSource.confirmed));
+      expect(entered.liveValue, 74);
+
+      await controller.stop();
+    });
+
+    testWidgets('a battery temp. reading older than 20 min is ignored', (
+      tester,
+    ) async {
+      final controller = storedEnergyController();
+      addBatteryTemp(controller, const Duration(minutes: 21));
+      await startAndPoll(tester, controller);
+
+      expect(
+        find.text('Estimated SoC from stored energy: 73 %'),
+        findsOneWidget,
+      );
+      expect(find.textContaining('°C battery'), findsNothing);
 
       await controller.stop();
     });
