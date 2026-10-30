@@ -58,6 +58,11 @@ const String _module8ResponseHeader = '18DAF106';
 const String _module6RequestHeader = '710';
 const String _module6ResponseHeader = '77A';
 
+/// The 29-bit module carrying the battery temperature candidate: vag-ppe's
+/// `hcp1`, planned under that same id.
+const String _hcp1RequestHeader = '18DA0FF1';
+const String _hcp1ResponseHeader = '18DAF10F';
+
 /// A step's command and expected response header, keyed by its own
 /// [ObdStepMessage.signalId] — used to decode [ObdBridge.liveState]'s cached
 /// attempts back into a [LiveVehicleInfo] during a recording.
@@ -73,6 +78,7 @@ const Map<String, _LiveSignalSpec> _liveSignalSpecs = {
   'module8_22f4a6': _LiveSignalSpec('22F4A6', _module8ResponseHeader),
   'module6_222ab6': _LiveSignalSpec('222AB6', _module6ResponseHeader),
   'module6_222ab8': _LiveSignalSpec('222AB8', _module6ResponseHeader),
+  'hcp1_222a2d': _LiveSignalSpec('222A2D', _hcp1ResponseHeader),
 };
 
 const List<String> _adapterInitCommands = [
@@ -867,6 +873,7 @@ class RecordingController extends ChangeNotifier {
       int? outsideTempC;
       int? rangeKm;
       int? storedEnergyWh;
+      ({double min, double max})? batteryTempC;
       for (final exchange in state.exchanges) {
         if (exchange.transport != ObdTransportStatusMessage.ok ||
             exchange.rawResponseText == null) {
@@ -896,6 +903,8 @@ class RecordingController extends ChangeNotifier {
             rangeKm = decodeRangeKm(payload);
           case 'module6_222ab8':
             storedEnergyWh = decodeStoredEnergyWh(payload);
+          case 'hcp1_222a2d':
+            batteryTempC = decodeBatteryTempRangeC(payload);
         }
       }
       _liveInfo = LiveVehicleInfo(
@@ -904,6 +913,8 @@ class RecordingController extends ChangeNotifier {
         outsideTempC: outsideTempC,
         rangeKm: rangeKm,
         storedEnergyWh: storedEnergyWh,
+        batteryTempMinC: batteryTempC?.min,
+        batteryTempMaxC: batteryTempC?.max,
       );
     } catch (_) {
       _liveInfo = LiveVehicleInfo.empty;
@@ -997,20 +1008,18 @@ class RecordingController extends ChangeNotifier {
       ? ObdProtocol.twentyNineBitCan
       : ObdProtocol.elevenBitCan;
 
-  /// Modules for every vehicle module known from the vag-ppe profile that the
-  /// base plan does not already address.
+  /// Modules for every vehicle module known from the vag-ppe profile.
   static List<ObdModuleMessage> _knownDidModules() => [
     for (final spec in vagPpeModules)
-      if (_planModuleId(spec) != 'module6')
-        ObdModuleMessage(
-          moduleId: _planModuleId(spec),
-          protocol: _protocolOf(spec).wireValue,
-          setup: buildModuleSetupCommands(
-            protocol: _protocolOf(spec),
-            requestHeader: spec.request,
-            responseHeader: spec.response,
-          ),
+      ObdModuleMessage(
+        moduleId: _planModuleId(spec),
+        protocol: _protocolOf(spec).wireValue,
+        setup: buildModuleSetupCommands(
+          protocol: _protocolOf(spec),
+          requestHeader: spec.request,
+          responseHeader: spec.response,
         ),
+      ),
   ];
 
   /// One read step per DID known to answer on this vehicle platform. DIDs
@@ -1135,13 +1144,26 @@ class RecordingController extends ChangeNotifier {
       ),
     );
 
+    final hcp1 = ObdModuleMessage(
+      moduleId: 'hcp1',
+      protocol: ObdProtocol.twentyNineBitCan.wireValue,
+      setup: buildModuleSetupCommands(
+        protocol: ObdProtocol.twentyNineBitCan,
+        requestHeader: _hcp1RequestHeader,
+        responseHeader: _hcp1ResponseHeader,
+      ),
+    );
+
     final recordKnown =
         settings.recordingMode == RecordingMode.scoutAndRecordKnown;
+    final fixedModules = [module7, module8, module6, hcp1];
+    final fixedModuleIds = {for (final module in fixedModules) module.moduleId};
     final knownModules = [
-      module7,
-      module8,
-      module6,
-      if (recordKnown) ..._knownDidModules(),
+      ...fixedModules,
+      // The gateway and hcp1 profile modules are already planned above.
+      if (recordKnown)
+        for (final module in _knownDidModules())
+          if (!fixedModuleIds.contains(module.moduleId)) module,
     ];
     final discoveredAdditions = discoveredPlanAdditions(discoveryState);
     final discoveredModules = _discoveredModules(discoveredAdditions, {
@@ -1150,7 +1172,7 @@ class RecordingController extends ChangeNotifier {
 
     final adapterSequence = _adapterSequence(settings);
 
-    final knownSteps = [
+    final fixedSteps = [
       // The speed signal is always planned, driving or not -- discovery
       // is motion-aware and needs it even in RecordingMode.scoutOnly.
       ObdStepMessage(
@@ -1160,9 +1182,9 @@ class RecordingController extends ChangeNotifier {
         responseHeader: _module7ResponseHeader,
         intervalMs: settings.speedPollIntervalMs,
       ),
-      // Energy, range and odometer are planned in every mode as well: they
-      // are what readings typed off the vehicle's displays are checked
-      // against.
+      // Energy, range, odometer and the battery temperature candidate are
+      // planned in every mode as well: they are what readings typed off the
+      // vehicle's displays are checked against.
       ObdStepMessage(
         signalId: 'module6_222ab8',
         moduleId: 'module6',
@@ -1183,6 +1205,13 @@ class RecordingController extends ChangeNotifier {
         command: '22F4A6',
         responseHeader: _module8ResponseHeader,
         intervalMs: 60000,
+      ),
+      ObdStepMessage(
+        signalId: 'hcp1_222a2d',
+        moduleId: 'hcp1',
+        command: '222A2D',
+        responseHeader: _hcp1ResponseHeader,
+        intervalMs: 30000,
       ),
       if (recordKnown) ...[
         ObdStepMessage(
@@ -1206,8 +1235,15 @@ class RecordingController extends ChangeNotifier {
           responseHeader: _module7ResponseHeader,
           intervalMs: 60000,
         ),
-        ..._knownDidSteps(settings),
       ],
+    ];
+    final fixedSignalIds = {for (final step in fixedSteps) step.signalId};
+    final knownSteps = [
+      ...fixedSteps,
+      // A profile DID that is also a fixed step keeps the fixed interval.
+      if (recordKnown)
+        for (final step in _knownDidSteps(settings))
+          if (!fixedSignalIds.contains(step.signalId)) step,
     ];
     final knownSignalIds = {for (final step in knownSteps) step.signalId};
 

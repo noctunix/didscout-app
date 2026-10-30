@@ -1,3 +1,4 @@
+import 'dart:math' as math;
 import 'dart:typed_data';
 
 /// One of the tile quantities the recording page lets the owner enter or
@@ -57,6 +58,8 @@ class LiveVehicleInfo {
     this.outsideTempC,
     this.rangeKm,
     this.storedEnergyWh,
+    this.batteryTempMinC,
+    this.batteryTempMaxC,
   });
 
   static const empty = LiveVehicleInfo();
@@ -66,6 +69,11 @@ class LiveVehicleInfo {
   final int? outsideTempC;
   final int? rangeKm;
   final int? storedEnergyWh;
+
+  /// Lowest and highest populated sensor of the unverified HV battery
+  /// temperature candidate, see [decodeBatteryTempRangeC].
+  final double? batteryTempMinC;
+  final double? batteryTempMaxC;
 
   /// [estimateSocPercent] of [storedEnergyWh] at [batteryTempC] (°C, if
   /// known), or null while [storedEnergyWh] is unknown.
@@ -78,7 +86,9 @@ class LiveVehicleInfo {
       odometerKm != null ||
       outsideTempC != null ||
       rangeKm != null ||
-      storedEnergyWh != null;
+      storedEnergyWh != null ||
+      batteryTempMinC != null ||
+      batteryTempMaxC != null;
 }
 
 /// Decodes a `22F40D` (speed) positive payload: byte 0, km/h.
@@ -115,6 +125,22 @@ int? decodeStoredEnergyWh(Uint8List payload) {
   if (payload.length < 4) return null;
   final raw = (payload[2] << 8) | payload[3];
   return raw * 25;
+}
+
+/// Decodes a `222A2D` positive payload from module `hcp1` into the lowest
+/// and highest populated sensor temperature, in °C, or returns null when
+/// [payload] has no populated sensor slot. Byte 0 is a format/count byte;
+/// every following byte is one sensor slot, raw / 2 - 64 °C, and a slot at
+/// or below 0x31 (-39.5 °C) is unpopulated. An unverified candidate for
+/// the HV battery temperature: its minimum has matched the vehicle's
+/// displayed battery temperature at a single data point only.
+({double min, double max})? decodeBatteryTempRangeC(Uint8List payload) {
+  final temps = [
+    for (final raw in payload.skip(1))
+      if (raw > 0x31) raw / 2 - 64,
+  ];
+  if (temps.isEmpty) return null;
+  return (min: temps.reduce(math.min), max: temps.reduce(math.max));
 }
 
 /// Estimates the state of charge the vehicle displays from

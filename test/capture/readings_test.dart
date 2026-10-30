@@ -60,6 +60,49 @@ void main() {
     });
   });
 
+  group('decodeBatteryTempRangeC', () {
+    test('min and max of the populated slots, raw / 2 - 64 degC', () {
+      // Byte 0 is skipped. 0xB0 = 176 -> 24.0, 0xB3 = 179 -> 25.5,
+      // 0xB7 = 183 -> 27.5; 0x30 (-40.0) and 0x31 (-39.5) are unpopulated.
+      final range = decodeBatteryTempRangeC(
+        Uint8List.fromList([0x01, 0xB3, 0xB0, 0xB7, 0x30, 0x31, 0x30]),
+      );
+      expect(range?.min, 24.0);
+      expect(range?.max, 27.5);
+    });
+
+    test('0x32 (-39.0 degC) is the lowest populated slot', () {
+      final range = decodeBatteryTempRangeC(
+        Uint8List.fromList([0x01, 0x32, 0x31]),
+      );
+      expect(range?.min, -39.0);
+      expect(range?.max, -39.0);
+    });
+
+    test('only unpopulated slots is null', () {
+      expect(
+        decodeBatteryTempRangeC(Uint8List.fromList([0x01, 0x30, 0x31, 0x00])),
+        isNull,
+      );
+    });
+
+    test('a payload without any slot is null', () {
+      expect(decodeBatteryTempRangeC(Uint8List.fromList([0x01])), isNull);
+      expect(decodeBatteryTempRangeC(Uint8List.fromList([])), isNull);
+    });
+  });
+
+  test('a battery temp. candidate alone counts as a live value', () {
+    expect(LiveVehicleInfo.empty.hasAnyValue, isFalse);
+    expect(
+      const LiveVehicleInfo(
+        batteryTempMinC: 24,
+        batteryTempMaxC: 27.5,
+      ).hasAnyValue,
+      isTrue,
+    );
+  });
+
   group('estimateSocPercent', () {
     test('without battery temp., uses the energy-only fit', () {
       // 61075 * 0.0011077 + 5.38 = 73.033

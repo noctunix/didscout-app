@@ -7,13 +7,14 @@
 /// clamps it to a floor of 1 read/s, the opposite of unlimited.
 const int unlimitedMaxReadsPerSecond = 1000;
 
-/// What a recurring recording plan reads beyond the speed, energy, range
-/// and odometer signals every plan carries.
+/// What a recurring recording plan reads beyond the speed, energy, range,
+/// odometer and battery temperature candidate signals every plan carries.
 enum RecordingMode {
-  /// Only the speed (needed for motion-aware scouting), energy, range and
-  /// odometer signals plus, optionally, discovered DIDs
-  /// ([AppSettings.keepSamplingFoundDids]). The generated vag-ppe DIDs and
-  /// the fixed outside-temperature/12V/accelerator steps are omitted.
+  /// Only the speed (needed for motion-aware scouting), energy, range,
+  /// odometer and battery temperature candidate signals plus, optionally,
+  /// discovered DIDs ([AppSettings.keepSamplingFoundDids]). The other
+  /// generated vag-ppe DIDs and the fixed outside-temperature/12V/
+  /// accelerator steps are omitted.
   scoutOnly,
 
   /// Today's full plan: every fixed base signal plus every generated
@@ -98,8 +99,8 @@ class AppSettings {
   /// of this setting.
   final bool scoutWhileDriving;
 
-  /// What the recurring plan reads beyond the speed/energy/range/odometer
-  /// signals.
+  /// What the recurring plan reads beyond the speed/energy/range/odometer/
+  /// battery temperature candidate signals.
   final RecordingMode recordingMode;
 
   /// Whether DIDs discovery finds are kept in the recurring plan

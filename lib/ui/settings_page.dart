@@ -213,7 +213,8 @@ class _SettingsPageState extends State<SettingsPage> {
                         title: Text('Scout only'),
                         subtitle: Text(
                           'The recurring plan reads only speed, energy, '
-                          'range and odometer plus whatever discovery finds '
+                          'range, odometer and the battery temperature '
+                          'candidate plus whatever discovery finds '
                           '-- no other vag-ppe or fixed vehicle signals.',
                         ),
                         value: RecordingMode.scoutOnly,
