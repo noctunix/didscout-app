@@ -38,9 +38,12 @@ class RecordingSummary {
   /// Number of vehicle-read exchanges in the buffer (gap lines excluded).
   final int readingCount;
 
-  /// Number of marker sidecar lines, excluding the plan line.
+  /// Number of marker sidecar lines, excluding the `plan` and `modules`
+  /// lines, which map module ids to headers rather than mark anything.
   final int markerCount;
 }
+
+const Set<String> _moduleHeaderLineTypes = {'plan', 'modules'};
 
 /// Every recording buffer (`<sessionId>.jsonl`, excluding its
 /// `.markers.jsonl` sidecar) in [directory], in no particular order. An
@@ -108,7 +111,7 @@ Future<RecordingSummary> summarizeRecording(File bufferFile) async {
   if (hasMarkersFile) {
     sizeBytes += await markersFile.length();
     for (final line in await _readJsonLines(markersFile)) {
-      if (line['type'] != 'plan') markerCount++;
+      if (!_moduleHeaderLineTypes.contains(line['type'])) markerCount++;
     }
   }
 

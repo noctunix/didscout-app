@@ -97,6 +97,22 @@ void main() {
       expect(summary.markerCount, 2);
       expect(summary.sizeBytes, await buffer.length() + await sidecar.length());
     });
+
+    test('does not count modules lines as markers', () async {
+      final buffer = await writeBuffer('m.jsonl', [
+        _header(createdUtcMs: 1700000000000),
+      ]);
+      await File('${buffer.path}.markers.jsonl').writeAsString(
+        '${_planLine()}\n'
+        '{"type":"modules","at":"2026-01-01T12:00:00.000Z","modules":'
+        '[{"id":"gateway","request":"710","response":"77A","protocol":"6"}]}\n'
+        '{"type":"note","text":"hi","at":"2026-01-01T12:00:01.000Z"}\n',
+      );
+
+      final summary = await summarizeRecording(buffer);
+
+      expect(summary.markerCount, 1);
+    });
   });
 
   group('listRecordings', () {

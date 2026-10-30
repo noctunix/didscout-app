@@ -17,7 +17,7 @@ import '../discovery/discovery_plan.dart';
 import '../discovery/discovery_state.dart';
 import '../discovery/discovery_state_store.dart';
 import '../discovery/discovery_ui_state.dart';
-import '../discovery/probe.dart' show signalIdFor;
+import '../discovery/probe.dart' show ProbeModule, signalIdFor;
 import '../discovery/profile_export.dart';
 import '../discovery/scout_status.dart';
 import '../session/charge_reminder.dart';
@@ -465,10 +465,15 @@ class RecordingController extends ChangeNotifier {
     if (tagInactive && marker is! PhaseMarker) {
       json = {...json, 'recording_active': false};
     }
-    return File(
-      '${_bufferFilePath!}.markers.jsonl',
-    ).writeAsString('${jsonEncode(json)}\n', mode: FileMode.append);
+    return _appendSidecarLine(markersFilePath!, json);
   }
+
+  /// Appends [json] to the sidecar at [path] as one whole line in a single
+  /// append-mode write, so concurrent appends never interleave mid-line.
+  static Future<void> _appendSidecarLine(
+    String path,
+    Map<String, dynamic> json,
+  ) => File(path).writeAsString('${jsonEncode(json)}\n', mode: FileMode.append);
 
   /// Runs the whole connect-and-record flow. A no-op unless [canStart].
   Future<void> start() async {
@@ -604,7 +609,7 @@ class RecordingController extends ChangeNotifier {
         adapter.advertisedName ?? adapter.handle,
       );
       _startTicking();
-      _startDiscovery(discoveryState);
+      _startDiscovery(discoveryState, plan);
     } catch (error) {
       _setPhase(RecordingPhase.error, error.toString());
     }
@@ -670,13 +675,22 @@ class RecordingController extends ChangeNotifier {
     _reconnectPollAttempts = 0;
   }
 
-  /// Starts the discovery engine for the recording that just started, when
-  /// [AppSettings.scoutWhileRecording] is on; a no-op otherwise, and
-  /// [discoveryUiState] then stays null for the whole recording.
-  void _startDiscovery(DiscoveryState discoveryState) {
+  /// Starts the discovery engine for the recording that just started with
+  /// [plan], when [AppSettings.scoutWhileRecording] is on; a no-op
+  /// otherwise, and [discoveryUiState] then stays null for the whole
+  /// recording.
+  void _startDiscovery(DiscoveryState discoveryState, ObdPlanMessage plan) {
     if (!_settings.scoutWhileRecording) return;
     _discoveryState = discoveryState;
-    final executor = BridgeReadExecutor(_bridge);
+    final sidecarPath = markersFilePath!;
+    final sidecarModuleIds = {
+      for (final module in plan.modules) module.moduleId,
+    };
+    final executor = BridgeReadExecutor(
+      _bridge,
+      onAccepted: (modules) =>
+          _recordOneShotModules(sidecarPath, sidecarModuleIds, modules),
+    );
     _discoveryExecutor = executor;
     ObdEventsApi.setUp(_DiscoveryEventsBridge(executor));
     _sessionDiscoveryHits = 0;
@@ -698,6 +712,37 @@ class RecordingController extends ChangeNotifier {
     _discoveryTimer = Timer.periodic(
       _discoveryPumpInterval,
       (_) => unawaited(_pumpDiscovery()),
+    );
+  }
+
+  /// Appends a `{"type":"modules",…}` line to the sidecar at [sidecarPath]
+  /// for every module in [modules] that has a known responder and is not
+  /// in [recordedIds] yet, adding it there. One-shot rows of a module the
+  /// plan line doesn't name can then still be mapped to their headers;
+  /// a sweep module without a responder can't be, so it is left out.
+  void _recordOneShotModules(
+    String sidecarPath,
+    Set<String> recordedIds,
+    List<ProbeModule> modules,
+  ) {
+    final added = [
+      for (final module in modules)
+        if (module.responseHeader case final responseHeader?)
+          if (recordedIds.add(module.id))
+            {
+              'id': module.id,
+              'request': module.requestHeader,
+              'response': responseHeader,
+              'protocol': module.protocol.toString(),
+            },
+    ];
+    if (added.isEmpty) return;
+    unawaited(
+      _appendSidecarLine(sidecarPath, {
+        'type': 'modules',
+        'at': _now().toUtc().toIso8601String(),
+        'modules': added,
+      }),
     );
   }
 

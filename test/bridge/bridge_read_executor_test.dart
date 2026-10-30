@@ -124,6 +124,37 @@ void main() {
       expect(fakeNative.lastModules, isNull);
     });
 
+    test('reports an accepted batch\'s modules to onAccepted', () async {
+      final accepted = <List<ProbeModule>>[];
+      final reporting = BridgeReadExecutor(
+        ObdBridge(DidscoutPolicy(), nativeApi: fakeNative),
+        onAccepted: accepted.add,
+      );
+      addTearDown(reporting.dispose);
+      final modules = [
+        ProbeModule(
+          id: 'ecu1',
+          requestHeader: '710',
+          responseHeader: '77A',
+          protocol: 6,
+        ),
+      ];
+
+      await reporting.submit(modules, [
+        ProbeStep(signalId: 'ecu1_22f189', command: '22F189'),
+      ]);
+      await reporting.submit(modules, []);
+      fakeNative.enqueueResult = ObdOneShotEnqueueResultMessage.queueFull;
+      await expectLater(
+        reporting.submit(modules, [
+          ProbeStep(signalId: 'ecu1_22f189', command: '22F189'),
+        ]),
+        throwsA(isA<BridgeReadExecutorException>()),
+      );
+
+      expect(accepted, [modules]);
+    });
+
     test('exposes the rejection reason the discovery engine acts on', () async {
       fakeNative.enqueueResult =
           ObdOneShotEnqueueResultMessage.noActiveRecording;

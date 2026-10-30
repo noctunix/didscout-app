@@ -55,9 +55,12 @@ const List<String> _noAnswerMarkers = [
 /// executor serves; that keeps this class usable in a plain unit test
 /// without touching a real platform channel.
 class BridgeReadExecutor implements ReadExecutor {
-  BridgeReadExecutor(this._bridge);
+  /// [onAccepted], if given, is called with a batch's modules once
+  /// [ObdBridge.enqueueOneShot] has accepted it.
+  BridgeReadExecutor(this._bridge, {this._onAccepted});
 
   final ObdBridge _bridge;
+  final void Function(List<ProbeModule> modules)? _onAccepted;
   final StreamController<ProbeResult> _results =
       StreamController<ProbeResult>.broadcast();
   int _queueDepth = 0;
@@ -87,6 +90,7 @@ class BridgeReadExecutor implements ReadExecutor {
       throw BridgeReadExecutorException(result);
     }
     _queueDepth += steps.length;
+    _onAccepted?.call(modules);
   }
 
   /// Feeds one [ObdEventsApi.onOneShotResult] event into [results], parsed

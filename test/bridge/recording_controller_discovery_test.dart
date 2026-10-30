@@ -15,6 +15,7 @@ import 'package:didscout_app/bridge/recording_controller.dart';
 import 'package:didscout_app/discovery/did_stability.dart';
 import 'package:didscout_app/discovery/discovery_state.dart';
 import 'package:didscout_app/discovery/discovery_ui_state.dart';
+import 'package:didscout_app/discovery/probe.dart';
 import 'package:didscout_app/session/session_markers.dart';
 import 'package:didscout_app/settings/app_settings.dart';
 import 'package:permission_handler/permission_handler.dart' as ph;
@@ -151,6 +152,17 @@ DiscoveryState _namedGatewayState() => DiscoveryState(
     ),
   },
 );
+
+/// The `modules` entries of every `{"type":"modules",…}` line in the
+/// sidecar at [path], one list per line.
+List<List<dynamic>> _sidecarModulesLines(String path) => [
+  for (final line in File(path).readAsLinesSync())
+    if (jsonDecode(line) case {
+      'type': 'modules',
+      'modules': final List<dynamic> modules,
+    })
+      modules,
+];
 
 void main() {
   // `RecordingController.start` wires `ObdEventsApi` (for discovery
@@ -451,6 +463,97 @@ void main() {
     // the in-flight batch rather than waiting it out.
     expect(stopwatch.elapsed, lessThan(const Duration(seconds: 5)));
     expect(controller.discoveryEngineForTesting, isNull);
+  });
+
+  test('one-shot modules outside the plan are recorded once per recording '
+      'in the sidecar; plan and sweep modules never', () async {
+    persistedState = DiscoveryState(
+      ecus: {
+        'door-front-left': EcuInfo(
+          requestHeader: '74A',
+          responseHeader: '7B4',
+          protocol: 6,
+          discovered: {'2A00'},
+        ),
+      },
+    );
+    // Unknown speed with scoutWhileDriving off keeps the engine idle, so
+    // only the batches submitted below reach the executor.
+    final controller = makeController(
+      settings: const AppSettings.defaultValues().copyWith(
+        scoutWhileDriving: false,
+      ),
+    );
+    const gateway = ProbeModule(
+      id: 'gateway',
+      requestHeader: '710',
+      responseHeader: '77A',
+      protocol: 6,
+    );
+    const tyres = ProbeModule(
+      id: 'tyres',
+      requestHeader: '70B',
+      responseHeader: '775',
+      protocol: 6,
+    );
+    const doorFrontLeft = ProbeModule(
+      id: 'door-front-left',
+      requestHeader: '74A',
+      responseHeader: '7B4',
+      protocol: 6,
+    );
+    const sweep = ProbeModule(
+      id: 'ecu11-70C',
+      requestHeader: '70C',
+      protocol: 6,
+      receiveFilter: '700',
+      receiveMask: '700',
+    );
+    Future<void> submit(List<ProbeModule> modules) =>
+        controller.discoveryExecutorForTesting!.submit(modules, [
+          for (final module in modules)
+            ProbeStep(signalId: '${module.id}_22f189', command: '22F189'),
+        ]);
+    Map<String, String> entry(String id, String request, String response) => {
+      'id': id,
+      'request': request,
+      'response': response,
+      'protocol': '6',
+    };
+
+    await controller.start();
+    final sidecar = controller.markersFilePath!;
+    expect(
+      fakeNative.lastStartRecordingRequest!.plan.modules.map((m) => m.moduleId),
+      contains('door-front-left'),
+    );
+    await submit([gateway, doorFrontLeft, sweep, gateway]);
+    await waitFor(() => _sidecarModulesLines(sidecar).length == 1);
+    await submit([gateway, tyres]);
+    await waitFor(() => _sidecarModulesLines(sidecar).length == 2);
+    await controller.stop();
+
+    final lines = [
+      for (final line in File(sidecar).readAsLinesSync())
+        jsonDecode(line) as Map<String, dynamic>,
+    ];
+    expect(lines.first['type'], 'plan');
+    final modulesLine = lines.firstWhere((line) => line['type'] == 'modules');
+    expect(modulesLine.keys, unorderedEquals(['type', 'at', 'modules']));
+    expect(DateTime.parse(modulesLine['at'] as String).isUtc, isTrue);
+    expect(_sidecarModulesLines(sidecar), [
+      [entry('gateway', '710', '77A')],
+      [entry('tyres', '70B', '775')],
+    ]);
+
+    await controller.start();
+    await submit([gateway]);
+    await waitFor(() => _sidecarModulesLines(sidecar).isNotEmpty);
+    await controller.stop();
+
+    expect(_sidecarModulesLines(sidecar), [
+      [entry('gateway', '710', '77A')],
+    ]);
   });
 
   test('addPhase queues conditional retries on the discovery engine', () async {
