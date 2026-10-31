@@ -1253,50 +1253,118 @@ void main() {
       engine.dispose();
     });
 
-    test(
-      'noActiveRecording suspends the engine permanently -- pump never submits again',
-      () async {
-        final executor = FakeExecutor();
-        final state = DiscoveryState(
-          inventoryStagesDone: {'ecus11', 'ecus29', 'vag29'},
-        );
-        state.ecus['test'] = EcuInfo(
+    test('a noActiveRecording rejection backs off and retries, and the '
+        'batch is submitted once the executor accepts again', () async {
+      final executor = FakeExecutor();
+      final state = DiscoveryState(
+        inventoryStagesDone: {'ecus11', 'ecus29', 'vag29'},
+      );
+      final requestedBackoffs = <Duration>[];
+      final engine = DiscoveryEngine(
+        executor: executor,
+        state: state,
+        onHit: (_, _, _) {},
+        delay: (duration) {
+          requestedBackoffs.add(duration);
+          return Future<void>.delayed(Duration.zero);
+        },
+      );
+      state.ecus
+        ..clear()
+        ..['test'] = EcuInfo(
           requestHeader: '7A1',
           responseHeader: '7A9',
           protocol: 6,
           discoverRanges: [(0x2A00, 0x2A0F)],
+          identification: {'F197': 'Test'},
         );
-        final engine = DiscoveryEngine(
-          executor: executor,
-          state: state,
-          onHit: (_, _, _) {},
-          delay: (_) => Future<void>.delayed(Duration.zero),
-        );
-        executor.rejectionsToThrow.add(
-          const FakeRejection(SubmitRejectionReason.noActiveRecording),
-        );
+      // The plugin reports no active recording while it reconnects to the
+      // adapter, then accepts again.
+      executor.rejectionsToThrow.addAll([
+        const FakeRejection(SubmitRejectionReason.noActiveRecording),
+        const FakeRejection(SubmitRejectionReason.noActiveRecording),
+      ]);
+      executor.respond = (step) => ProbeResult(
+        signalId: step.signalId,
+        status: const ProbeOk(),
+        payload: const [1],
+        at: now,
+      );
 
-        await engine.pump(stationary: true, now: now);
+      await engine.pump(stationary: true, now: now);
 
-        expect(engine.suspended, isTrue);
-        expect(engine.eventLog.first.kind, ScoutEventKind.enqueueRejected);
-        expect(state.ecus['test']!.scanPosition, 0);
+      expect(engine.suspended, isFalse);
+      expect(requestedBackoffs.take(2), [
+        defaultSubmitBackoff,
+        defaultSubmitBackoff,
+      ]);
+      expect(
+        engine.eventLog.where(
+          (e) =>
+              e.kind == ScoutEventKind.enqueueRejected &&
+              e.detail == 'noActiveRecording',
+        ),
+        hasLength(2),
+      );
+      expect(executor.submittedSteps, hasLength(16));
+      expect(state.ecus['test']!.scanPosition, 16);
 
-        executor.rejectionsToThrow.clear();
-        executor.submittedSteps.clear();
-        await engine.pump(stationary: true, now: now);
-        expect(
-          executor.submittedSteps,
-          isEmpty,
-          reason: 'a suspended engine never submits again',
-        );
+      executor.submittedSteps.clear();
+      await engine.pump(stationary: true, now: now);
+      expect(
+        executor.submittedSteps,
+        isNotEmpty,
+        reason: 'a rejection never stops later pumps',
+      );
 
-        engine.dispose();
-      },
-    );
+      engine.dispose();
+    });
   });
 
   group('cancel', () {
+    test('stops a batch whose enqueue is being retried, without submitting '
+        'it', () async {
+      final executor = FakeExecutor();
+      final state = DiscoveryState();
+      state.ecus['test'] = EcuInfo(
+        requestHeader: '7A1',
+        responseHeader: '7A9',
+        protocol: 6,
+        discoverRanges: [(0x2A00, 0x2A0F)],
+      );
+      late final DiscoveryEngine engine;
+      var backoffs = 0;
+      engine = DiscoveryEngine(
+        executor: executor,
+        state: state,
+        onHit: (_, _, _) {},
+        delay: (duration) {
+          if (duration == defaultSubmitBackoff && ++backoffs == 2) {
+            engine.cancel();
+          }
+          return Future<void>.delayed(Duration.zero);
+        },
+      );
+      executor.rejectionsToThrow.addAll([
+        for (var i = 0; i < 3; i++)
+          const FakeRejection(SubmitRejectionReason.noActiveRecording),
+      ]);
+
+      final found = await engine.runDiscoveryBatch('test', now);
+
+      expect(found, isEmpty);
+      expect(
+        executor.rejectionsToThrow,
+        hasLength(1),
+        reason: 'retried once, then stopped by the cancel during its backoff',
+      );
+      expect(executor.submittedSteps, isEmpty);
+      expect(state.ecus['test']!.scanPosition, 0);
+      expect(engine.suspended, isTrue);
+
+      engine.dispose();
+    });
+
     test('resolves an in-flight batch immediately as cancelled, without '
         'waiting out its deadline, and never advances scan position', () async {
       final executor = FakeExecutor();
@@ -1328,11 +1396,7 @@ void main() {
 
       expect(found, isEmpty);
       expect(state.ecus['test']!.scanPosition, 0);
-      expect(
-        engine.suspended,
-        isTrue,
-        reason: 'cancel is permanent, same as a noActiveRecording reject',
-      );
+      expect(engine.suspended, isTrue, reason: 'cancel is permanent');
 
       engine.dispose();
     });

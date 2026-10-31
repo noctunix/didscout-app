@@ -51,8 +51,7 @@ const Duration defaultBatchDeadlinePerStep = Duration(seconds: 2);
 /// [DiscoveryEngine.batchDeadlineBase]).
 const Duration defaultBatchDeadlineBase = Duration(seconds: 30);
 
-/// Default pause before retrying a batch [ReadExecutor.submit] rejected
-/// with [SubmitRejectionReason.queueFull].
+/// Default pause before retrying a batch [ReadExecutor.submit] rejected.
 const Duration defaultSubmitBackoff = Duration(seconds: 10);
 
 /// Length of the ring buffer [DiscoveryEngine.eventLog] keeps.
@@ -173,7 +172,7 @@ class DiscoveryEngine {
   final Duration batchDeadlineBase;
 
   /// How long [_submitAndAwait] waits before retrying a batch
-  /// [ReadExecutor.submit] rejected with [SubmitRejectionReason.queueFull].
+  /// [ReadExecutor.submit] rejected.
   final Duration submitBackoff;
 
   final Future<void> Function(Duration) _delay;
@@ -197,10 +196,9 @@ class DiscoveryEngine {
   /// ECUs [nameUnnamedEcus] already tried during this engine's lifetime.
   final Set<String> _namingAttempted = {};
 
-  /// Once true (a batch was rejected with
-  /// [SubmitRejectionReason.noActiveRecording]), [pump] never submits
-  /// anything again for the rest of this engine's lifetime -- the caller
-  /// is expected to start a fresh engine for the next recording.
+  /// Once true ([cancel] ran), [pump] never submits anything again for
+  /// the rest of this engine's lifetime -- the caller is expected to start
+  /// a fresh engine for the next recording.
   bool _suspended = false;
 
   /// Whether [pump] has permanently stopped submitting for this engine
@@ -253,9 +251,10 @@ class DiscoveryEngine {
 
   /// Abandons whatever batch is currently in flight, if any: every
   /// outstanding completer resolves right now with [ProbeCancelled]
-  /// instead of waiting out its deadline, and (like [_suspended]) this
-  /// engine never submits again -- a fresh engine is expected for the
-  /// next recording. Called when the recording this engine serves is
+  /// instead of waiting out its deadline, a batch whose enqueue is being
+  /// retried gives up at its next attempt, and this engine never submits
+  /// again ([suspended]) -- a fresh engine is expected for the next
+  /// recording. Called when the recording this engine serves is
   /// stopping, so a pump call already awaiting results doesn't keep
   /// running in the background for minutes after the caller walked away;
   /// its own `await` simply resolves promptly once this runs, without the
@@ -309,27 +308,23 @@ class DiscoveryEngine {
     _waitingSince = null;
   }
 
-  /// Submits [steps] against [modules], retrying on
-  /// [SubmitRejectionReason.queueFull] after [submitBackoff] and giving up
-  /// permanently (see [_suspended]) on [SubmitRejectionReason.
-  /// noActiveRecording] -- either rejection is logged. Once accepted,
-  /// awaits every step's result up to a deadline of [batchDeadlineBase]
-  /// plus [batchDeadlinePerStep] per step; a step with no result by then
-  /// reports null rather than hanging forever (the plugin documents that a
-  /// one-shot result event may simply be lost), and is dropped from
-  /// [_pending] so a late result for it is ignored safely rather than
-  /// completing an already-abandoned wait.
+  /// Submits [steps] against [modules], logging every rejection and
+  /// retrying after [submitBackoff] until the executor accepts the batch
+  /// or [cancel] runs; a batch still unaccepted then reports every step as
+  /// null. [SubmitRejectionReason.noActiveRecording] is retried like
+  /// [SubmitRejectionReason.queueFull]: the plugin reports it while it
+  /// reconnects to the adapter within a recording that is still running,
+  /// and the caller cancels this engine once the recording really ends.
+  /// Once accepted, awaits every step's result up to a deadline of
+  /// [batchDeadlineBase] plus [batchDeadlinePerStep] per step; a step with
+  /// no result by then reports null rather than hanging forever (the
+  /// plugin documents that a one-shot result event may simply be lost),
+  /// and is dropped from [_pending] so a late result for it is ignored
+  /// safely rather than completing an already-abandoned wait.
   Future<List<ProbeResult?>> _submitAndAwait(
     List<ProbeModule> modules,
     List<ProbeStep> steps,
   ) async {
-    if (_suspended) {
-      // Already cancelled or permanently rejected -- an abandoned sweep
-      // loop (inventory, identification) that hasn't noticed yet must not
-      // keep submitting against an executor the caller may already have
-      // torn down.
-      return [for (final _ in steps) null];
-    }
     final completers = <String, Completer<ProbeResult>>{};
     for (final step in steps) {
       completers[step.signalId] = Completer<ProbeResult>();
@@ -337,6 +332,15 @@ class DiscoveryEngine {
     _pending.addAll(completers);
 
     while (true) {
+      if (_suspended) {
+        // Cancelled -- an abandoned sweep loop (inventory, identification)
+        // or a retry waiting out a reconnect must not keep submitting
+        // against an executor the caller may already have torn down.
+        for (final id in completers.keys) {
+          _pending.remove(id);
+        }
+        return [for (final _ in steps) null];
+      }
       try {
         await executor.submit(modules, steps);
         break;
@@ -345,13 +349,6 @@ class DiscoveryEngine {
           ScoutEventKind.enqueueRejected,
           detail: rejection.reason.name,
         );
-        if (rejection.reason == SubmitRejectionReason.noActiveRecording) {
-          _suspended = true;
-          for (final id in completers.keys) {
-            _pending.remove(id);
-          }
-          return [for (final _ in steps) null];
-        }
         await _delay(submitBackoff);
       }
     }
@@ -814,8 +811,8 @@ class DiscoveryEngine {
     final results = await _submitAndAwait([module], steps);
     _endWaiting();
     if (_suspended) {
-      // The rejection itself is already logged; nothing to finalize -- a
-      // suspended engine never gets another chance to retry this batch.
+      // Cancelled: no result is an answer, and this engine never gets
+      // another chance to retry this batch -- nothing to finalize.
       return [];
     }
     return _finalizeBatch(ecuId, next.dids, next.fromRetry, results, now);
@@ -866,8 +863,8 @@ class DiscoveryEngine {
     final results = await _submitAndAwait(modules, steps);
     _endWaiting();
     if (_suspended) {
-      // The rejection itself is already logged; nothing to finalize -- a
-      // suspended engine never gets another chance to retry this batch.
+      // Cancelled: no result is an answer, and this engine never gets
+      // another chance to retry this batch -- nothing to finalize.
       return;
     }
 
@@ -927,9 +924,9 @@ class DiscoveryEngine {
   /// returns. The caller invokes this repeatedly (e.g. once per
   /// scheduler iteration) rather than draining all discovery work in one
   /// call, keeping the queue in the [minQueueDepth]-[maxQueueDepth] band
-  /// over time instead of flooding it. A no-op once [suspended] -- a
-  /// batch was rejected with [SubmitRejectionReason.noActiveRecording],
-  /// which only a fresh engine for the next recording can recover from.
+  /// over time instead of flooding it. A no-op once [suspended]; while the
+  /// executor rejects batches (see [_submitAndAwait]) this call keeps
+  /// retrying until it accepts again or [cancel] runs.
   ///
   /// Each round starts scanning known ECUs from just after wherever the
   /// previous round left off ([_roundRobinCursor]) rather than always from

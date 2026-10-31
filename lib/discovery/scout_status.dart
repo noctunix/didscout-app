@@ -90,7 +90,7 @@ class ScoutStatus {
   /// null when nothing is in flight.
   final Duration? waitingFor;
 
-  /// Once true (a rejected batch reported [SubmitRejectionReason.
-  /// noActiveRecording]), the engine never submits again for its lifetime.
+  /// Once true (the engine was cancelled), the engine never submits again
+  /// for its lifetime.
   final bool suspended;
 }
