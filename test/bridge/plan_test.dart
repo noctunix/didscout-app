@@ -12,7 +12,16 @@ const _candidateSignalIds = [
   'tme_222609',
   'tme_2227d6',
   'tme_22475f',
-  'hcp1_22028c',
+  'cluster_220530',
+  'cluster_221014',
+  'cluster_222203',
+  'cluster_22220c',
+  'cluster_222294',
+  'cluster_2222b8',
+  'cluster_2222e0',
+  'cluster_222613',
+  'module6_221512',
+  'module6_2215d1',
   'hcp1_221801',
   'hcp1_221802',
   'hcp1_22180c',
@@ -34,9 +43,9 @@ void main() {
 
   test('every known profile DID is read, plus the base signals', () {
     final known = vagPpeModules.fold<int>(0, (n, m) => n + m.dids.length);
-    // Speed, energy, range, odometer, outside temp., 13 candidates and
+    // Speed, energy, range, odometer, outside temp., 22 candidates and
     // 22F449/22F442; none of them is also a profile DID.
-    expect(plan.steps.length, known + 20);
+    expect(plan.steps.length, known + 29);
   });
 
   test('signal ids are unique and name a planned module', () {
@@ -60,6 +69,7 @@ void main() {
     }
     expect(plan.modules.where((m) => m.moduleId == 'hcp1'), hasLength(1));
     expect(plan.modules.where((m) => m.moduleId == 'tme'), hasLength(1));
+    expect(plan.modules.where((m) => m.moduleId == 'cluster'), hasLength(1));
   });
 
   test('a discovered hcp1 DID adds neither a second hcp1 module nor a '
@@ -154,7 +164,7 @@ void main() {
         for (final m in scoutOnlyPlan.modules) ...m.setup,
         for (final s in scoutOnlyPlan.steps) s.command,
       ];
-      expect(commands, containsAll(['22F446', '222609', '22028C', '22181D']));
+      expect(commands, containsAll(['22F446', '222609', '222613', '22181D']));
       for (final command in commands) {
         expect(filter.check(command), isA<GuardAllowed>(), reason: command);
       }
@@ -209,7 +219,14 @@ void main() {
 
     test('plans only the fixed modules', () {
       final moduleIds = scoutOnlyPlan.modules.map((m) => m.moduleId).toSet();
-      expect(moduleIds, {'module7', 'module8', 'module6', 'hcp1', 'tme'});
+      expect(moduleIds, {
+        'module7',
+        'module8',
+        'module6',
+        'hcp1',
+        'tme',
+        'cluster',
+      });
     });
 
     test('adds discovered DIDs when keepSamplingFoundDids is on', () {
@@ -329,7 +346,7 @@ void main() {
       );
 
       final known = vagPpeModules.fold<int>(0, (n, m) => n + m.dids.length);
-      expect(withoutDiscovery.steps, hasLength(known + 20));
+      expect(withoutDiscovery.steps, hasLength(known + 29));
       expect(
         withoutDiscovery.steps.map((s) => s.signalId),
         isNot(contains('ecus11-7B0_222a00')),

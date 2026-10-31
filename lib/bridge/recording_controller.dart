@@ -66,23 +66,28 @@ const String _hcp1ResponseHeader = '18DAF10F';
 const String _tmeRequestHeader = '742';
 const String _tmeResponseHeader = '7AC';
 
-// Unverified candidates from the OBDb Porsche Taycan signal set
-// (https://github.com/OBDb/Porsche-Taycan): tme 2609 is its outside
-// temperature, the hcp1 DIDs its battery-management SoC/temperature DIDs.
-// Recorded only, so recordings can be checked against display readings.
-const List<String> _tmeCandidateDids = ['2609', '27D6', '475F'];
-const List<String> _hcp1CandidateDids = [
-  '028C',
-  '1801',
-  '1802',
-  '180C',
-  '180D',
-  '180E',
-  '180F',
-  '1810',
-  '181C',
-  '181D',
-];
+/// vag-ppe's 11-bit `cluster` module, planned under that same id.
+const String _clusterRequestHeader = '714';
+const String _clusterResponseHeader = '77E';
+
+// Unverified, record-only candidates, per planned module: the response
+// header and DIDs that hold outside/cabin temperature, odometer, range or
+// battery-management values on related platforms in the OBDb signal sets
+// (https://github.com/OBDb: Porsche-Taycan, Audi-e-tron, Audi-Q8-e-tron,
+// Audi-RS-e-tron, Volkswagen-ID3/ID.4). Read so recordings can be checked
+// against display readings.
+const Map<String, (String, List<String>)> _candidateDids = {
+  'tme': (_tmeResponseHeader, ['2609', '27D6', '475F']),
+  'cluster': (
+    _clusterResponseHeader,
+    ['0530', '1014', '2203', '220C', '2294', '22B8', '22E0', '2613'],
+  ),
+  'module6': (_module6ResponseHeader, ['1512', '15D1']),
+  'hcp1': (
+    _hcp1ResponseHeader,
+    ['1801', '1802', '180C', '180D', '180E', '180F', '1810', '181C', '181D'],
+  ),
+};
 
 /// A step's command and expected response header, keyed by its own
 /// [ObdStepMessage.signalId] — used to decode [ObdBridge.liveState]'s cached
@@ -1178,13 +1183,24 @@ class RecordingController extends ChangeNotifier {
       ),
     );
 
+    final cluster = ObdModuleMessage(
+      moduleId: 'cluster',
+      protocol: ObdProtocol.elevenBitCan.wireValue,
+      setup: buildModuleSetupCommands(
+        protocol: ObdProtocol.elevenBitCan,
+        requestHeader: _clusterRequestHeader,
+        responseHeader: _clusterResponseHeader,
+      ),
+    );
+
     final recordKnown =
         settings.recordingMode == RecordingMode.scoutAndRecordKnown;
-    final fixedModules = [module7, module8, module6, hcp1, tme];
+    final fixedModules = [module7, module8, module6, hcp1, tme, cluster];
     final fixedModuleIds = {for (final module in fixedModules) module.moduleId};
     final knownModules = [
       ...fixedModules,
-      // The gateway, hcp1 and tme profile modules are already planned above.
+      // The gateway, hcp1, tme and cluster profile modules are already
+      // planned above.
       if (recordKnown)
         for (final module in _knownDidModules())
           if (!fixedModuleIds.contains(module.moduleId)) module,
@@ -1237,22 +1253,16 @@ class RecordingController extends ChangeNotifier {
         responseHeader: _module7ResponseHeader,
         intervalMs: 60000,
       ),
-      for (final did in _tmeCandidateDids)
-        ObdStepMessage(
-          signalId: 'tme_22${did.toLowerCase()}',
-          moduleId: 'tme',
-          command: '22$did',
-          responseHeader: _tmeResponseHeader,
-          intervalMs: 60000,
-        ),
-      for (final did in _hcp1CandidateDids)
-        ObdStepMessage(
-          signalId: 'hcp1_22${did.toLowerCase()}',
-          moduleId: 'hcp1',
-          command: '22$did',
-          responseHeader: _hcp1ResponseHeader,
-          intervalMs: 60000,
-        ),
+      for (final MapEntry(key: moduleId, value: (responseHeader, dids))
+          in _candidateDids.entries)
+        for (final did in dids)
+          ObdStepMessage(
+            signalId: '${moduleId}_22${did.toLowerCase()}',
+            moduleId: moduleId,
+            command: '22$did',
+            responseHeader: responseHeader,
+            intervalMs: 60000,
+          ),
       if (recordKnown) ...[
         ObdStepMessage(
           signalId: 'module7_22f449',
