@@ -478,16 +478,20 @@ class DiscoveryEngine {
 
   /// Sweeps the 29-bit normal-fixed-addressing target range for any id
   /// not already known in [state]; see [runEcu11Inventory].
-  Future<void> runEcu29Inventory() async {
-    final knownIds = {
+  Future<void> runEcu29Inventory() => _run29BitInventory(ecu29Scheme);
+
+  /// Sweeps the VW/Audi `17FC00xx`/`17FE00xx` target range for any id not
+  /// already known in [state]; see [runEcu11Inventory].
+  Future<void> runVag29Inventory() => _run29BitInventory(vag29Scheme);
+
+  Future<void> _run29BitInventory(Ecu29Scheme scheme) async {
+    final knownHeaders = {
       for (final ecu in state.ecus.values)
-        if (ecu.protocol == 7 &&
-            RegExp(r'^18DA([0-9A-F]{2})F1$').hasMatch(ecu.requestHeader))
-          RegExp(
-            r'^18DA([0-9A-F]{2})F1$',
-          ).firstMatch(ecu.requestHeader)!.group(1)!,
+        if (ecu.protocol == 7) ecu.requestHeader,
     };
-    final candidates = ecu29Ids.where((id) => !knownIds.contains(id)).toList();
+    final candidates = scheme.ids
+        .where((id) => !knownHeaders.contains(scheme.requestHeaderOf(id)))
+        .toList();
 
     final found = <String>{};
     for (var i = 0; i < candidates.length; i += sweepChunkSize) {
@@ -497,7 +501,7 @@ class DiscoveryEngine {
             ? candidates.length
             : i + sweepChunkSize,
       );
-      final probes = chunk.map(ecu29SweepProbe).toList();
+      final probes = chunk.map(scheme.sweepProbe).toList();
       final results = await _submitAndAwait(
         [for (final probe in probes) probe.$1],
         [for (final probe in probes) probe.$2],
@@ -511,9 +515,9 @@ class DiscoveryEngine {
     }
 
     for (final id in found) {
-      final ecuId = ecu29EcuId(id);
-      final requestHeader = '18DA${id}F1';
-      final responseHeader = '18DAF1$id';
+      final ecuId = scheme.ecuId(id);
+      final requestHeader = scheme.requestHeaderOf(id);
+      final responseHeader = scheme.responseHeaderOf(id);
       final identification = await _identify(
         moduleId: ecuId,
         requestHeader: requestHeader,
@@ -530,10 +534,10 @@ class DiscoveryEngine {
         ),
       );
     }
-    state.inventoryStagesDone.add('ecus29');
+    state.inventoryStagesDone.add(scheme.stage);
     _logEvent(
       ScoutEventKind.inventoryStep,
-      detail: 'ecus29: ${found.length} found',
+      detail: '${scheme.stage}: ${found.length} found',
     );
   }
 
@@ -614,12 +618,13 @@ class DiscoveryEngine {
     );
   }
 
-  /// Re-probes for ECUs that only wake in some vehicle states -- ecus11
-  /// and ecus29, skipping anything already known -- and records when it
-  /// ran.
+  /// Re-probes for ECUs that only wake in some vehicle states -- ecus11,
+  /// ecus29 and vag29, skipping anything already known -- and records when
+  /// it ran.
   Future<void> rediscoverEcus(DateTime now) async {
     await runEcu11Inventory();
     await runEcu29Inventory();
+    await runVag29Inventory();
     state.lastRediscoveryTime = now;
   }
 
@@ -931,8 +936,11 @@ class DiscoveryEngine {
       if (!state.inventoryStagesDone.contains('ecus11')) {
         await runEcu11Inventory();
       }
-      if (!state.inventoryStagesDone.contains('ecus29')) {
+      if (!state.inventoryStagesDone.contains(ecu29Scheme.stage)) {
         await runEcu29Inventory();
+      }
+      if (!state.inventoryStagesDone.contains(vag29Scheme.stage)) {
+        await runVag29Inventory();
       }
       await nameUnnamedEcus(now);
     }

@@ -23,13 +23,6 @@ final List<int> ecu11RequestIds = [
     if (request != 0x7DF && request != phantomEcu11RequestId) request,
 ];
 
-/// 29-bit normal-fixed-addressing target ids: every two-hex id except the
-/// tester address (0xF1).
-final List<String> ecu29Ids = [
-  for (var i = 0; i < 0x100; i++)
-    if (i != 0xF1) i.toRadixString(16).toUpperCase().padLeft(2, '0'),
-];
-
 /// Identification DIDs read for every newly found ECU, in scan order --
 /// never the serial number or any VIN DID.
 const List<String> identificationDids = ['F187', 'F189', 'F191', 'F197'];
@@ -40,10 +33,6 @@ String ecu11ModuleId(String requestHex) => 'ecu11-$requestHex';
 
 /// Module id for an identified 11-bit ECU.
 String ecu11EcuId(String requestHex) => 'ecus11-$requestHex';
-
-/// Module id for the 29-bit sweep probe / identified ECU at target id
-/// [idHex] (2 hex digits, e.g. `"04"`).
-String ecu29EcuId(String idHex) => 'ecus29-$idHex';
 
 /// The receive filter/mask value (without the `ATCF`/`ATCM` prefix) that
 /// accepts a reply from any 11-bit header in the manufacturer range
@@ -73,23 +62,81 @@ const String ecu11ReceiveMask = '700';
   return (module, step);
 }
 
-/// One [ProbeModule]/[ProbeStep] pair that sweeps 29-bit normal-fixed
-/// target [idHex] (2 hex digits) with a single `22F189` probe, request
-/// `18DA<idHex>F1`, expected response `18DAF1<idHex>`.
-(ProbeModule, ProbeStep) ecu29SweepProbe(String idHex) {
-  final moduleId = ecu29EcuId(idHex);
-  final module = ProbeModule(
-    id: moduleId,
-    requestHeader: '18DA${idHex}F1',
-    responseHeader: '18DAF1$idHex',
-    protocol: 7,
-  );
-  final step = ProbeStep(
-    signalId: signalIdFor(moduleId, '22F189'),
-    command: '22F189',
-  );
-  return (module, step);
+String _hex2(int value) =>
+    value.toRadixString(16).toUpperCase().padLeft(2, '0');
+
+/// A 29-bit physical addressing scheme the ECU inventory sweeps: the
+/// target ids (2 hex digits each) it covers, the request/response headers
+/// a target id maps to, and the module id and inventory stage it is
+/// recorded under.
+class Ecu29Scheme {
+  const Ecu29Scheme({
+    required this.stage,
+    required this.ids,
+    required this.requestHeaderOf,
+    required this.responseHeaderOf,
+  });
+
+  /// Inventory stage name, recorded in
+  /// `DiscoveryState.inventoryStagesDone` and used as the module id
+  /// prefix.
+  final String stage;
+
+  /// Target ids swept, in order.
+  final List<String> ids;
+
+  /// The request header addressing target [idHex].
+  final String Function(String idHex) requestHeaderOf;
+
+  /// The header target [idHex] answers from.
+  final String Function(String idHex) responseHeaderOf;
+
+  /// Module id for the sweep probe / identified ECU at target [idHex],
+  /// e.g. `ecus29-04`.
+  String ecuId(String idHex) => '$stage-$idHex';
+
+  /// One [ProbeModule]/[ProbeStep] pair that sweeps target [idHex] with a
+  /// single `22F189` probe. The response header is always explicit: the
+  /// adapter's automatic receive address swaps the request header's last
+  /// two bytes, which is right for `18DAxxF1` but misses every `17FE00xx`
+  /// reply to a `17FC00xx` request.
+  (ProbeModule, ProbeStep) sweepProbe(String idHex) {
+    final moduleId = ecuId(idHex);
+    final module = ProbeModule(
+      id: moduleId,
+      requestHeader: requestHeaderOf(idHex),
+      responseHeader: responseHeaderOf(idHex),
+      protocol: 7,
+    );
+    final step = ProbeStep(
+      signalId: signalIdFor(moduleId, '22F189'),
+      command: '22F189',
+    );
+    return (module, step);
+  }
 }
+
+/// ISO 15765-4 normal fixed addressing, request `18DA<id>F1`, response
+/// `18DAF1<id>`: every target id except the tester address (0xF1).
+final Ecu29Scheme ecu29Scheme = Ecu29Scheme(
+  stage: 'ecus29',
+  ids: [
+    for (var i = 0; i < 0x100; i++)
+      if (i != 0xF1) _hex2(i),
+  ],
+  requestHeaderOf: (idHex) => '18DA${idHex}F1',
+  responseHeaderOf: (idHex) => '18DAF1$idHex',
+);
+
+/// VW/Audi physical addressing, request `17FC00<id>`, response
+/// `17FE00<id>` (e.g. the HV battery management at `17FC007B`): every
+/// target id, since the tester address is not part of these headers.
+final Ecu29Scheme vag29Scheme = Ecu29Scheme(
+  stage: 'vag29',
+  ids: [for (var i = 0; i < 0x100; i++) _hex2(i)],
+  requestHeaderOf: (idHex) => '17FC00$idHex',
+  responseHeaderOf: (idHex) => '17FE00$idHex',
+);
 
 /// Builds the [ProbeModule]/[ProbeStep] pair that reads identification DID
 /// [did] for an ECU already known to answer at [requestHeader]/

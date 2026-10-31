@@ -164,6 +164,228 @@ void main() {
 
       engine.dispose();
     });
+
+    /// Answers only a module set up for request `17FC007B` with the
+    /// explicit response header `17FE007B`; [f197] is that ECU's name reply.
+    ProbeResult Function(ProbeStep) vagBmsResponder(
+      FakeExecutor executor,
+      ProbeStatus f197,
+    ) => (step) {
+      final module = executor.submittedModules.lastWhere(
+        (m) => m.id == moduleIdOf(step.signalId),
+      );
+      final isBms =
+          module.requestHeader == '17FC007B' &&
+          module.responseHeader == '17FE007B' &&
+          module.protocol == 7;
+      if (!isBms) {
+        return ProbeResult(
+          signalId: step.signalId,
+          status: const ProbeNoData(),
+          at: now,
+        );
+      }
+      final status = step.command == '22F197' ? f197 : const ProbeOk();
+      return ProbeResult(
+        signalId: step.signalId,
+        status: status,
+        payload: step.command == '22F197' && status is ProbeOk
+            ? 'BMS HV'.codeUnits
+            : null,
+        at: now,
+      );
+    };
+
+    test('VW/Audi 29-bit sweep probes 17FC0000-17FC00FF with explicit 17FE00xx '
+        'response headers', () async {
+      final executor = FakeExecutor();
+      final engine = DiscoveryEngine(
+        executor: executor,
+        state: DiscoveryState(),
+        onHit: (_, _, _) {},
+      );
+
+      await engine.runVag29Inventory();
+
+      final sweep = executor.submittedModules
+          .where((m) => m.requestHeader.startsWith('17FC00'))
+          .toList();
+      expect(sweep, hasLength(256));
+      expect(sweep.first.requestHeader, '17FC0000');
+      expect(sweep.first.responseHeader, '17FE0000');
+      expect(sweep.first.id, 'vag29-00');
+      expect(sweep.last.requestHeader, '17FC00FF');
+      expect(sweep.last.responseHeader, '17FE00FF');
+      final tester = sweep.singleWhere((m) => m.requestHeader == '17FC00F1');
+      expect(tester.responseHeader, '17FE00F1');
+      for (final module in sweep) {
+        expect(module.protocol, 7);
+        expect(module.receiveFilter, isNull);
+        expect(module.receiveMask, isNull);
+        expect(
+          module.responseHeader,
+          '17FE00${module.requestHeader.substring(6)}',
+        );
+      }
+      expect(executor.submittedSteps.map((s) => s.command).toSet(), {'22F189'});
+      expect(executor.submittedModules, hasLength(256));
+
+      engine.dispose();
+    });
+
+    test(
+      'VW/Audi 29-bit sweep identifies an ECU answering at 17FE007B',
+      () async {
+        final executor = FakeExecutor();
+        final state = DiscoveryState();
+        final engine = DiscoveryEngine(
+          executor: executor,
+          state: state,
+          onHit: (_, _, _) {},
+        );
+        executor.respond = vagBmsResponder(executor, const ProbeOk());
+
+        await engine.runVag29Inventory();
+
+        final found = state.ecus['vag29-7B'];
+        expect(found, isNotNull);
+        expect(found!.requestHeader, '17FC007B');
+        expect(found.responseHeader, '17FE007B');
+        expect(found.protocol, 7);
+        expect(found.identification, {
+          'F187': 'OK',
+          'F189': 'OK',
+          'F191': 'OK',
+          'F197': 'BMS HV',
+        });
+        expect(state.ecus.keys.where((id) => id.startsWith('vag29-')), [
+          'vag29-7B',
+        ]);
+        expect(
+          executor.submittedSteps
+              .where((s) => moduleIdOf(s.signalId) == 'vag29-7B')
+              .map((s) => s.command),
+          ['22F189', '22F187', '22F189', '22F191', '22F197'],
+        );
+        expect(state.inventoryStagesDone, {'vag29'});
+        expect(engine.eventLog.first.kind, ScoutEventKind.inventoryStep);
+        expect(engine.eventLog.first.detail, 'vag29: 1 found');
+
+        engine.dispose();
+      },
+    );
+
+    test('VW/Audi 29-bit sweep skips a 17FC00xx header already known, but not '
+        'the same target id under 18DA', () async {
+      final executor = FakeExecutor();
+      final state = DiscoveryState();
+      state.ecus['vag29-10'] = EcuInfo(
+        requestHeader: '17FC0010',
+        responseHeader: '17FE0010',
+        protocol: 7,
+      );
+      state.ecus['ecus29-7B'] = EcuInfo(
+        requestHeader: '18DA7BF1',
+        responseHeader: '18DAF17B',
+        protocol: 7,
+      );
+      final engine = DiscoveryEngine(
+        executor: executor,
+        state: state,
+        onHit: (_, _, _) {},
+      );
+
+      await engine.runVag29Inventory();
+
+      final swept = executor.submittedModules
+          .map((m) => m.requestHeader)
+          .toList();
+      expect(swept, hasLength(255));
+      expect(swept, isNot(contains('17FC0010')));
+      expect(swept, contains('17FC007B'));
+      expect(state.ecus['vag29-10']!.identification, isEmpty);
+      expect(state.inventoryStagesDone, {'vag29'});
+
+      engine.dispose();
+    });
+
+    test('a VW/Audi 29-bit ECU is only scanned while moving once its F197 name '
+        'is known and not blocklisted', () async {
+      for (final (f197, scannableWhileMoving) in <(ProbeStatus, bool)>[
+        (const ProbeOk(), true),
+        (const ProbeNoData(), false),
+      ]) {
+        final executor = FakeExecutor();
+        final state = DiscoveryState();
+        final engine = DiscoveryEngine(
+          executor: executor,
+          state: state,
+          onHit: (_, _, _) {},
+        );
+        executor.respond = vagBmsResponder(executor, f197);
+
+        await engine.runVag29Inventory();
+
+        expect(
+          engine.selectNextEcuForScan(stationary: false, now: now),
+          scannableWhileMoving ? 'vag29-7B' : isNull,
+        );
+        expect(engine.hasDiscoveryWork('vag29-7B', now), isTrue);
+        engine.dispose();
+      }
+    });
+
+    test('a stationary pump runs the VW/Audi stage once the others are '
+        'done', () async {
+      final executor = FakeExecutor();
+      final state = DiscoveryState(inventoryStagesDone: {'ecus11', 'ecus29'});
+      final engine = DiscoveryEngine(
+        executor: executor,
+        state: state,
+        onHit: (_, _, _) {},
+      );
+      executor.respond = vagBmsResponder(executor, const ProbeOk());
+
+      await engine.pump(stationary: true, now: now);
+
+      expect(state.inventoryStagesDone, {'ecus11', 'ecus29', 'vag29'});
+      expect(state.ecus['vag29-7B']!.responseHeader, '17FE007B');
+      expect(
+        executor.submittedModules.where((m) => m.id.startsWith('ecus29-')),
+        isEmpty,
+        reason: 'the 18DA stage is already done',
+      );
+
+      engine.dispose();
+    });
+
+    test(
+      'rediscovery re-probes the VW/Audi range, skipping known ids',
+      () async {
+        final executor = FakeExecutor();
+        final state = DiscoveryState();
+        final engine = DiscoveryEngine(
+          executor: executor,
+          state: state,
+          onHit: (_, _, _) {},
+        );
+        executor.respond = vagBmsResponder(executor, const ProbeOk());
+        await engine.runVag29Inventory();
+        executor.submittedModules.clear();
+
+        await engine.rediscoverEcus(now);
+
+        final vagSwept = executor.submittedModules
+            .where((m) => m.requestHeader.startsWith('17FC00'))
+            .map((m) => m.requestHeader)
+            .toSet();
+        expect(vagSwept, hasLength(255));
+        expect(vagSwept, isNot(contains('17FC007B')));
+        expect(state.lastRediscoveryTime, now);
+
+        engine.dispose();
+      },
+    );
   });
 
   group('runDiscoveryBatch', () {
@@ -536,69 +758,71 @@ void main() {
       state.ecus.removeWhere((id, _) => id != 'unnamed' && id != 'failed');
 
       expect(engine.selectNextEcuForScan(stationary: false, now: now), isNull);
-      expect(engine.selectNextEcuForScan(stationary: true, now: now), isNotNull);
+      expect(
+        engine.selectNextEcuForScan(stationary: true, now: now),
+        isNotNull,
+      );
 
       engine.dispose();
     });
 
-    test(
-      'a stationary pump reads F197 once per engine from unnamed ECUs, '
-      'which then become scannable while moving',
-      () async {
-        final executor = FakeExecutor();
-        final state = DiscoveryState(inventoryStagesDone: {'ecus11', 'ecus29'});
-        final engine = DiscoveryEngine(
-          executor: executor,
-          state: state,
-          onHit: (_, _, _) {},
+    test('a stationary pump reads F197 once per engine from unnamed ECUs, '
+        'which then become scannable while moving', () async {
+      final executor = FakeExecutor();
+      final state = DiscoveryState(
+        inventoryStagesDone: {'ecus11', 'ecus29', 'vag29'},
+      );
+      final engine = DiscoveryEngine(
+        executor: executor,
+        state: state,
+        onHit: (_, _, _) {},
+      );
+      state.ecus
+        ..clear()
+        // Both scans are already past the identification range, so any
+        // F197 read below is the naming read, not a scan step.
+        ..['door'] = EcuInfo(
+          requestHeader: '74A',
+          responseHeader: '7B4',
+          protocol: 6,
+          scanPosition: 200,
+        )
+        ..['mute'] = EcuInfo(
+          requestHeader: '713',
+          responseHeader: '77D',
+          protocol: 6,
+          scanPosition: 200,
         );
-        state.ecus
-          ..clear()
-          // Both scans are already past the identification range, so any
-          // F197 read below is the naming read, not a scan step.
-          ..['door'] = EcuInfo(
-            requestHeader: '74A',
-            responseHeader: '7B4',
-            protocol: 6,
-            scanPosition: 200,
-          )
-          ..['mute'] = EcuInfo(
-            requestHeader: '713',
-            responseHeader: '77D',
-            protocol: 6,
-            scanPosition: 200,
-          );
-        // Every other DID is refused rather than met with silence, so no
-        // scan batch looks asleep.
-        executor.respond = (step) => ProbeResult(
-          signalId: step.signalId,
-          status: switch (step.signalId) {
-            'door_22f197' => const ProbeOk(),
-            'mute_22f197' => const ProbeNoData(),
-            _ => const ProbeNrc(0x31),
-          },
-          payload: step.signalId == 'door_22f197' ? 'TSG FS'.codeUnits : null,
-          at: now,
-        );
+      // Every other DID is refused rather than met with silence, so no
+      // scan batch looks asleep.
+      executor.respond = (step) => ProbeResult(
+        signalId: step.signalId,
+        status: switch (step.signalId) {
+          'door_22f197' => const ProbeOk(),
+          'mute_22f197' => const ProbeNoData(),
+          _ => const ProbeNrc(0x31),
+        },
+        payload: step.signalId == 'door_22f197' ? 'TSG FS'.codeUnits : null,
+        at: now,
+      );
 
-        await engine.pump(stationary: true, now: now);
+      await engine.pump(stationary: true, now: now);
 
-        expect(state.ecus['door']!.f197Name, 'TSG FS');
-        expect(state.ecus['mute']!.f197Name, isNull);
-        expect(state.ecus['mute']!.identification['F197'], 'NO DATA');
-        expect(engine.selectNextEcuForScan(stationary: false, now: now), 'door');
+      expect(state.ecus['door']!.f197Name, 'TSG FS');
+      expect(state.ecus['mute']!.f197Name, isNull);
+      expect(state.ecus['mute']!.identification['F197'], 'NO DATA');
+      expect(engine.selectNextEcuForScan(stationary: false, now: now), 'door');
 
-        executor.submittedSteps.clear();
-        await engine.pump(stationary: true, now: now);
-        expect(
-          executor.submittedSteps.where((s) => s.command == '22F197'),
-          isEmpty,
-          reason: 'an ECU is only asked for its name once per engine',
-        );
+      executor.submittedSteps.clear();
+      await engine.pump(stationary: true, now: now);
+      expect(
+        executor.submittedSteps.where((s) => s.command == '22F197'),
+        isEmpty,
+        reason: 'an ECU is only asked for its name once per engine',
+      );
 
-        engine.dispose();
-      },
-    );
+      engine.dispose();
+    });
 
     test('pump never runs ECU (re)discovery while moving', () async {
       final executor = FakeExecutor();
@@ -620,6 +844,12 @@ void main() {
       expect(
         executor.submittedSteps.any(
           (s) => moduleIdOf(s.signalId).startsWith('ecu11-'),
+        ),
+        isFalse,
+      );
+      expect(
+        executor.submittedModules.any(
+          (m) => m.requestHeader.startsWith('17FC00'),
         ),
         isFalse,
       );
@@ -680,7 +910,9 @@ void main() {
       'pump does one round and stops once an ECU is fully scanned',
       () async {
         final executor = FakeExecutor();
-        final state = DiscoveryState(inventoryStagesDone: {'ecus11', 'ecus29'});
+        final state = DiscoveryState(
+          inventoryStagesDone: {'ecus11', 'ecus29', 'vag29'},
+        );
         final ranges = [(0x2A00, 0x2A0F)];
         final fullOrderLength = discoveryDidOrder(ranges).length;
         // One batch short of the end of its scan order, so one pump call
@@ -721,7 +953,9 @@ void main() {
     test('pump rotates which known ECUs it offers a batch to, round to round, '
         'instead of only ever picking the first few', () async {
       final executor = FakeExecutor();
-      final state = DiscoveryState(inventoryStagesDone: {'ecus11', 'ecus29'});
+      final state = DiscoveryState(
+        inventoryStagesDone: {'ecus11', 'ecus29', 'vag29'},
+      );
       final ids = [for (var i = 0; i < 10; i++) 'ecu$i'];
       for (var i = 0; i < ids.length; i++) {
         state.ecus[ids[i]] = EcuInfo(
@@ -777,7 +1011,9 @@ void main() {
     });
 
     test('reflects scan position against a known-length order', () {
-      final state = DiscoveryState(inventoryStagesDone: {'ecus11', 'ecus29'});
+      final state = DiscoveryState(
+        inventoryStagesDone: {'ecus11', 'ecus29', 'vag29'},
+      );
       final ranges = [(0x2A00, 0x2A0F)];
       final fullOrderLength = discoveryDidOrder(ranges).length;
       state.ecus['only'] = EcuInfo(
@@ -805,7 +1041,9 @@ void main() {
 
     test('percent is denominated against the priority ranges, not the full '
         '64k DID space, so it reaches 100% once those are scanned', () {
-      final state = DiscoveryState(inventoryStagesDone: {'ecus11', 'ecus29'});
+      final state = DiscoveryState(
+        inventoryStagesDone: {'ecus11', 'ecus29', 'vag29'},
+      );
       final ranges = [(0x2A00, 0x2A0F)];
       final priorityLength = priorityDidOrder(ranges).length;
       state.ecus['only'] = EcuInfo(
@@ -835,7 +1073,9 @@ void main() {
     });
 
     test('totalChecked sums scanPosition across every known ECU', () {
-      final state = DiscoveryState(inventoryStagesDone: {'ecus11', 'ecus29'});
+      final state = DiscoveryState(
+        inventoryStagesDone: {'ecus11', 'ecus29', 'vag29'},
+      );
       state.ecus['a'] = EcuInfo(
         requestHeader: '7A1',
         protocol: 6,
@@ -974,7 +1214,9 @@ void main() {
       'noActiveRecording suspends the engine permanently -- pump never submits again',
       () async {
         final executor = FakeExecutor();
-        final state = DiscoveryState(inventoryStagesDone: {'ecus11', 'ecus29'});
+        final state = DiscoveryState(
+          inventoryStagesDone: {'ecus11', 'ecus29', 'vag29'},
+        );
         state.ecus['test'] = EcuInfo(
           requestHeader: '7A1',
           responseHeader: '7A9',

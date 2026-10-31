@@ -28,8 +28,28 @@ void main() {
     engine.dispose();
   });
 
+  test('a pending VW/Audi 29-bit stage still reports inventory activity', () {
+    final engine = DiscoveryEngine(
+      executor: FakeExecutor(),
+      state: DiscoveryState(inventoryStagesDone: {'ecus11', 'ecus29'}),
+      onHit: (_, _, _) {},
+    );
+
+    final uiState = buildDiscoveryUiState(
+      engine: engine,
+      stationary: true,
+      now: now,
+      sessionHits: 0,
+    );
+
+    expect(uiState.activity, DiscoveryActivity.inventory);
+    engine.dispose();
+  });
+
   test('an eligible ECU with pending work reports scanning with its name', () {
-    final state = DiscoveryState(inventoryStagesDone: {'ecus11', 'ecus29'});
+    final state = DiscoveryState(
+      inventoryStagesDone: {'ecus11', 'ecus29', 'vag29'},
+    );
     state.ecus['ecu1'] = EcuInfo(
       requestHeader: '7B0',
       responseHeader: '7B8',
@@ -58,7 +78,9 @@ void main() {
   test(
     'moving with only a safety-blocklisted ECU left reports waiting: moving',
     () {
-      final state = DiscoveryState(inventoryStagesDone: {'ecus11', 'ecus29'});
+      final state = DiscoveryState(
+        inventoryStagesDone: {'ecus11', 'ecus29', 'vag29'},
+      );
       state.ecus['abs'] = EcuInfo(
         requestHeader: '7B0',
         responseHeader: '7B8',
@@ -89,7 +111,9 @@ void main() {
   );
 
   test('an asleep ECU with nothing else pending reports waiting: asleep', () {
-    final state = DiscoveryState(inventoryStagesDone: {'ecus11', 'ecus29'});
+    final state = DiscoveryState(
+      inventoryStagesDone: {'ecus11', 'ecus29', 'vag29'},
+    );
     state.ecus['ecu1'] = EcuInfo(
       requestHeader: '7B0',
       responseHeader: '7B8',
@@ -119,7 +143,9 @@ void main() {
   });
 
   test('nothing left anywhere reports idle', () {
-    final state = DiscoveryState(inventoryStagesDone: {'ecus11', 'ecus29'});
+    final state = DiscoveryState(
+      inventoryStagesDone: {'ecus11', 'ecus29', 'vag29'},
+    );
     final engine = DiscoveryEngine(
       executor: FakeExecutor(),
       state: state,
@@ -143,7 +169,9 @@ void main() {
 
   test('allowedToRun: false short-circuits to waiting: moving even with '
       'eligible, non-blocklisted work', () {
-    final state = DiscoveryState(inventoryStagesDone: {'ecus11', 'ecus29'});
+    final state = DiscoveryState(
+      inventoryStagesDone: {'ecus11', 'ecus29', 'vag29'},
+    );
     state.ecus['gw'] = EcuInfo(
       requestHeader: '7B0',
       responseHeader: '7B8',
@@ -172,7 +200,9 @@ void main() {
   });
 
   test('totalHits and sessionHits are reported independently', () {
-    final state = DiscoveryState(inventoryStagesDone: {'ecus11', 'ecus29'});
+    final state = DiscoveryState(
+      inventoryStagesDone: {'ecus11', 'ecus29', 'vag29'},
+    );
     state.ecus['ecu1'] = EcuInfo(requestHeader: '7B0', protocol: 6)
       ..discovered.addAll(['2A00', '2A01']);
     final engine = DiscoveryEngine(
@@ -197,7 +227,9 @@ void main() {
   });
 
   test('totalChecked mirrors the engine\'s own scanProgress', () {
-    final state = DiscoveryState(inventoryStagesDone: {'ecus11', 'ecus29'});
+    final state = DiscoveryState(
+      inventoryStagesDone: {'ecus11', 'ecus29', 'vag29'},
+    );
     state.ecus['ecu1'] = EcuInfo(
       requestHeader: '7B0',
       protocol: 6,

@@ -8,8 +8,9 @@ import 'package:obdbridge/obdbridge.dart';
 ///   digits (adapter response timeout, in 4 ms units),
 /// - protocol selection restricted to 6 (11-bit CAN) and 7 (29-bit CAN),
 /// - headers restricted to the 11-bit physical range `0x700`-`0x7EF`, the
-///   29-bit physical pattern `18DAxxF1`/`18DAF1xx`, and the functional
-///   broadcast headers `7DF`/`18DB33F1`,
+///   29-bit physical pattern `18DAxxF1`/`18DAF1xx`, the 29-bit VW/Audi
+///   physical pattern `17FC00xx`/`17FE00xx`, and the functional broadcast
+///   headers `7DF`/`18DB33F1`,
 /// - mode 01 reads and UDS ReadDataByIdentifier (`22`) reads.
 class DidscoutPolicy implements CommandPolicy {
   static final RegExp _hex = RegExp(r'^[0-9A-F]+$');
@@ -24,6 +25,8 @@ class DidscoutPolicy implements CommandPolicy {
   static final RegExp _twentyNineBitPhysicalResponse = RegExp(
     r'^18DAF1[0-9A-F]{2}$',
   );
+  static final RegExp _vagPhysicalRequest = RegExp(r'^17FC00[0-9A-F]{2}$');
+  static final RegExp _vagPhysicalResponse = RegExp(r'^17FE00[0-9A-F]{2}$');
 
   static const Set<String> _allowedAdapterCommands = {
     // Setup.
@@ -89,7 +92,9 @@ class DidscoutPolicy implements CommandPolicy {
     }
     if (header.length == 8) {
       return _twentyNineBitPhysicalRequest.hasMatch(header) ||
-          _twentyNineBitPhysicalResponse.hasMatch(header);
+          _twentyNineBitPhysicalResponse.hasMatch(header) ||
+          _vagPhysicalRequest.hasMatch(header) ||
+          _vagPhysicalResponse.hasMatch(header);
     }
     return false;
   }

@@ -5,6 +5,7 @@
 library;
 
 import 'discovery_engine.dart';
+import 'inventory.dart';
 
 /// What the discovery engine is currently doing, for display.
 enum DiscoveryActivity {
@@ -107,9 +108,11 @@ DiscoveryUiState buildDiscoveryUiState({
 
   // Mirrors `DiscoveryEngine.pump`'s own order: inventory runs before any
   // ECU scan batch while stationary, so it takes display priority too.
-  final incompleteInventory =
-      !engine.state.inventoryStagesDone.contains('ecus11') ||
-      !engine.state.inventoryStagesDone.contains('ecus29');
+  final incompleteInventory = !engine.state.inventoryStagesDone.containsAll([
+    'ecus11',
+    ecu29Scheme.stage,
+    vag29Scheme.stage,
+  ]);
   if (stationary && incompleteInventory) {
     return DiscoveryUiState(
       ecuCount: progress.ecuCount,

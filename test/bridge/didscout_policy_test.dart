@@ -117,6 +117,38 @@ void main() {
       // Wrong priority byte (18DB, not 18DA) and not the functional header.
       expect(policy.allows('ATCRA18DB04F1'), isFalse);
     });
+
+    test('17FC00xx VW/Audi physical request headers are allowed', () {
+      expect(policy.allows('ATSH17FC007B'), isTrue);
+      expect(policy.allows('ATFCSH17FC0000'), isTrue);
+      expect(policy.allows('ATSH17FC00FF'), isTrue);
+    });
+
+    test('17FE00xx VW/Audi physical response headers are allowed', () {
+      expect(policy.allows('ATCRA17FE007B'), isTrue);
+      expect(policy.allows('ATCRA17FE00FF'), isTrue);
+    });
+
+    test('a header outside the 17FC00xx/17FE00xx shape is rejected', () {
+      // Non-zero third byte.
+      expect(policy.allows('ATSH17FC0100'), isFalse);
+      expect(policy.allows('ATCRA17FE017B'), isFalse);
+      // Neither the FC request nor the FE response marker.
+      expect(policy.allows('ATSH17FD007B'), isFalse);
+      expect(policy.allows('ATCRA17FF007B'), isFalse);
+      // Wrong priority byte.
+      expect(policy.allows('ATSH18FC007B'), isFalse);
+      // Wrong length.
+      expect(policy.allows('ATSH17FC07B'), isFalse);
+      expect(policy.allows('ATSH17FC007B00'), isFalse);
+    });
+
+    test('a VW/Audi header does not widen the allowed services', () {
+      expect(policy.allows('2E0100'), isFalse);
+      expect(policy.allows('3101FF00'), isFalse);
+      expect(policy.allows('1001'), isFalse);
+      expect(policy.allows('2701'), isFalse);
+    });
   });
 
   group('mode 01 and UDS 22 reads', () {
@@ -154,6 +186,9 @@ void main() {
     test('a plan command allowed by both layers passes through the filter', () {
       expect(allowedThroughFilter('22F40D'), isTrue);
       expect(allowedThroughFilter('ATSH18DA04F1'), isTrue);
+      expect(allowedThroughFilter('ATSH17FC007B'), isTrue);
+      expect(allowedThroughFilter('ATCRA17FE007B'), isTrue);
+      expect(allowedThroughFilter('ATFCSH17FC007B'), isTrue);
     });
   });
 }

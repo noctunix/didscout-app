@@ -7,7 +7,11 @@ import 'package:obdbridge/src/obdbridge_api.g.dart' show NativeObdApi;
 
 import 'package:didscout_app/bridge/bridge_read_executor.dart';
 import 'package:didscout_app/bridge/didscout_policy.dart';
+import 'package:didscout_app/discovery/discovery_engine.dart';
+import 'package:didscout_app/discovery/discovery_state.dart';
 import 'package:didscout_app/discovery/probe.dart';
+
+import '../discovery/fake_executor.dart';
 
 class _FakeNativeObdApi extends NativeObdApi {
   List<ObdModuleMessage>? lastModules;
@@ -176,6 +180,51 @@ void main() {
       }
     });
   });
+
+  test(
+    'every command the VW/Audi 29-bit inventory emits passes the policy',
+    () async {
+      final recorder = FakeExecutor();
+      final engine = DiscoveryEngine(
+        executor: recorder,
+        state: DiscoveryState(),
+        onHit: (_, _, _) {},
+      );
+      recorder.respond = (step) => ProbeResult(
+        signalId: step.signalId,
+        status: moduleIdOf(step.signalId) == 'vag29-7B'
+            ? const ProbeOk()
+            : const ProbeNoData(),
+        at: DateTime.utc(2026, 10, 28),
+      );
+      await engine.runVag29Inventory();
+      engine.dispose();
+
+      await executor.submit(recorder.submittedModules, recorder.submittedSteps);
+
+      final filter = GuardedCommandFilter(DidscoutPolicy());
+      final commands = {
+        for (final module in fakeNative.lastModules!) ...module.setup,
+        for (final step in fakeNative.lastSteps!) step.command,
+      };
+      expect(commands.where((c) => filter.check(c) is! GuardAllowed), isEmpty);
+      expect(commands, containsAll(['22F187', '22F189', '22F191', '22F197']));
+      expect(
+        fakeNative.lastModules!
+            .lastWhere((m) => m.moduleId == 'vag29-7B')
+            .setup,
+        [
+          'ATSP7',
+          'ATSH17FC007B',
+          'ATCRA17FE007B',
+          'ATFCSH17FC007B',
+          'ATFCSD300000',
+          'ATFCSM1',
+        ],
+      );
+      expect(fakeNative.lastModules, hasLength(256 + 4));
+    },
+  );
 
   group('deliverOneShotResult', () {
     test(
