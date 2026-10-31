@@ -98,6 +98,14 @@ String _statusBucket(ProbeStatus status) => switch (status) {
   ProbeCancelled() => 'CANCELLED',
 };
 
+/// Whether [status] is an answer from the vehicle side -- OK, NO DATA, an
+/// NRC or an adapter timeout -- rather than a request cancelled or lost to
+/// a transport failure, which says nothing about the request itself.
+bool _isAnswer(ProbeStatus status) => switch (status) {
+  ProbeOk() || ProbeNoData() || ProbeNrc() || ProbeTimeout() => true,
+  ProbeTransportError() || ProbeCancelled() => false,
+};
+
 String hex3(int value) => value.toRadixString(16).toUpperCase().padLeft(3, '0');
 String hex4(int value) => value.toRadixString(16).toUpperCase().padLeft(4, '0');
 
@@ -704,11 +712,12 @@ class DiscoveryEngine {
   /// position/retry-queue advancement, discovered/conditional bookkeeping,
   /// and [onHit] reporting. Returns the DIDs found OK.
   ///
-  /// A batch with any missing (null) or [ProbeCancelled] result -- its
-  /// deadline passed before the plugin reported one, or the request was
-  /// cancelled -- advances nothing: it is logged and left exactly as
-  /// queued, so the same slice is simply retried on a later batch instead
-  /// of being silently treated as answered.
+  /// A batch with any missing (null), [ProbeCancelled] or
+  /// [ProbeTransportError] result -- its deadline passed before the plugin
+  /// reported one, the request was cancelled, or the adapter connection
+  /// dropped -- advances nothing: it is logged and left exactly as queued,
+  /// so the same slice is simply retried on a later batch instead of being
+  /// silently treated as answered.
   List<String> _finalizeBatch(
     String ecuId,
     List<String> dids,
@@ -718,7 +727,7 @@ class DiscoveryEngine {
   ) {
     final ecu = state.ecus[ecuId]!;
     final missing = results
-        .where((r) => r == null || r.status is ProbeCancelled)
+        .where((r) => r == null || !_isAnswer(r.status))
         .length;
     if (missing > 0) {
       _logEvent(

@@ -1158,6 +1158,49 @@ void main() {
       },
     );
 
+    test('a transport error does not advance position, and the DID is read '
+        'again on the next batch', () async {
+      final executor = FakeExecutor();
+      final state = DiscoveryState();
+      state.ecus['test'] = EcuInfo(
+        requestHeader: '7A1',
+        responseHeader: '7A9',
+        protocol: 6,
+        discoverRanges: [(0x2A00, 0x2A0F)],
+      );
+      final engine = DiscoveryEngine(
+        executor: executor,
+        state: state,
+        onHit: (_, _, _) {},
+      );
+      var disconnected = true;
+      executor.respond = (step) => ProbeResult(
+        signalId: step.signalId,
+        status: disconnected && step.command == '222A03'
+            ? const ProbeTransportError()
+            : const ProbeOk(),
+        payload: const [1],
+        at: now,
+      );
+
+      final found = await engine.runDiscoveryBatch('test', now);
+
+      expect(found, isEmpty);
+      expect(state.ecus['test']!.scanPosition, 0);
+      expect(state.ecus['test']!.discovered, isEmpty);
+      expect(engine.eventLog.first.kind, ScoutEventKind.batchTimedOut);
+      expect(engine.eventLog.first.detail, '1/16 missing');
+
+      disconnected = false;
+      executor.submittedSteps.clear();
+      final retried = await engine.runDiscoveryBatch('test', now);
+      expect(executor.submittedSteps.map((s) => s.command), contains('222A03'));
+      expect(retried, contains('2A03'));
+      expect(state.ecus['test']!.scanPosition, 16);
+
+      engine.dispose();
+    });
+
     test('a rejected enqueue backs off and retries, then succeeds', () async {
       final executor = FakeExecutor();
       final state = DiscoveryState();
