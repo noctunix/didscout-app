@@ -386,6 +386,174 @@ void main() {
         engine.dispose();
       },
     );
+
+    test('an 11-bit sweep with unanswered probes is not done, and the next '
+        'pump probes only those headers', () async {
+      final executor = FakeExecutor();
+      final state = DiscoveryState(inventoryStagesDone: {'ecus29', 'vag29'});
+      final engine = DiscoveryEngine(
+        executor: executor,
+        state: state,
+        onHit: (_, _, _) {},
+        delay: (_) => Future<void>.delayed(Duration.zero),
+      );
+      var reconnected = false;
+      executor.respond = (step) => ProbeResult(
+        signalId: step.signalId,
+        status: switch (moduleIdOf(step.signalId)) {
+          'ecu11-7A1' when !reconnected => const ProbeTransportError(),
+          'ecu11-7C1' when !reconnected => const ProbeCancelled(),
+          'ecu11-7A1' || 'ecus11-7A1' => const ProbeOk(),
+          _ => const ProbeNoData(),
+        },
+        responderHeader: '7A9',
+        at: now,
+      );
+      executor.droppedSignalIds.add(signalIdFor('ecu11-7B0', '22F189'));
+
+      await engine.runEcu11Inventory();
+
+      expect(state.inventoryStagesDone, isNot(contains('ecus11')));
+      expect(state.inventorySwept['ecus11'], contains('7A2'));
+      expect(
+        state.inventorySwept['ecus11'],
+        isNot(anyOf(contains('7A1'), contains('7B0'), contains('7C1'))),
+      );
+      expect(state.ecus.containsKey('ecus11-7A1'), isFalse);
+      expect(engine.eventLog.first.detail, 'ecus11: 0 found, 3 unanswered');
+
+      reconnected = true;
+      executor
+        ..droppedSignalIds.clear()
+        ..submittedSteps.clear();
+      await engine.pump(stationary: true, now: now);
+
+      expect(
+        executor.submittedSteps
+            .map((s) => moduleIdOf(s.signalId))
+            .where((id) => id.startsWith('ecu11-'))
+            .toSet(),
+        {'ecu11-7A1', 'ecu11-7B0', 'ecu11-7C1'},
+      );
+      expect(state.inventoryStagesDone, contains('ecus11'));
+      expect(state.ecus['ecus11-7A1']!.responseHeader, '7A9');
+      expect(
+        state.inventorySwept['ecus11'],
+        containsAll(['7A1', '7B0', '7C1']),
+      );
+
+      engine.dispose();
+    });
+
+    test('a VW/Audi 29-bit sweep with unanswered probes is not done, and the '
+        'next pump probes only those ids', () async {
+      final executor = FakeExecutor();
+      final state = DiscoveryState(inventoryStagesDone: {'ecus11', 'ecus29'});
+      final engine = DiscoveryEngine(
+        executor: executor,
+        state: state,
+        onHit: (_, _, _) {},
+        delay: (_) => Future<void>.delayed(Duration.zero),
+      );
+      executor.respond = (step) => ProbeResult(
+        signalId: step.signalId,
+        status: moduleIdOf(step.signalId) == 'vag29-7B'
+            ? const ProbeTransportError()
+            : const ProbeNoData(),
+        at: now,
+      );
+      executor.droppedSignalIds.add(signalIdFor('vag29-40', '22F189'));
+
+      await engine.runVag29Inventory();
+
+      expect(state.inventoryStagesDone, isNot(contains('vag29')));
+      expect(state.inventorySwept['vag29'], hasLength(254));
+      expect(
+        state.inventorySwept['vag29'],
+        isNot(anyOf(contains('7B'), contains('40'))),
+      );
+
+      executor
+        ..droppedSignalIds.clear()
+        ..submittedSteps.clear()
+        ..respond = vagBmsResponder(executor, const ProbeOk());
+      await engine.pump(stationary: true, now: now);
+
+      expect(
+        executor.submittedSteps
+            .map((s) => moduleIdOf(s.signalId))
+            .where((id) => id.startsWith('vag29-'))
+            .toSet(),
+        {'vag29-40', 'vag29-7B'},
+      );
+      expect(state.inventoryStagesDone, contains('vag29'));
+      expect(state.ecus['vag29-7B']!.f197Name, 'BMS HV');
+
+      engine.dispose();
+    });
+
+    test('a sweep cancelled between chunks is not done and records only the '
+        'chunks answered before', () async {
+      final executor = FakeExecutor();
+      final state = DiscoveryState();
+      late final DiscoveryEngine engine;
+      engine = DiscoveryEngine(
+        executor: executor,
+        state: state,
+        onHit: (_, _, _) {},
+        sweepChunkSize: 16,
+      );
+      var probed = 0;
+      executor.respond = (step) {
+        if (++probed == 17) {
+          engine.cancel();
+        }
+        return ProbeResult(
+          signalId: step.signalId,
+          status: const ProbeNoData(),
+          at: now,
+        );
+      };
+
+      await engine.runEcu11Inventory();
+
+      expect(state.inventoryStagesDone, isEmpty);
+      expect(
+        executor.submittedSteps,
+        hasLength(32),
+        reason: 'no chunk is submitted after the cancel',
+      );
+      expect(state.inventorySwept['ecus11'], hasLength(16));
+
+      engine.dispose();
+    });
+
+    test('a sweep cancelled while identifying a found ECU records neither the '
+        'ECU nor the stage', () async {
+      final executor = FakeExecutor();
+      final state = DiscoveryState();
+      late final DiscoveryEngine engine;
+      engine = DiscoveryEngine(
+        executor: executor,
+        state: state,
+        onHit: (_, _, _) {},
+      );
+      final bms = vagBmsResponder(executor, const ProbeOk());
+      executor.respond = (step) {
+        if (step.signalId == signalIdFor('vag29-7B', '22F187')) {
+          engine.cancel();
+        }
+        return bms(step);
+      };
+
+      await engine.runVag29Inventory();
+
+      expect(state.ecus.containsKey('vag29-7B'), isFalse);
+      expect(state.inventoryStagesDone, isEmpty);
+      expect(state.inventorySwept['vag29'], isNot(contains('7B')));
+
+      engine.dispose();
+    });
   });
 
   group('runDiscoveryBatch', () {

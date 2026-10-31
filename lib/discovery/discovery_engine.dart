@@ -424,62 +424,15 @@ class DiscoveryEngine {
   /// records the result. Safe to call repeatedly -- a header already
   /// known is skipped, so a later call only probes what's still unknown
   /// (used for both initial inventory and rediscovery).
-  Future<void> runEcu11Inventory() async {
-    final knownHeaders = {
-      for (final ecu in state.ecus.values)
-        if (ecu.protocol == 6 && ecu.requestHeader.length == 3)
-          ecu.requestHeader,
-    };
-    final candidates = ecu11RequestIds
-        .where((id) => !knownHeaders.contains(hex3(id)))
-        .toList();
-
-    final found = <String, String>{};
-    for (var i = 0; i < candidates.length; i += sweepChunkSize) {
-      final chunk = candidates.sublist(
-        i,
-        i + sweepChunkSize > candidates.length
-            ? candidates.length
-            : i + sweepChunkSize,
-      );
-      final probes = chunk.map(ecu11SweepProbe).toList();
-      final results = await _submitAndAwait(
-        [for (final probe in probes) probe.$1],
-        [for (final probe in probes) probe.$2],
-      );
-      for (var j = 0; j < chunk.length; j++) {
-        final result = results[j];
-        if (result != null && result.status is ProbeOk) {
-          final requestHex = hex3(chunk[j]);
-          found[requestHex] = result.responderHeader ?? requestHex;
-        }
-      }
-    }
-
-    for (final entry in found.entries) {
-      final ecuId = ecu11EcuId(entry.key);
-      final identification = await _identify(
-        moduleId: ecuId,
-        requestHeader: entry.key,
-        responseHeader: entry.value,
-        protocol: 6,
-      );
-      _applyTargetedRanges(
-        ecuId,
-        state.ecus[ecuId] = EcuInfo(
-          requestHeader: entry.key,
-          responseHeader: entry.value,
-          protocol: 6,
-          identification: identification,
-        ),
-      );
-    }
-    state.inventoryStagesDone.add('ecus11');
-    _logEvent(
-      ScoutEventKind.inventoryStep,
-      detail: 'ecus11: ${found.length} found',
-    );
-  }
+  Future<void> runEcu11Inventory() => _runInventory(
+    stage: 'ecus11',
+    protocol: 6,
+    ids: [for (final id in ecu11RequestIds) hex3(id)],
+    requestHeaderOf: (requestHex) => requestHex,
+    responseHeaderOf: (requestHex, hit) => hit.responderHeader ?? requestHex,
+    ecuIdOf: ecu11EcuId,
+    sweepProbe: ecu11SweepProbe,
+  );
 
   /// Sweeps the 29-bit normal-fixed-addressing target range for any id
   /// not already known in [state]; see [runEcu11Inventory].
@@ -489,16 +442,50 @@ class DiscoveryEngine {
   /// already known in [state]; see [runEcu11Inventory].
   Future<void> runVag29Inventory() => _run29BitInventory(vag29Scheme);
 
-  Future<void> _run29BitInventory(Ecu29Scheme scheme) async {
+  Future<void> _run29BitInventory(Ecu29Scheme scheme) => _runInventory(
+    stage: scheme.stage,
+    protocol: 7,
+    ids: scheme.ids,
+    requestHeaderOf: scheme.requestHeaderOf,
+    responseHeaderOf: (id, _) => scheme.responseHeaderOf(id),
+    ecuIdOf: scheme.ecuId,
+    sweepProbe: scheme.sweepProbe,
+  );
+
+  /// Sweeps [stage]'s target [ids] whose request header no known
+  /// [protocol] ECU has -- while [stage] is not done, also skipping the
+  /// ids already in [DiscoveryState.inventorySwept] -- then identifies and
+  /// records every ECU that answered. An id counts as swept once it got an
+  /// answer ([_isAnswer]); one that answered OK only once its ECU is
+  /// recorded. [stage] is marked done when every id probed got an answer;
+  /// once [cancel] runs, nothing further is recorded.
+  Future<void> _runInventory({
+    required String stage,
+    required int protocol,
+    required List<String> ids,
+    required String Function(String id) requestHeaderOf,
+    required String Function(String id, ProbeResult hit) responseHeaderOf,
+    required String Function(String id) ecuIdOf,
+    required (ProbeModule, ProbeStep) Function(String id) sweepProbe,
+  }) async {
     final knownHeaders = {
       for (final ecu in state.ecus.values)
-        if (ecu.protocol == 7) ecu.requestHeader,
+        if (ecu.protocol == protocol) ecu.requestHeader,
     };
-    final candidates = scheme.ids
-        .where((id) => !knownHeaders.contains(scheme.requestHeaderOf(id)))
+    final swept = state.inventorySwept.putIfAbsent(stage, () => {});
+    // A stage already done reruns as rediscovery: an id that answered
+    // NO DATA before may belong to an ECU that was asleep then.
+    final resuming = !state.inventoryStagesDone.contains(stage);
+    final candidates = ids
+        .where(
+          (id) =>
+              !knownHeaders.contains(requestHeaderOf(id)) &&
+              !(resuming && swept.contains(id)),
+        )
         .toList();
 
-    final found = <String>{};
+    final hits = <String, ProbeResult>{};
+    var unanswered = 0;
     for (var i = 0; i < candidates.length; i += sweepChunkSize) {
       final chunk = candidates.sublist(
         i,
@@ -506,43 +493,58 @@ class DiscoveryEngine {
             ? candidates.length
             : i + sweepChunkSize,
       );
-      final probes = chunk.map(scheme.sweepProbe).toList();
+      final probes = chunk.map(sweepProbe).toList();
       final results = await _submitAndAwait(
         [for (final probe in probes) probe.$1],
         [for (final probe in probes) probe.$2],
       );
+      if (_suspended) {
+        return;
+      }
       for (var j = 0; j < chunk.length; j++) {
         final result = results[j];
-        if (result != null && result.status is ProbeOk) {
-          found.add(chunk[j]);
+        if (result == null || !_isAnswer(result.status)) {
+          unanswered += 1;
+        } else if (result.status is ProbeOk) {
+          hits[chunk[j]] = result;
+        } else {
+          swept.add(chunk[j]);
         }
       }
     }
 
-    for (final id in found) {
-      final ecuId = scheme.ecuId(id);
-      final requestHeader = scheme.requestHeaderOf(id);
-      final responseHeader = scheme.responseHeaderOf(id);
+    for (final MapEntry(key: id, value: hit) in hits.entries) {
+      final ecuId = ecuIdOf(id);
+      final requestHeader = requestHeaderOf(id);
+      final responseHeader = responseHeaderOf(id, hit);
       final identification = await _identify(
         moduleId: ecuId,
         requestHeader: requestHeader,
         responseHeader: responseHeader,
-        protocol: 7,
+        protocol: protocol,
       );
+      if (_suspended) {
+        return;
+      }
       _applyTargetedRanges(
         ecuId,
         state.ecus[ecuId] = EcuInfo(
           requestHeader: requestHeader,
           responseHeader: responseHeader,
-          protocol: 7,
+          protocol: protocol,
           identification: identification,
         ),
       );
+      swept.add(id);
     }
-    state.inventoryStagesDone.add(scheme.stage);
+    if (unanswered == 0) {
+      state.inventoryStagesDone.add(stage);
+    }
     _logEvent(
       ScoutEventKind.inventoryStep,
-      detail: '${scheme.stage}: ${found.length} found',
+      detail: unanswered == 0
+          ? '$stage: ${hits.length} found'
+          : '$stage: ${hits.length} found, $unanswered unanswered',
     );
   }
 

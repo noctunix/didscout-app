@@ -38,6 +38,11 @@ void main() {
     test('a full round trip preserves every field', () async {
       final original = DiscoveryState(
         inventoryStagesDone: {'ecus11', 'ecus29'},
+        inventorySwept: {
+          'ecus11': {'7A2', '7A3'},
+          'ecus29': {},
+          'vag29': {'00'},
+        },
         lastRediscoveryTime: DateTime.utc(2026, 10, 28, 9, 30),
         learnedRecordings: {'session-a'},
       );
@@ -73,6 +78,11 @@ void main() {
       final loaded = await DiscoveryState.loadFromFile(file);
 
       expect(loaded.inventoryStagesDone, original.inventoryStagesDone);
+      expect(loaded.inventorySwept, {
+        'ecus11': {'7A2', '7A3'},
+        'ecus29': <String>{},
+        'vag29': {'00'},
+      });
       expect(loaded.lastRediscoveryTime, original.lastRediscoveryTime);
       expect(loaded.ecus.keys.toSet(), original.ecus.keys.toSet());
 
@@ -102,7 +112,10 @@ void main() {
     });
 
     test('a persisted phantom 0x700 ECU is dropped on load', () async {
-      final original = DiscoveryState(inventoryStagesDone: {'ecus11'});
+      final original = DiscoveryState(
+        inventoryStagesDone: {'ecus11'},
+        inventorySwept: {'ecus11': {}},
+      );
       original.ecus['ecus11-700'] = EcuInfo(
         requestHeader: '700',
         responseHeader: '77A',
@@ -122,6 +135,21 @@ void main() {
 
       expect(loaded.ecus.keys, ['gateway']);
       expect(loaded.inventoryStagesDone, {'ecus11'});
+    });
+
+    test('a stage marked done without a swept entry is un-marked on load, '
+        'one with an entry stays done', () {
+      final state = DiscoveryState.fromJson({
+        'inventoryStagesDone': ['ecus11', 'ecus29', 'vag29'],
+        'inventorySwept': {
+          'ecus29': ['04', '05'],
+        },
+      });
+
+      expect(state.inventoryStagesDone, {'ecus29'});
+      expect(state.inventorySwept, {
+        'ecus29': {'04', '05'},
+      });
     });
   });
 

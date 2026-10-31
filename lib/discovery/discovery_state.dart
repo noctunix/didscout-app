@@ -247,17 +247,19 @@ Map<String, EcuInfo> _mergeByRequestHeader(Map<String, EcuInfo> ecus) {
 }
 
 /// Persisted discovery state for one vehicle: known ECUs and their scan
-/// progress, inventory stages already completed, and the last
-/// rediscovery time. JSON-serialisable; the caller owns where the file
-/// lives (one per vehicle label).
+/// progress, inventory stages already completed and their sweep progress,
+/// and the last rediscovery time. JSON-serialisable; the caller owns where
+/// the file lives (one per vehicle label).
 class DiscoveryState {
   DiscoveryState({
     Map<String, EcuInfo>? ecus,
     Set<String>? inventoryStagesDone,
+    Map<String, Set<String>>? inventorySwept,
     this.lastRediscoveryTime,
     Set<String>? learnedRecordings,
   }) : ecus = ecus ?? {},
        inventoryStagesDone = inventoryStagesDone ?? {},
+       inventorySwept = inventorySwept ?? {},
        learnedRecordings = learnedRecordings ?? {};
 
   /// Known ECUs, keyed by module id.
@@ -265,6 +267,13 @@ class DiscoveryState {
 
   /// One-shot inventory stages already run, e.g. `{'ecus11', 'ecus29'}`.
   Set<String> inventoryStagesDone;
+
+  /// Per inventory stage, the target ids whose sweep probe got an answer
+  /// (OK, NO DATA, an NRC or a timeout): the 3-hex request header for
+  /// `ecus11`, the 2-hex target id for a 29-bit scheme. A sweep of a stage
+  /// not yet done skips them, and the stage is done once every id it
+  /// probed is in here.
+  Map<String, Set<String>> inventorySwept;
 
   /// Wall-clock time of the last ECU rediscovery sweep.
   DateTime? lastRediscoveryTime;
@@ -276,30 +285,44 @@ class DiscoveryState {
   Map<String, dynamic> toJson() => {
     'ecus': ecus.map((key, value) => MapEntry(key, value.toJson())),
     'inventoryStagesDone': inventoryStagesDone.toList(),
+    'inventorySwept': inventorySwept.map(
+      (stage, ids) => MapEntry(stage, ids.toList()),
+    ),
     'lastRediscoveryTime': lastRediscoveryTime?.toUtc().toIso8601String(),
     'learnedRecordings': learnedRecordings.toList(),
   };
 
   /// Drops a [phantomEcu11EcuId] entry an earlier sweep persisted, so it is
-  /// neither scanned again nor added to a recording's plan, and merges
-  /// entries that address the same ECU ([_mergeByRequestHeader]).
-  factory DiscoveryState.fromJson(Map<String, dynamic> json) => DiscoveryState(
-    ecus: _mergeByRequestHeader({
+  /// neither scanned again nor added to a recording's plan, merges entries
+  /// that address the same ECU ([_mergeByRequestHeader]), and un-marks an
+  /// inventory stage done without an [inventorySwept] entry, which an
+  /// aborted sweep may have marked done, so it runs again.
+  factory DiscoveryState.fromJson(Map<String, dynamic> json) {
+    final inventorySwept = {
       for (final MapEntry(:key, :value)
-          in (json['ecus'] as Map<dynamic, dynamic>? ?? {}).entries)
-        if (key != phantomEcu11EcuId)
-          key as String: EcuInfo.fromJson(value as Map<String, dynamic>),
-    }),
-    inventoryStagesDone: Set<String>.from(
-      json['inventoryStagesDone'] as List<dynamic>? ?? [],
-    ),
-    lastRediscoveryTime: json['lastRediscoveryTime'] != null
-        ? DateTime.parse(json['lastRediscoveryTime'] as String)
-        : null,
-    learnedRecordings: Set<String>.from(
-      json['learnedRecordings'] as List<dynamic>? ?? [],
-    ),
-  );
+          in (json['inventorySwept'] as Map<dynamic, dynamic>? ?? {}).entries)
+        key as String: Set<String>.from(value as List<dynamic>),
+    };
+    return DiscoveryState(
+      ecus: _mergeByRequestHeader({
+        for (final MapEntry(:key, :value)
+            in (json['ecus'] as Map<dynamic, dynamic>? ?? {}).entries)
+          if (key != phantomEcu11EcuId)
+            key as String: EcuInfo.fromJson(value as Map<String, dynamic>),
+      }),
+      inventoryStagesDone: {
+        for (final stage in json['inventoryStagesDone'] as List<dynamic>? ?? [])
+          if (inventorySwept.containsKey(stage)) stage as String,
+      },
+      inventorySwept: inventorySwept,
+      lastRediscoveryTime: json['lastRediscoveryTime'] != null
+          ? DateTime.parse(json['lastRediscoveryTime'] as String)
+          : null,
+      learnedRecordings: Set<String>.from(
+        json['learnedRecordings'] as List<dynamic>? ?? [],
+      ),
+    );
+  }
 
   /// Loads state from [file], or a fresh empty state if it doesn't exist
   /// or doesn't parse -- a corrupt state file must never block discovery

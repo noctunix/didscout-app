@@ -43,10 +43,9 @@ const String ecu11ReceiveFilter = '700';
 const String ecu11ReceiveMask = '700';
 
 /// One [ProbeModule]/[ProbeStep] pair that sweeps 11-bit request header
-/// [requestId] with a single `22F189` probe, accepting a reply from any
-/// 0x7xx header.
-(ProbeModule, ProbeStep) ecu11SweepProbe(int requestId) {
-  final requestHex = requestId.toRadixString(16).toUpperCase().padLeft(3, '0');
+/// [requestHex] (3 hex digits) with a single `22F189` probe, accepting a
+/// reply from any 0x7xx header.
+(ProbeModule, ProbeStep) ecu11SweepProbe(String requestHex) {
   final moduleId = ecu11ModuleId(requestHex);
   final module = ProbeModule(
     id: moduleId,
