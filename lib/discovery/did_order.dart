@@ -18,6 +18,27 @@ const List<(int, int)> discoveryPriorityRanges = [
   (0x2000, 0x2FFF),
 ];
 
+/// Per request header, ranges scanned before everything else: they hold
+/// the outside-temperature and battery-management DIDs of a related
+/// platform's public signal set (https://github.com/OBDb/Porsche-Taycan).
+const Map<String, List<(int, int)>> targetedDiscoverRanges = {
+  '742': [(0x2600, 0x27FF), (0x4700, 0x47FF)],
+  '18DA0FF1': [(0x1800, 0x18FF)],
+};
+
+/// Whether [a] and [b] list the same ranges in the same order.
+bool sameRanges(List<(int, int)> a, List<(int, int)> b) {
+  if (a.length != b.length) {
+    return false;
+  }
+  for (var i = 0; i < a.length; i++) {
+    if (a[i] != b[i]) {
+      return false;
+    }
+  }
+  return true;
+}
+
 /// F4xx/F5xx and F8xx stay announcement-only via OBDonUDS; never offered
 /// to the generic per-ECU discovery scan.
 const List<(int, int)> discoveryExcludedRanges = [

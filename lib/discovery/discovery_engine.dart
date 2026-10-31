@@ -131,6 +131,7 @@ class DiscoveryEngine {
        _clock = clock ?? _utcNow {
     _subscription = executor.results.listen(_handleResult);
     _seedVagPpeEcus();
+    state.ecus.forEach(_applyTargetedRanges);
   }
 
   final ReadExecutor executor;
@@ -392,6 +393,21 @@ class DiscoveryEngine {
     }
   }
 
+  /// Gives [ecu] the [targetedDiscoverRanges] for its request header. A
+  /// change restarts its scan: the stored position indexes the DID order
+  /// of the old ranges.
+  void _applyTargetedRanges(String ecuId, EcuInfo ecu) {
+    final ranges = targetedDiscoverRanges[ecu.requestHeader];
+    if (ranges == null || sameRanges(ecu.discoverRanges, ranges)) {
+      return;
+    }
+    ecu
+      ..discoverRanges = ranges
+      ..scanPosition = 0;
+    _orderCache.remove(ecuId);
+    _priorityOrderCache.remove(ecuId);
+  }
+
   List<int> _orderFor(String ecuId, List<(int, int)> ranges) =>
       _orderCache.putIfAbsent(ecuId, () => discoveryDidOrder(ranges));
 
@@ -443,11 +459,14 @@ class DiscoveryEngine {
         responseHeader: entry.value,
         protocol: 6,
       );
-      state.ecus[ecuId] = EcuInfo(
-        requestHeader: entry.key,
-        responseHeader: entry.value,
-        protocol: 6,
-        identification: identification,
+      _applyTargetedRanges(
+        ecuId,
+        state.ecus[ecuId] = EcuInfo(
+          requestHeader: entry.key,
+          responseHeader: entry.value,
+          protocol: 6,
+          identification: identification,
+        ),
       );
     }
     state.inventoryStagesDone.add('ecus11');
@@ -501,11 +520,14 @@ class DiscoveryEngine {
         responseHeader: responseHeader,
         protocol: 7,
       );
-      state.ecus[ecuId] = EcuInfo(
-        requestHeader: requestHeader,
-        responseHeader: responseHeader,
-        protocol: 7,
-        identification: identification,
+      _applyTargetedRanges(
+        ecuId,
+        state.ecus[ecuId] = EcuInfo(
+          requestHeader: requestHeader,
+          responseHeader: responseHeader,
+          protocol: 7,
+          identification: identification,
+        ),
       );
     }
     state.inventoryStagesDone.add('ecus29');

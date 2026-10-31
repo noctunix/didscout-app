@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'did_order.dart';
 import 'inventory.dart';
 
 /// What the discovery engine stores under an identification DID in
@@ -96,9 +97,9 @@ class EcuInfo {
   /// Wire protocol: 6 (11-bit CAN) or 7 (29-bit CAN).
   int protocol;
 
-  /// Profile-supplied DID ranges to prioritize in this ECU's scan order
-  /// (see `discoveryDidOrder`); empty for an ECU found by generic
-  /// discovery rather than seeded from a profile.
+  /// DID ranges to prioritize in this ECU's scan order (see
+  /// `discoveryDidOrder`): the `targetedDiscoverRanges` for its request
+  /// header, else empty.
   List<(int, int)> discoverRanges;
 
   /// Identification DID (F187/F189/F191/F197) results: the decoded ASCII
@@ -152,7 +153,7 @@ class EcuInfo {
     if (f197Name == null && other.f197Name != null) {
       identification['F197'] = other.f197Name!;
     }
-    if (_sameRanges(discoverRanges, other.discoverRanges) &&
+    if (sameRanges(discoverRanges, other.discoverRanges) &&
         other.scanPosition > scanPosition) {
       scanPosition = other.scanPosition;
     }
@@ -175,18 +176,6 @@ class EcuInfo {
     for (final MapEntry(:key, :value) in other.sampleStats.entries) {
       sampleStats.putIfAbsent(key, () => value);
     }
-  }
-
-  static bool _sameRanges(List<(int, int)> a, List<(int, int)> b) {
-    if (a.length != b.length) {
-      return false;
-    }
-    for (var i = 0; i < a.length; i++) {
-      if (a[i] != b[i]) {
-        return false;
-      }
-    }
-    return true;
   }
 
   Map<String, dynamic> toJson() => {

@@ -1158,6 +1158,171 @@ void main() {
     });
   });
 
+  group('targeted discover ranges', () {
+    List<String> commandsFrom(int firstDid) => [
+      for (var did = firstDid; did < firstDid + 16; did++)
+        '22${did.toRadixString(16).toUpperCase()}',
+    ];
+
+    DiscoveryEngine buildEngine(FakeExecutor executor, DiscoveryState state) =>
+        DiscoveryEngine(executor: executor, state: state, onHit: (_, _, _) {});
+
+    // OK, not NoData -- an all-NoData batch would look NO-DATA-asleep.
+    ProbeResult ok(ProbeStep step) =>
+        ProbeResult(signalId: step.signalId, status: const ProbeOk(), at: now);
+
+    test('the thermal management seed scans 2600-27FF first', () async {
+      final executor = FakeExecutor()..respond = ok;
+      final state = DiscoveryState();
+      final engine = buildEngine(executor, state);
+
+      expect(state.ecus['tme']!.requestHeader, '742');
+      expect(state.ecus['tme']!.discoverRanges, [
+        (0x2600, 0x27FF),
+        (0x4700, 0x47FF),
+      ]);
+
+      await engine.runDiscoveryBatch('tme', now);
+
+      expect(
+        executor.submittedSteps.map((s) => s.command).toList(),
+        commandsFrom(0x2600),
+      );
+
+      engine.dispose();
+    });
+
+    test('the HCP1 seed scans 1800-18FF first', () async {
+      final executor = FakeExecutor()..respond = ok;
+      final state = DiscoveryState();
+      final engine = buildEngine(executor, state);
+
+      expect(state.ecus['hcp1']!.requestHeader, '18DA0FF1');
+      expect(state.ecus['hcp1']!.discoverRanges, [(0x1800, 0x18FF)]);
+
+      await engine.runDiscoveryBatch('hcp1', now);
+
+      expect(
+        executor.submittedSteps.map((s) => s.command).toList(),
+        commandsFrom(0x1800),
+      );
+
+      engine.dispose();
+    });
+
+    test('an ECU that already has the targeted ranges keeps its position, '
+        'and the second range follows the first', () async {
+      final executor = FakeExecutor()..respond = ok;
+      final state = DiscoveryState();
+      state.ecus['tme'] = EcuInfo(
+        requestHeader: '742',
+        responseHeader: '7AC',
+        protocol: 6,
+        discoverRanges: [(0x2600, 0x27FF), (0x4700, 0x47FF)],
+        scanPosition: 512,
+      );
+      final engine = buildEngine(executor, state);
+
+      expect(state.ecus['tme']!.scanPosition, 512);
+
+      await engine.runDiscoveryBatch('tme', now);
+
+      expect(
+        executor.submittedSteps.map((s) => s.command).toList(),
+        commandsFrom(0x4700),
+      );
+
+      engine.dispose();
+    });
+
+    test('an ECU with another header keeps its ranges and position', () async {
+      final executor = FakeExecutor()..respond = ok;
+      final state = DiscoveryState();
+      state.ecus['test'] = EcuInfo(
+        requestHeader: '7A1',
+        responseHeader: '7A9',
+        protocol: 6,
+        discoverRanges: [(0x2A00, 0x2AFF)],
+        scanPosition: 16,
+      );
+      final engine = buildEngine(executor, state);
+
+      expect(state.ecus['gateway']!.discoverRanges, isEmpty);
+      expect(state.ecus['test']!.discoverRanges, [(0x2A00, 0x2AFF)]);
+      expect(state.ecus['test']!.scanPosition, 16);
+
+      await engine.runDiscoveryBatch('test', now);
+
+      expect(
+        executor.submittedSteps.map((s) => s.command).toList(),
+        commandsFrom(0x2A10),
+      );
+
+      engine.dispose();
+    });
+
+    test('a persisted ECU without ranges gets them and restarts its scan, '
+        'keeping what it found', () async {
+      final executor = FakeExecutor()..respond = ok;
+      final state = DiscoveryState.fromJson({
+        'ecus': {
+          'hcp1': EcuInfo(
+            requestHeader: '18DA0FF1',
+            responseHeader: '18DAF10F',
+            protocol: 7,
+            scanPosition: 480,
+            discovered: {'0101', '0102'},
+            conditional: {'0103'},
+            sampleStats: {'0101': DidSampleStats(stableSamples: 3)},
+          ).toJson(),
+        },
+      });
+      expect(state.ecus['hcp1']!.discoverRanges, isEmpty);
+
+      final engine = buildEngine(executor, state);
+
+      final hcp1 = state.ecus['hcp1']!;
+      expect(hcp1.discoverRanges, [(0x1800, 0x18FF)]);
+      expect(hcp1.scanPosition, 0);
+      expect(hcp1.discovered, {'0101', '0102'});
+      expect(hcp1.conditional, {'0103'});
+      expect(hcp1.sampleStats['0101']!.stableSamples, 3);
+
+      await engine.runDiscoveryBatch('hcp1', now);
+
+      expect(
+        executor.submittedSteps.map((s) => s.command).toList(),
+        commandsFrom(0x1800),
+      );
+
+      engine.dispose();
+    });
+
+    test('an ECU the 11-bit inventory finds at 742 gets the ranges', () async {
+      final executor = FakeExecutor();
+      final state = DiscoveryState();
+      final engine = buildEngine(executor, state);
+      state.ecus.remove('tme');
+      executor.respond = (step) => ProbeResult(
+        signalId: step.signalId,
+        status: moduleIdOf(step.signalId) == 'ecu11-742'
+            ? const ProbeOk()
+            : const ProbeNoData(),
+        responderHeader: '7AC',
+        at: now,
+      );
+
+      await engine.runEcu11Inventory();
+
+      expect(state.ecus['ecus11-742']!.discoverRanges, [
+        (0x2600, 0x27FF),
+        (0x4700, 0x47FF),
+      ]);
+
+      engine.dispose();
+    });
+  });
+
   group('batchSize', () {
     test('minQueueDepth/maxQueueDepth scale with it when not given '
         'explicitly', () {
