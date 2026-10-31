@@ -1,4 +1,3 @@
-import 'dart:math' as math;
 import 'dart:typed_data';
 
 /// One of the tile quantities the recording page lets the owner enter or
@@ -8,6 +7,7 @@ enum ReadingQuantity {
   soc,
   batteryTemp,
   outsideTemp,
+  insideTemp,
   range,
   chargePower,
   odometer,
@@ -18,6 +18,7 @@ extension ReadingQuantityWire on ReadingQuantity {
     ReadingQuantity.soc => 'soc',
     ReadingQuantity.batteryTemp => 'battery_temp',
     ReadingQuantity.outsideTemp => 'outside_temp',
+    ReadingQuantity.insideTemp => 'inside_temp',
     ReadingQuantity.range => 'range',
     ReadingQuantity.chargePower => 'charge_power',
     ReadingQuantity.odometer => 'odometer',
@@ -27,6 +28,7 @@ extension ReadingQuantityWire on ReadingQuantity {
     ReadingQuantity.soc => 'State of charge',
     ReadingQuantity.batteryTemp => 'Battery temp.',
     ReadingQuantity.outsideTemp => 'Outside temp.',
+    ReadingQuantity.insideTemp => 'Inside temp.',
     ReadingQuantity.range => 'Range',
     ReadingQuantity.chargePower => 'Charging power',
     ReadingQuantity.odometer => 'Odometer',
@@ -36,6 +38,7 @@ extension ReadingQuantityWire on ReadingQuantity {
     ReadingQuantity.soc => '%',
     ReadingQuantity.batteryTemp => '°C',
     ReadingQuantity.outsideTemp => '°C',
+    ReadingQuantity.insideTemp => '°C',
     ReadingQuantity.range => 'km',
     ReadingQuantity.chargePower => 'kW',
     ReadingQuantity.odometer => 'km',
@@ -58,8 +61,6 @@ class LiveVehicleInfo {
     this.outsideTempC,
     this.rangeKm,
     this.storedEnergyWh,
-    this.batteryTempMinC,
-    this.batteryTempMaxC,
   });
 
   static const empty = LiveVehicleInfo();
@@ -69,11 +70,6 @@ class LiveVehicleInfo {
   final int? outsideTempC;
   final int? rangeKm;
   final int? storedEnergyWh;
-
-  /// Lowest and highest populated sensor of the unverified HV battery
-  /// temperature candidate, see [decodeBatteryTempRangeC].
-  final double? batteryTempMinC;
-  final double? batteryTempMaxC;
 
   /// [estimateSocPercent] of [storedEnergyWh] at [batteryTempC] (°C, if
   /// known), or null while [storedEnergyWh] is unknown.
@@ -86,9 +82,7 @@ class LiveVehicleInfo {
       odometerKm != null ||
       outsideTempC != null ||
       rangeKm != null ||
-      storedEnergyWh != null ||
-      batteryTempMinC != null ||
-      batteryTempMaxC != null;
+      storedEnergyWh != null;
 }
 
 /// Decodes a `22F40D` (speed) positive payload: byte 0, km/h.
@@ -127,32 +121,17 @@ int? decodeStoredEnergyWh(Uint8List payload) {
   return raw * 25;
 }
 
-/// Decodes a `222A2D` positive payload from module `hcp1` into the lowest
-/// and highest populated sensor temperature, in °C, or returns null when
-/// [payload] has no populated sensor slot. Byte 0 is a format/count byte;
-/// every following byte is one sensor slot, raw / 2 - 64 °C, and a slot at
-/// or below 0x31 (-39.5 °C) is unpopulated. An unverified candidate for
-/// the HV battery temperature: its minimum has matched the vehicle's
-/// displayed battery temperature at a single data point only.
-({double min, double max})? decodeBatteryTempRangeC(Uint8List payload) {
-  final temps = [
-    for (final raw in payload.skip(1))
-      if (raw > 0x31) raw / 2 - 64,
-  ];
-  if (temps.isEmpty) return null;
-  return (min: temps.reduce(math.min), max: temps.reduce(math.max));
-}
-
 /// Estimates the state of charge the vehicle displays from
 /// [storedEnergyWh] (`222AB8`) and returns it in percent, clamped to 0-100.
-/// Not a decoded DID: a linear fit of the owner's typed SoC readings on the
-/// one vehicle recorded so far. Stored energy reads lower with a cold
-/// battery while the display does not, so [batteryTempC] (°C), when given,
-/// is part of the fit and keeps the estimate within about 1.3 percentage
-/// points of the display; without it, the error reaches about 3.
+/// Not a decoded DID: a linear fit of the owner's typed SoC readings on
+/// this one vehicle (35 readings, battery 9-31 °C). Stored energy reads
+/// lower with a cold battery while the display does not, so
+/// [batteryTempC] (°C), when given, is part of the fit and keeps the
+/// estimate within 1 percentage point of the display; without it, the
+/// error reaches 3.
 int estimateSocPercent(int storedEnergyWh, {num? batteryTempC}) {
   final soc = batteryTempC == null
-      ? storedEnergyWh * 0.0011077 + 5.38
-      : storedEnergyWh * 0.00109229 - batteryTempC * 0.191163 + 9.8163;
+      ? storedEnergyWh * 0.0010689 + 7.8526
+      : storedEnergyWh * 0.00108695 - batteryTempC * 0.233182 + 10.9764;
   return soc.round().clamp(0, 100);
 }

@@ -31,10 +31,6 @@ class _FakeNativeObdApi extends NativeObdApi {
   /// Same as [outsideTempResponse], for the `222AB8` (stored energy) step.
   String? storedEnergyResponse;
 
-  /// Same as [outsideTempResponse], for the `222A2D` (battery temperature
-  /// candidate) step.
-  String? batteryTempResponse;
-
   @override
   Future<void> configure(ObdBridgeConfigMessage config) async {}
 
@@ -84,12 +80,6 @@ class _FakeNativeObdApi extends NativeObdApi {
               signalId: 'module6_222ab8',
               transport: ObdTransportStatusMessage.ok,
               rawResponseText: storedEnergyResponse,
-            ),
-          if (batteryTempResponse != null)
-            ObdSignalExchangeMessage(
-              signalId: 'hcp1_222a2d',
-              transport: ObdTransportStatusMessage.ok,
-              rawResponseText: batteryTempResponse,
             ),
         ],
       );
@@ -241,6 +231,11 @@ void main() {
       await pumpPage(tester, controller: controller);
       await _startRecording(tester, controller);
 
+      await tester.scrollUntilVisible(
+        find.text('Share profile draft'),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
       await tester.tap(find.text('Share profile draft'));
       await tester.pumpAndSettle();
 
@@ -449,7 +444,7 @@ void main() {
       final controller = storedEnergyController();
       await startAndPoll(tester, controller);
 
-      // 61075 * 0.0011077 + 5.38 = 73.033
+      // 61075 * 0.0010689 + 7.8526 = 73.136
       expect(
         find.text('Estimated SoC from stored energy: 73 %'),
         findsOneWidget,
@@ -473,7 +468,7 @@ void main() {
       addBatteryTemp(controller, const Duration(minutes: 5));
       await startAndPoll(tester, controller);
 
-      // 61075 * 0.00109229 - 13 * 0.191163 + 9.8163 = 74.043
+      // 61075 * 0.00108695 - 13 * 0.233182 + 10.9764 = 74.331
       expect(
         find.text('Estimated SoC from stored energy at 13 °C battery: 74 %'),
         findsOneWidget,
@@ -498,84 +493,6 @@ void main() {
       await controller.stop();
     });
 
-    RecordingController batteryTempController() => _fakeController(
-      fakeNative: _FakeNativeObdApi()
-        // Multi-frame ISO-TP, 10 bytes: 62 2A2D, format byte 01, then slots
-        // B0 B4 B7 (raw / 2 - 64 -> 24.0, 26.0, 27.5 degC) and the
-        // unpopulated 30 31 30.
-        ..batteryTempResponse = '18DAF10F100A622A2D01B0B4\n18DAF10F21B7303130',
-      tickInterval: const Duration(milliseconds: 1),
-    );
-
-    testWidgets('the battery temp. candidate shows its range and confirms '
-        'its minimum', (tester) async {
-      final controller = batteryTempController();
-      await startAndPoll(tester, controller);
-
-      expect(
-        find.text('Battery temp. candidate (unverified): 24.0–27.5 °C'),
-        findsOneWidget,
-      );
-      await tester.tap(find.widgetWithText(TextButton, 'Matches display'));
-      await tester.pumpAndSettle();
-
-      final marker = controller.markers.markers.single as ReadingMarker;
-      expect(marker.quantity, ReadingQuantity.batteryTemp);
-      expect(marker.source, ReadingSource.confirmed);
-      expect(marker.value, isA<int>());
-      expect(marker.value, 24);
-      expect(marker.liveValue, 24);
-
-      await controller.stop();
-    });
-
-    testWidgets('a typed battery temp. reading stores the candidate as its '
-        'live value', (tester) async {
-      final controller = batteryTempController();
-      await startAndPoll(tester, controller);
-
-      await tester.tap(find.text('Battery temp.'));
-      await tester.pumpAndSettle();
-      await tester.enterText(find.byType(TextField), '25');
-      await tester.tap(find.widgetWithText(FilledButton, 'Save'));
-      await tester.pumpAndSettle();
-
-      final marker = controller.markers.markers.single as ReadingMarker;
-      expect(marker.quantity, ReadingQuantity.batteryTemp);
-      expect(marker.source, ReadingSource.typed);
-      expect(marker.value, 25);
-      expect(marker.liveValue, 24);
-
-      await controller.stop();
-    });
-
-    testWidgets('a single populated slot shows one value and does not feed '
-        'the SoC estimate', (tester) async {
-      final controller = _fakeController(
-        fakeNative: _FakeNativeObdApi()
-          // Single-frame ISO-TP: 05 (SF, 5 bytes) 62 2A2D, format byte 01,
-          // one slot B0 (176 / 2 - 64 -> 24.0 degC).
-          ..batteryTempResponse = '18DAF10F05622A2D01B0'
-          // Same stored-energy frame as storedEnergyController.
-          ..storedEnergyResponse = '77A07622AB80000098B',
-        tickInterval: const Duration(milliseconds: 1),
-      );
-      await startAndPoll(tester, controller);
-
-      expect(
-        find.text('Battery temp. candidate (unverified): 24.0 °C'),
-        findsOneWidget,
-      );
-      // 61075 * 0.0011077 + 5.38 = 73.033 -- the energy-only fit, as with
-      // no battery temp. reading at all.
-      expect(
-        find.text('Estimated SoC from stored energy: 73 %'),
-        findsOneWidget,
-      );
-
-      await controller.stop();
-    });
-
     testWidgets('a battery temp. reading older than 20 min is ignored', (
       tester,
     ) async {
@@ -583,6 +500,7 @@ void main() {
       addBatteryTemp(controller, const Duration(minutes: 21));
       await startAndPoll(tester, controller);
 
+      // 61075 * 0.0010689 + 7.8526 = 73.136 -- the energy-only fit.
       expect(
         find.text('Estimated SoC from stored energy: 73 %'),
         findsOneWidget,

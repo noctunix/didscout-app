@@ -58,10 +58,31 @@ const String _module8ResponseHeader = '18DAF106';
 const String _module6RequestHeader = '710';
 const String _module6ResponseHeader = '77A';
 
-/// The 29-bit module carrying the battery temperature candidate: vag-ppe's
-/// `hcp1`, planned under that same id.
+/// vag-ppe's 29-bit `hcp1` module, planned under that same id.
 const String _hcp1RequestHeader = '18DA0FF1';
 const String _hcp1ResponseHeader = '18DAF10F';
+
+/// vag-ppe's 11-bit `tme` module, planned under that same id.
+const String _tmeRequestHeader = '742';
+const String _tmeResponseHeader = '7AC';
+
+// Unverified candidates from the OBDb Porsche Taycan signal set
+// (https://github.com/OBDb/Porsche-Taycan): tme 2609 is its outside
+// temperature, the hcp1 DIDs its battery-management SoC/temperature DIDs.
+// Recorded only, so recordings can be checked against display readings.
+const List<String> _tmeCandidateDids = ['2609', '27D6', '475F'];
+const List<String> _hcp1CandidateDids = [
+  '028C',
+  '1801',
+  '1802',
+  '180C',
+  '180D',
+  '180E',
+  '180F',
+  '1810',
+  '181C',
+  '181D',
+];
 
 /// A step's command and expected response header, keyed by its own
 /// [ObdStepMessage.signalId] — used to decode [ObdBridge.liveState]'s cached
@@ -78,7 +99,6 @@ const Map<String, _LiveSignalSpec> _liveSignalSpecs = {
   'module8_22f4a6': _LiveSignalSpec('22F4A6', _module8ResponseHeader),
   'module6_222ab6': _LiveSignalSpec('222AB6', _module6ResponseHeader),
   'module6_222ab8': _LiveSignalSpec('222AB8', _module6ResponseHeader),
-  'hcp1_222a2d': _LiveSignalSpec('222A2D', _hcp1ResponseHeader),
 };
 
 const List<String> _adapterInitCommands = [
@@ -873,7 +893,6 @@ class RecordingController extends ChangeNotifier {
       int? outsideTempC;
       int? rangeKm;
       int? storedEnergyWh;
-      ({double min, double max})? batteryTempC;
       for (final exchange in state.exchanges) {
         if (exchange.transport != ObdTransportStatusMessage.ok ||
             exchange.rawResponseText == null) {
@@ -903,8 +922,6 @@ class RecordingController extends ChangeNotifier {
             rangeKm = decodeRangeKm(payload);
           case 'module6_222ab8':
             storedEnergyWh = decodeStoredEnergyWh(payload);
-          case 'hcp1_222a2d':
-            batteryTempC = decodeBatteryTempRangeC(payload);
         }
       }
       _liveInfo = LiveVehicleInfo(
@@ -913,8 +930,6 @@ class RecordingController extends ChangeNotifier {
         outsideTempC: outsideTempC,
         rangeKm: rangeKm,
         storedEnergyWh: storedEnergyWh,
-        batteryTempMinC: batteryTempC?.min,
-        batteryTempMaxC: batteryTempC?.max,
       );
     } catch (_) {
       _liveInfo = LiveVehicleInfo.empty;
@@ -1153,14 +1168,23 @@ class RecordingController extends ChangeNotifier {
         responseHeader: _hcp1ResponseHeader,
       ),
     );
+    final tme = ObdModuleMessage(
+      moduleId: 'tme',
+      protocol: ObdProtocol.elevenBitCan.wireValue,
+      setup: buildModuleSetupCommands(
+        protocol: ObdProtocol.elevenBitCan,
+        requestHeader: _tmeRequestHeader,
+        responseHeader: _tmeResponseHeader,
+      ),
+    );
 
     final recordKnown =
         settings.recordingMode == RecordingMode.scoutAndRecordKnown;
-    final fixedModules = [module7, module8, module6, hcp1];
+    final fixedModules = [module7, module8, module6, hcp1, tme];
     final fixedModuleIds = {for (final module in fixedModules) module.moduleId};
     final knownModules = [
       ...fixedModules,
-      // The gateway and hcp1 profile modules are already planned above.
+      // The gateway, hcp1 and tme profile modules are already planned above.
       if (recordKnown)
         for (final module in _knownDidModules())
           if (!fixedModuleIds.contains(module.moduleId)) module,
@@ -1182,9 +1206,9 @@ class RecordingController extends ChangeNotifier {
         responseHeader: _module7ResponseHeader,
         intervalMs: settings.speedPollIntervalMs,
       ),
-      // Energy, range, odometer and the battery temperature candidate are
-      // planned in every mode as well: they are what readings typed off the
-      // vehicle's displays are checked against.
+      // Energy, range, odometer, outside temperature and the candidates
+      // are planned in every mode as well: they are what readings typed off
+      // the vehicle's displays are checked against.
       ObdStepMessage(
         signalId: 'module6_222ab8',
         moduleId: 'module6',
@@ -1207,20 +1231,29 @@ class RecordingController extends ChangeNotifier {
         intervalMs: 60000,
       ),
       ObdStepMessage(
-        signalId: 'hcp1_222a2d',
-        moduleId: 'hcp1',
-        command: '222A2D',
-        responseHeader: _hcp1ResponseHeader,
-        intervalMs: 30000,
+        signalId: 'module7_22f446',
+        moduleId: 'module7',
+        command: '22F446',
+        responseHeader: _module7ResponseHeader,
+        intervalMs: 60000,
       ),
-      if (recordKnown) ...[
+      for (final did in _tmeCandidateDids)
         ObdStepMessage(
-          signalId: 'module7_22f446',
-          moduleId: 'module7',
-          command: '22F446',
-          responseHeader: _module7ResponseHeader,
+          signalId: 'tme_22${did.toLowerCase()}',
+          moduleId: 'tme',
+          command: '22$did',
+          responseHeader: _tmeResponseHeader,
           intervalMs: 60000,
         ),
+      for (final did in _hcp1CandidateDids)
+        ObdStepMessage(
+          signalId: 'hcp1_22${did.toLowerCase()}',
+          moduleId: 'hcp1',
+          command: '22$did',
+          responseHeader: _hcp1ResponseHeader,
+          intervalMs: 60000,
+        ),
+      if (recordKnown) ...[
         ObdStepMessage(
           signalId: 'module7_22f449',
           moduleId: 'module7',

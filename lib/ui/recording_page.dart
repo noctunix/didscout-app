@@ -31,6 +31,7 @@ const List<ReadingQuantity> _tileQuantities = [
   ReadingQuantity.soc,
   ReadingQuantity.batteryTemp,
   ReadingQuantity.outsideTemp,
+  ReadingQuantity.insideTemp,
   ReadingQuantity.range,
   ReadingQuantity.chargePower,
   ReadingQuantity.odometer,
@@ -320,17 +321,10 @@ num? _liveValueFor(
   ReadingQuantity.range => info.rangeKm,
   ReadingQuantity.odometer => info.odometerKm,
   ReadingQuantity.soc => info.socEstimatePercent(batteryTempC: batteryTempC),
-  ReadingQuantity.batteryTemp => _batteryTempCandidate(info),
+  ReadingQuantity.batteryTemp ||
+  ReadingQuantity.insideTemp ||
   ReadingQuantity.chargePower => null,
 };
-
-/// [LiveVehicleInfo.batteryTempMinC] as a battery temp. reading stores it:
-/// an int when whole, like a typed whole number.
-num? _batteryTempCandidate(LiveVehicleInfo info) {
-  final minC = info.batteryTempMinC;
-  if (minC == null) return null;
-  return minC == minC.roundToDouble() ? minC.toInt() : minC;
-}
 
 /// Human-readable status line and icon for [RecordingPhase].
 String _statusText(RecordingController controller) {
@@ -819,9 +813,8 @@ class _LiveInfoCard extends StatelessWidget {
 
   final LiveVehicleInfo liveInfo;
 
-  /// The owner's own recent battery temp. reading, if any. Only this feeds
-  /// the SoC estimate, never the unverified
-  /// [LiveVehicleInfo.batteryTempMinC] candidate.
+  /// The owner's own recent battery temp. reading, if any, for the SoC
+  /// estimate.
   final num? batteryTempC;
 
   final Future<void> Function(ReadingQuantity quantity, num liveValue)
@@ -847,19 +840,6 @@ class _LiveInfoCard extends StatelessWidget {
         _LiveInfoRow(
           text: 'Estimated SoC from stored energy$atTemp: $socEstimate %',
           onConfirm: () => onConfirm(ReadingQuantity.soc, socEstimate),
-        ),
-      );
-    }
-    final batteryTempCandidate = _batteryTempCandidate(liveInfo);
-    if (batteryTempCandidate != null) {
-      final minC = liveInfo.batteryTempMinC!.toStringAsFixed(1);
-      final maxC = liveInfo.batteryTempMaxC!.toStringAsFixed(1);
-      final span = minC == maxC ? minC : '$minC–$maxC';
-      rows.add(
-        _LiveInfoRow(
-          text: 'Battery temp. candidate (unverified): $span °C',
-          onConfirm: () =>
-              onConfirm(ReadingQuantity.batteryTemp, batteryTempCandidate),
         ),
       );
     }

@@ -60,71 +60,29 @@ void main() {
     });
   });
 
-  group('decodeBatteryTempRangeC', () {
-    test('min and max of the populated slots, raw / 2 - 64 degC', () {
-      // Byte 0 is skipped. 0xB0 = 176 -> 24.0, 0xB3 = 179 -> 25.5,
-      // 0xB7 = 183 -> 27.5; 0x30 (-40.0) and 0x31 (-39.5) are unpopulated.
-      final range = decodeBatteryTempRangeC(
-        Uint8List.fromList([0x01, 0xB3, 0xB0, 0xB7, 0x30, 0x31, 0x30]),
-      );
-      expect(range?.min, 24.0);
-      expect(range?.max, 27.5);
-    });
-
-    test('0x32 (-39.0 degC) is the lowest populated slot', () {
-      final range = decodeBatteryTempRangeC(
-        Uint8List.fromList([0x01, 0x32, 0x31]),
-      );
-      expect(range?.min, -39.0);
-      expect(range?.max, -39.0);
-    });
-
-    test('only unpopulated slots is null', () {
-      expect(
-        decodeBatteryTempRangeC(Uint8List.fromList([0x01, 0x30, 0x31, 0x00])),
-        isNull,
-      );
-    });
-
-    test('a payload without any slot is null', () {
-      expect(decodeBatteryTempRangeC(Uint8List.fromList([0x01])), isNull);
-      expect(decodeBatteryTempRangeC(Uint8List.fromList([])), isNull);
-    });
-  });
-
-  test('a battery temp. candidate alone counts as a live value', () {
-    expect(LiveVehicleInfo.empty.hasAnyValue, isFalse);
-    expect(
-      const LiveVehicleInfo(
-        batteryTempMinC: 24,
-        batteryTempMaxC: 27.5,
-      ).hasAnyValue,
-      isTrue,
-    );
-  });
-
   group('estimateSocPercent', () {
     test('without battery temp., uses the energy-only fit', () {
-      // 61075 * 0.0011077 + 5.38 = 73.033
+      // 61075 * 0.0010689 + 7.8526 = 73.136
       expect(estimateSocPercent(61075), 73);
-      // 1230 * 25 Wh, read while the display showed 39 %:
-      // 30750 * 0.0011077 + 5.38 = 39.442
-      expect(estimateSocPercent(30750), 39);
+      // 1230 * 25 Wh, read while the display showed 39 %, within the
+      // energy-only fit's error:
+      // 30750 * 0.0010689 + 7.8526 = 40.721
+      expect(estimateSocPercent(30750), 41);
     });
 
     test('with battery temp., the same energy reads higher when cold', () {
-      // 61075 * 0.00109229 - 13 * 0.191163 + 9.8163 = 74.043
+      // 61075 * 0.00108695 - 13 * 0.233182 + 10.9764 = 74.331
       expect(estimateSocPercent(61075, batteryTempC: 13), 74);
-      // 61075 * 0.00109229 - 31 * 0.191163 + 9.8163 = 70.602
-      expect(estimateSocPercent(61075, batteryTempC: 31), 71);
-      // 58175 * 0.00109229 - 31 * 0.191163 + 9.8163 = 67.434
+      // 61075 * 0.00108695 - 31 * 0.233182 + 10.9764 = 70.133
+      expect(estimateSocPercent(61075, batteryTempC: 31), 70);
+      // 58175 * 0.00108695 - 31 * 0.233182 + 10.9764 = 66.981
       expect(estimateSocPercent(58175, batteryTempC: 31.0), 67);
     });
 
     test('is clamped to 0-100 %', () {
       expect(estimateSocPercent(200000), 100);
       expect(estimateSocPercent(200000, batteryTempC: 20), 100);
-      // 0 * 0.00109229 - 60 * 0.191163 + 9.8163 = -1.653
+      // 0 * 0.00108695 - 60 * 0.233182 + 10.9764 = -3.015
       expect(estimateSocPercent(0, batteryTempC: 60), 0);
     });
 
@@ -144,6 +102,7 @@ void main() {
     expect(ReadingQuantity.soc.wireName, 'soc');
     expect(ReadingQuantity.batteryTemp.wireName, 'battery_temp');
     expect(ReadingQuantity.outsideTemp.wireName, 'outside_temp');
+    expect(ReadingQuantity.insideTemp.wireName, 'inside_temp');
     expect(ReadingQuantity.range.wireName, 'range');
     expect(ReadingQuantity.chargePower.wireName, 'charge_power');
     expect(ReadingQuantity.odometer.wireName, 'odometer');
