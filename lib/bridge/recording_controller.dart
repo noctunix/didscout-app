@@ -58,37 +58,6 @@ const String _module8ResponseHeader = '18DAF106';
 const String _module6RequestHeader = '710';
 const String _module6ResponseHeader = '77A';
 
-/// vag-ppe's 29-bit `hcp1` module, planned under that same id.
-const String _hcp1RequestHeader = '18DA0FF1';
-const String _hcp1ResponseHeader = '18DAF10F';
-
-/// vag-ppe's 11-bit `tme` module, planned under that same id.
-const String _tmeRequestHeader = '742';
-const String _tmeResponseHeader = '7AC';
-
-/// vag-ppe's 11-bit `cluster` module, planned under that same id.
-const String _clusterRequestHeader = '714';
-const String _clusterResponseHeader = '77E';
-
-// Unverified, record-only candidates, per planned module: the response
-// header and DIDs that hold outside/cabin temperature, odometer, range or
-// battery-management values on related platforms in the OBDb signal sets
-// (https://github.com/OBDb: Porsche-Taycan, Audi-e-tron, Audi-Q8-e-tron,
-// Audi-RS-e-tron, Volkswagen-ID3/ID.4). Read so recordings can be checked
-// against display readings.
-const Map<String, (String, List<String>)> _candidateDids = {
-  'tme': (_tmeResponseHeader, ['2609', '27D6', '475F']),
-  'cluster': (
-    _clusterResponseHeader,
-    ['0530', '1014', '2203', '220C', '2294', '22B8', '22E0', '2613'],
-  ),
-  'module6': (_module6ResponseHeader, ['1512', '15D1']),
-  'hcp1': (
-    _hcp1ResponseHeader,
-    ['1801', '1802', '180C', '180D', '180E', '180F', '1810', '181C', '181D'],
-  ),
-};
-
 /// A step's command and expected response header, keyed by its own
 /// [ObdStepMessage.signalId] — used to decode [ObdBridge.liveState]'s cached
 /// attempts back into a [LiveVehicleInfo] during a recording.
@@ -811,9 +780,10 @@ class RecordingController extends ChangeNotifier {
     final allowedToRun = stationary || _settings.scoutWhileDriving;
     if (allowedToRun) {
       final before = jsonEncode(discoveryState.toJson());
-      // A rejected enqueue (queue full, or no active recording) is handled
-      // inside `engine.pump` itself -- backed off and retried, or the
-      // engine suspends itself -- so this never throws.
+      // A rejected enqueue (queue full, or no active recording while the
+      // plugin reconnects) is backed off and retried inside `engine.pump`
+      // itself until it is accepted or the engine is cancelled, so this
+      // never throws.
       await engine.pump(stationary: stationary, now: now);
       // `_teardownDiscovery` may have run while the await above was
       // in flight (it never awaits this call itself -- see `cancel`'s
@@ -1164,43 +1134,13 @@ class RecordingController extends ChangeNotifier {
       ),
     );
 
-    final hcp1 = ObdModuleMessage(
-      moduleId: 'hcp1',
-      protocol: ObdProtocol.twentyNineBitCan.wireValue,
-      setup: buildModuleSetupCommands(
-        protocol: ObdProtocol.twentyNineBitCan,
-        requestHeader: _hcp1RequestHeader,
-        responseHeader: _hcp1ResponseHeader,
-      ),
-    );
-    final tme = ObdModuleMessage(
-      moduleId: 'tme',
-      protocol: ObdProtocol.elevenBitCan.wireValue,
-      setup: buildModuleSetupCommands(
-        protocol: ObdProtocol.elevenBitCan,
-        requestHeader: _tmeRequestHeader,
-        responseHeader: _tmeResponseHeader,
-      ),
-    );
-
-    final cluster = ObdModuleMessage(
-      moduleId: 'cluster',
-      protocol: ObdProtocol.elevenBitCan.wireValue,
-      setup: buildModuleSetupCommands(
-        protocol: ObdProtocol.elevenBitCan,
-        requestHeader: _clusterRequestHeader,
-        responseHeader: _clusterResponseHeader,
-      ),
-    );
-
     final recordKnown =
         settings.recordingMode == RecordingMode.scoutAndRecordKnown;
-    final fixedModules = [module7, module8, module6, hcp1, tme, cluster];
+    final fixedModules = [module7, module8, module6];
     final fixedModuleIds = {for (final module in fixedModules) module.moduleId};
     final knownModules = [
       ...fixedModules,
-      // The gateway, hcp1, tme and cluster profile modules are already
-      // planned above.
+      // Profile modules already planned above are not added twice.
       if (recordKnown)
         for (final module in _knownDidModules())
           if (!fixedModuleIds.contains(module.moduleId)) module,
@@ -1222,9 +1162,9 @@ class RecordingController extends ChangeNotifier {
         responseHeader: _module7ResponseHeader,
         intervalMs: settings.speedPollIntervalMs,
       ),
-      // Energy, range, odometer, outside temperature and the candidates
-      // are planned in every mode as well: they are what readings typed off
-      // the vehicle's displays are checked against.
+      // Energy, range, odometer and outside temperature are planned in
+      // every mode as well: they are what readings typed off the vehicle's
+      // displays are checked against.
       ObdStepMessage(
         signalId: 'module6_222ab8',
         moduleId: 'module6',
@@ -1253,16 +1193,6 @@ class RecordingController extends ChangeNotifier {
         responseHeader: _module7ResponseHeader,
         intervalMs: 60000,
       ),
-      for (final MapEntry(key: moduleId, value: (responseHeader, dids))
-          in _candidateDids.entries)
-        for (final did in dids)
-          ObdStepMessage(
-            signalId: '${moduleId}_22${did.toLowerCase()}',
-            moduleId: moduleId,
-            command: '22$did',
-            responseHeader: responseHeader,
-            intervalMs: 60000,
-          ),
       if (recordKnown) ...[
         ObdStepMessage(
           signalId: 'module7_22f449',
