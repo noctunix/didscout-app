@@ -253,5 +253,35 @@ void main() {
 
       expect(changes, isEmpty);
     });
+
+    test('a payload that grew or shrank counts as changed', () {
+      final changes = experimentChanges(
+        before: {
+          '74A': {
+            '2A10': _bytes([0x00, 0x11]),
+            '2A11': _bytes([0x01, 0x02, 0x03]),
+          },
+        },
+        after: {
+          '74A': {
+            '2A10': _bytes([0x00, 0x11, 0x22]),
+            '2A11': _bytes([0x09, 0x02]),
+          },
+        },
+      );
+
+      final diffs = changes['74A']!;
+      expect([for (final diff in diffs) diff.did], ['2A10', '2A11']);
+      expect(diffs[0].changes, isEmpty);
+      expect((diffs[0].before.length, diffs[0].after.length), (2, 3));
+      expect(
+        [
+          for (final change in diffs[1].changes)
+            (change.position, change.before, change.after),
+        ],
+        [(0, 0x01, 0x09)],
+      );
+      expect((diffs[1].before.length, diffs[1].after.length), (3, 2));
+    });
   });
 }

@@ -215,10 +215,13 @@ typedef DidSnapshot = Map<String, Map<String, Uint8List>>;
 /// The DIDs whose payload changed between an experiment's [before] and
 /// [after] reads, per request header.
 ///
-/// Only DIDs present in both snapshots are compared, over the shorter
-/// payload's length (see [diffBytes]). Each [DidDiff.module] is the
-/// request header. Headers without a changed DID are left out; each
-/// header's DIDs are sorted by DID.
+/// Only DIDs present in both snapshots are compared. A DID counts as
+/// changed when a byte of the shorter payload's length differs (see
+/// [diffBytes]) or when the payload length differs; [DidDiff.changes]
+/// then lists only the differing bytes of the common prefix, and
+/// [DidDiff.before]/[DidDiff.after] carry both lengths. Each
+/// [DidDiff.module] is the request header. Headers without a changed DID
+/// are left out; each header's DIDs are sorted by DID.
 Map<String, List<DidDiff>> experimentChanges({
   required DidSnapshot before,
   required DidSnapshot after,
@@ -233,7 +236,8 @@ Map<String, List<DidDiff>> experimentChanges({
       for (final MapEntry(key: did, value: beforePayload) in beforeDids.entries)
         if (afterDids[did] case final afterPayload?)
           if (diffBytes(beforePayload, afterPayload) case final bytes
-              when bytes.isNotEmpty)
+              when bytes.isNotEmpty ||
+                  beforePayload.length != afterPayload.length)
             DidDiff(
               module: header,
               did: did,

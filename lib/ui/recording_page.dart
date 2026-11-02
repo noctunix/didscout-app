@@ -34,6 +34,7 @@ const List<ReadingQuantity> _tileQuantities = [
   ReadingQuantity.insideTemp,
   ReadingQuantity.range,
   ReadingQuantity.chargePower,
+  ReadingQuantity.chargePowerMax,
   ReadingQuantity.odometer,
 ];
 

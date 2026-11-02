@@ -298,6 +298,21 @@ void main() {
   });
 
   group('reading tiles', () {
+    testWidgets('the max. charging power has its own tile', (tester) async {
+      final controller = _fakeController();
+      await pumpPage(tester, controller: controller);
+
+      await tester.ensureVisible(find.text('Max. charging power'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Max. charging power'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+      await tester.pumpAndSettle();
+
+      final marker = controller.markers.markers.single as ReadingMarker;
+      expect(marker.quantity, ReadingQuantity.chargePowerMax);
+    });
+
     testWidgets('tile entry stores read_at as the moment the tile was tapped', (
       tester,
     ) async {
