@@ -135,7 +135,6 @@ class _RecordingPageState extends State<RecordingPage> {
     maxAge: _batteryTempMaxAge,
   );
 
-  /// Each quantity's most recent reading.
   Map<ReadingQuantity, ReadingMarker> get _lastReadings => {
     for (final marker in _controller.markers.markers)
       if (marker is ReadingMarker) marker.quantity: marker,

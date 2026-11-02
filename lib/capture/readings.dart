@@ -101,13 +101,6 @@ class LiveVehicleInfo {
   int? socEstimatePercent({num? batteryTempC}) => storedEnergyWh == null
       ? null
       : estimateSocPercent(storedEnergyWh!, batteryTempC: batteryTempC);
-
-  bool get hasAnyValue =>
-      speedKmh != null ||
-      odometerKm != null ||
-      outsideTempC != null ||
-      rangeKm != null ||
-      storedEnergyWh != null;
 }
 
 /// Decodes a `22F40D` (speed) positive payload: byte 0, km/h.
