@@ -113,6 +113,7 @@ class ReadingMarker extends SessionMarker {
     required this.savedAt,
     required this.source,
     this.prefill,
+    this.prefillOrigin,
     this.liveValue,
     this.speedKmh,
   });
@@ -129,9 +130,12 @@ class ReadingMarker extends SessionMarker {
 
   final ReadingSource source;
 
-  /// The value the entry sheet was prefilled with (the quantity's last
-  /// entry), or null if there was none yet.
+  /// The value the entry sheet was prefilled with, or null if it opened
+  /// empty.
   final num? prefill;
+
+  /// Where [prefill] came from; null exactly when [prefill] is.
+  final PrefillOrigin? prefillOrigin;
 
   /// The vehicle's own live value for this quantity at read time, if any.
   final num? liveValue;
@@ -152,6 +156,7 @@ class ReadingMarker extends SessionMarker {
     'saved_at': savedAt.toIso8601String(),
     'source': source.name,
     'prefill': prefill,
+    'prefill_origin': prefillOrigin?.name,
     'live_value': liveValue,
     'speed_kmh': speedKmh,
   };
@@ -221,6 +226,7 @@ class SessionMarkerLog extends ChangeNotifier {
     required DateTime readAt,
     required ReadingSource source,
     num? prefill,
+    PrefillOrigin? prefillOrigin,
     num? liveValue,
     num? speedKmh,
   }) {
@@ -233,6 +239,7 @@ class SessionMarkerLog extends ChangeNotifier {
         savedAt: _clock().toUtc(),
         source: source,
         prefill: prefill,
+        prefillOrigin: prefillOrigin,
         liveValue: liveValue,
         speedKmh: speedKmh,
       ),

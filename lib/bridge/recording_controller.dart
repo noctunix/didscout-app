@@ -603,6 +603,7 @@ class RecordingController extends ChangeNotifier {
     required DateTime readAt,
     required ReadingSource source,
     num? prefill,
+    PrefillOrigin? prefillOrigin,
     num? liveValue,
   }) {
     markers.addReading(
@@ -612,6 +613,7 @@ class RecordingController extends ChangeNotifier {
       readAt: readAt,
       source: source,
       prefill: prefill,
+      prefillOrigin: prefillOrigin,
       liveValue: liveValue,
       speedKmh: _liveInfo.speedKmh,
     );

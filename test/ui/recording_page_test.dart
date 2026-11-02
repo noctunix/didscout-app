@@ -371,6 +371,8 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.text('Max. charging power'));
       await tester.pumpAndSettle();
+      await tester.enterText(find.byType(TextField), '150');
+      await tester.pump();
       await tester.tap(find.widgetWithText(FilledButton, 'Save'));
       await tester.pumpAndSettle();
 
@@ -389,6 +391,8 @@ void main() {
       await tester.pumpAndSettle();
       final afterTap = DateTime.now();
 
+      await tester.enterText(find.byType(TextField), '64');
+      await tester.pump();
       await tester.tap(find.widgetWithText(FilledButton, 'Save'));
       await tester.pumpAndSettle();
 
@@ -404,38 +408,133 @@ void main() {
       );
     });
 
-    testWidgets('entry sheet prefills with the quantity\'s last entry', (
-      tester,
-    ) async {
-      final controller = _fakeController();
+    Future<void> openTile(WidgetTester tester, String label) async {
+      await tester.ensureVisible(find.text(label));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text(label));
+      await tester.pumpAndSettle();
+    }
+
+    FilledButton sheetButton(WidgetTester tester, String label) =>
+        tester.widget<FilledButton>(find.widgetWithText(FilledButton, label));
+
+    IconButton stepper(WidgetTester tester, IconData icon) =>
+        tester.widget<IconButton>(find.widgetWithIcon(IconButton, icon));
+
+    void addSoc(RecordingController controller, num value) {
       controller.addReading(
         quantity: ReadingQuantity.soc,
-        value: 42,
+        value: value,
         readAt: DateTime.now(),
         source: ReadingSource.typed,
       );
+    }
+
+    testWidgets('the last entry prefills the sheet and, saved unchanged, '
+        'is recorded as confirmed', (tester) async {
+      final controller = _fakeController();
+      addSoc(controller, 42);
       await pumpPage(tester, controller: controller);
 
-      await tester.tap(find.text('State of charge'));
+      await openTile(tester, 'State of charge');
+      expect(
+        tester.widget<TextField>(find.byType(TextField)).controller!.text,
+        '42',
+      );
+      await tester.tap(find.widgetWithText(FilledButton, 'Matches display'));
       await tester.pumpAndSettle();
 
-      expect(find.text('42'), findsOneWidget);
+      final marker = controller.markers.markers.last as ReadingMarker;
+      expect(marker.value, 42);
+      expect(marker.source, ReadingSource.confirmed);
+      expect(marker.prefill, 42);
+      expect(marker.prefillOrigin, PrefillOrigin.entry);
     });
 
     testWidgets('the +1 stepper records source stepped', (tester) async {
       final controller = _fakeController();
+      addSoc(controller, 42);
       await pumpPage(tester, controller: controller);
 
-      await tester.tap(find.text('State of charge'));
-      await tester.pumpAndSettle();
+      await openTile(tester, 'State of charge');
       await tester.tap(find.byTooltip('Increase by 1'));
       await tester.pumpAndSettle();
       await tester.tap(find.widgetWithText(FilledButton, 'Save'));
       await tester.pumpAndSettle();
 
-      final marker = controller.markers.markers.single as ReadingMarker;
+      final marker = controller.markers.markers.last as ReadingMarker;
       expect(marker.source, ReadingSource.stepped);
-      expect(marker.value, 1);
+      expect(marker.value, 43);
+      expect(marker.prefill, 42);
+      expect(marker.prefillOrigin, PrefillOrigin.entry);
+    });
+
+    testWidgets('without a value to prefill, the sheet opens empty and '
+        'Save and the steppers stay disabled until a number is typed', (
+      tester,
+    ) async {
+      final controller = _fakeController();
+      await pumpPage(tester, controller: controller);
+
+      await openTile(tester, 'Inside temp.');
+      expect(
+        tester.widget<TextField>(find.byType(TextField)).controller!.text,
+        isEmpty,
+      );
+      expect(sheetButton(tester, 'Save').onPressed, isNull);
+      expect(stepper(tester, Icons.add_circle_outline).onPressed, isNull);
+      expect(stepper(tester, Icons.remove_circle_outline).onPressed, isNull);
+
+      await tester.enterText(find.byType(TextField), '21');
+      await tester.pump();
+      expect(stepper(tester, Icons.add_circle_outline).onPressed, isNotNull);
+      await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+      await tester.pumpAndSettle();
+
+      final marker = controller.markers.markers.single as ReadingMarker;
+      expect(marker.value, 21);
+      expect(marker.source, ReadingSource.typed);
+      expect(marker.prefill, isNull);
+      expect(marker.prefillOrigin, isNull);
+    });
+
+    testWidgets('a comma is accepted as the decimal separator', (tester) async {
+      final controller = _fakeController();
+      await pumpPage(tester, controller: controller);
+
+      await openTile(tester, 'Inside temp.');
+      await tester.enterText(find.byType(TextField), '12,5');
+      await tester.pump();
+      await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+      await tester.pumpAndSettle();
+
+      final marker = controller.markers.markers.single as ReadingMarker;
+      expect(marker.value, 12.5);
+    });
+
+    testWidgets('temperatures take a minus sign; anything not a number is '
+        'an error that keeps Save disabled', (tester) async {
+      final controller = _fakeController();
+      await pumpPage(tester, controller: controller);
+
+      await openTile(tester, 'Outside temp.');
+      expect(
+        tester.widget<TextField>(find.byType(TextField)).keyboardType,
+        const TextInputType.numberWithOptions(decimal: true, signed: true),
+      );
+      await tester.enterText(find.byType(TextField), '3-');
+      await tester.pump();
+      expect(find.text('Enter a number'), findsOneWidget);
+      expect(sheetButton(tester, 'Save').onPressed, isNull);
+
+      await tester.enterText(find.byType(TextField), '-3');
+      await tester.pump();
+      expect(find.text('Enter a number'), findsNothing);
+      await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+      await tester.pumpAndSettle();
+
+      final marker = controller.markers.markers.single as ReadingMarker;
+      expect(marker.value, -3);
     });
 
     testWidgets('typing a value records source typed', (tester) async {
@@ -445,6 +544,7 @@ void main() {
       await tester.tap(find.text('State of charge'));
       await tester.pumpAndSettle();
       await tester.enterText(find.byType(TextField), '55');
+      await tester.pump();
       await tester.tap(find.widgetWithText(FilledButton, 'Save'));
       await tester.pumpAndSettle();
 
@@ -487,6 +587,65 @@ void main() {
       expect(marker.source, ReadingSource.confirmed);
       expect(marker.value, 20);
       expect(marker.liveValue, 20);
+
+      await controller.stop();
+    });
+
+    testWidgets('the live value prefills the sheet ahead of the last '
+        'entry; changed, it is recorded as typed', (tester) async {
+      final fakeNative = _FakeNativeObdApi()
+        ..outsideTempResponse = '${_module7ResponseHeader}0462F4463C';
+      final controller = _fakeController(
+        fakeNative: fakeNative,
+        tickInterval: const Duration(milliseconds: 1),
+      );
+      controller.addReading(
+        quantity: ReadingQuantity.outsideTemp,
+        value: 18,
+        readAt: DateTime.now(),
+        source: ReadingSource.typed,
+      );
+      await pumpPage(tester, controller: controller);
+      await _startRecording(tester, controller);
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 20)),
+      );
+      await tester.pumpAndSettle();
+
+      Future<void> openOutsideTemp() async {
+        await tester.ensureVisible(find.text('Outside temp.'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Outside temp.'));
+        await tester.pumpAndSettle();
+      }
+
+      await openOutsideTemp();
+      expect(
+        tester.widget<TextField>(find.byType(TextField)).controller!.text,
+        '20',
+      );
+      await tester.tap(find.widgetWithText(FilledButton, 'Matches display'));
+      await tester.pumpAndSettle();
+
+      final confirmed = controller.markers.markers.last as ReadingMarker;
+      expect(confirmed.value, 20);
+      expect(confirmed.source, ReadingSource.confirmed);
+      expect(confirmed.prefill, 20);
+      expect(confirmed.prefillOrigin, PrefillOrigin.live);
+      expect(confirmed.liveValue, 20);
+
+      await openOutsideTemp();
+      await tester.enterText(find.byType(TextField), '21');
+      await tester.pump();
+      await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+      await tester.pumpAndSettle();
+
+      final typed = controller.markers.markers.last as ReadingMarker;
+      expect(typed.value, 21);
+      expect(typed.source, ReadingSource.typed);
+      expect(typed.prefill, 20);
+      expect(typed.prefillOrigin, PrefillOrigin.live);
+      expect(typed.liveValue, 20);
 
       await controller.stop();
     });
@@ -565,11 +724,13 @@ void main() {
 
       await tester.tap(find.text('State of charge'));
       await tester.pumpAndSettle();
-      await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+      await tester.tap(find.widgetWithText(FilledButton, 'Matches display'));
       await tester.pumpAndSettle();
 
       final entered = controller.markers.markers.last as ReadingMarker;
-      expect(entered.source, isNot(ReadingSource.confirmed));
+      expect(entered.source, ReadingSource.confirmed);
+      expect(entered.prefill, 74);
+      expect(entered.prefillOrigin, PrefillOrigin.live);
       expect(entered.liveValue, 74);
 
       await controller.stop();
@@ -737,6 +898,8 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(followUp);
       await tester.pumpAndSettle();
+      await tester.enterText(find.byType(TextField), '21');
+      await tester.pump();
       await tester.tap(find.widgetWithText(FilledButton, 'Save'));
       await tester.pumpAndSettle();
 
@@ -782,6 +945,8 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.text('Battery temp.'));
       await tester.pumpAndSettle();
+      await tester.enterText(find.byType(TextField), '20');
+      await tester.pump();
       await tester.tap(find.widgetWithText(FilledButton, 'Save'));
       await tester.pumpAndSettle();
 

@@ -14,6 +14,7 @@ import '../power/power_recording_coordinator.dart';
 import '../session/reading_prompts.dart';
 import '../session/session_markers.dart';
 import 'experiment_card.dart';
+import 'reading_entry_sheet.dart';
 import 'recordings_page.dart';
 import 'settings_page.dart';
 
@@ -146,25 +147,31 @@ class _RecordingPageState extends State<RecordingPage> {
 
   Future<void> _openTileSheet(ReadingQuantity quantity) async {
     final readAt = DateTime.now();
-    final prefill = _controller.markers.lastValueFor(quantity);
     final liveValue = _liveValueFor(
       quantity,
       _controller.liveInfo,
       _recentBatteryTempC,
     );
-    final result = await showModalBottomSheet<_TileEntryResult>(
-      context: context,
-      isScrollControlled: true,
-      builder: (context) =>
-          _TileEntrySheet(quantity: quantity, prefill: prefill),
+    final lastEntry = _controller.markers.lastValueFor(quantity);
+    final (num? prefill, PrefillOrigin? prefillOrigin) = liveValue != null
+        ? (liveValue, PrefillOrigin.live)
+        : lastEntry != null
+        ? (lastEntry, PrefillOrigin.entry)
+        : (null, null);
+    final result = await showReadingEntrySheet(
+      context,
+      quantity: quantity,
+      prefill: prefill,
     );
     if (result == null) return;
+    final (value, source) = result;
     _controller.addReading(
       quantity: quantity,
-      value: result.value,
+      value: value,
       readAt: readAt,
-      source: result.source,
+      source: source,
       prefill: prefill,
+      prefillOrigin: prefillOrigin,
       liveValue: liveValue,
     );
   }
@@ -1050,127 +1057,6 @@ class _ReadingTile extends StatelessWidget {
             ],
           ),
         ),
-      ),
-    );
-  }
-}
-
-class _TileEntryResult {
-  const _TileEntryResult(this.value, this.source);
-  final num value;
-  final ReadingSource source;
-}
-
-class _TileEntrySheet extends StatefulWidget {
-  const _TileEntrySheet({required this.quantity, required this.prefill});
-
-  final ReadingQuantity quantity;
-  final num? prefill;
-
-  @override
-  State<_TileEntrySheet> createState() => _TileEntrySheetState();
-}
-
-class _TileEntrySheetState extends State<_TileEntrySheet> {
-  late num _value;
-  late final TextEditingController _controller;
-  ReadingSource _source = ReadingSource.typed;
-  bool _ignoreNextChange = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _value = widget.prefill ?? 0;
-    _controller = TextEditingController(text: _formatValue(_value));
-  }
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  String _formatValue(num value) => value == value.roundToDouble()
-      ? value.toInt().toString()
-      : value.toString();
-
-  void _step(int delta) {
-    setState(() {
-      _value = _value + delta;
-      _source = ReadingSource.stepped;
-      _ignoreNextChange = true;
-      _controller.text = _formatValue(_value);
-    });
-  }
-
-  void _onChanged(String text) {
-    if (_ignoreNextChange) {
-      _ignoreNextChange = false;
-      return;
-    }
-    final parsed = num.tryParse(text);
-    if (parsed != null) {
-      _source = ReadingSource.typed;
-      _value = parsed;
-    }
-  }
-
-  void _save() {
-    Navigator.of(context).pop(_TileEntryResult(_value, _source));
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: EdgeInsets.only(
-        left: 24,
-        right: 24,
-        top: 24,
-        bottom: 24 + MediaQuery.of(context).viewInsets.bottom,
-      ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Text(
-            widget.quantity.label,
-            style: Theme.of(context).textTheme.titleLarge,
-          ),
-          const SizedBox(height: 16),
-          Row(
-            children: [
-              IconButton(
-                onPressed: () => _step(-1),
-                icon: const Icon(Icons.remove_circle_outline),
-                iconSize: 36,
-                tooltip: 'Decrease by 1',
-              ),
-              Expanded(
-                child: TextField(
-                  controller: _controller,
-                  keyboardType: const TextInputType.numberWithOptions(
-                    decimal: true,
-                  ),
-                  textAlign: TextAlign.center,
-                  style: Theme.of(context).textTheme.headlineMedium,
-                  decoration: InputDecoration(suffixText: widget.quantity.unit),
-                  onChanged: _onChanged,
-                ),
-              ),
-              IconButton(
-                onPressed: () => _step(1),
-                icon: const Icon(Icons.add_circle_outline),
-                iconSize: 36,
-                tooltip: 'Increase by 1',
-              ),
-            ],
-          ),
-          const SizedBox(height: 16),
-          SizedBox(
-            height: 48,
-            child: FilledButton(onPressed: _save, child: const Text('Save')),
-          ),
-        ],
       ),
     );
   }

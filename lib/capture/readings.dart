@@ -56,8 +56,12 @@ extension ReadingQuantityWire on ReadingQuantity {
 }
 
 /// Where a [ReadingMarker]'s value came from: the numeric keypad, the ±1
-/// steppers, or a one-tap confirmation of a live value already shown.
+/// steppers, or the entry sheet's prefilled value saved unchanged.
 enum ReadingSource { typed, stepped, confirmed }
+
+/// What the entry sheet's prefilled value was: the vehicle's own live
+/// value, or the owner's last entry for the same quantity.
+enum PrefillOrigin { live, entry }
 
 /// The vehicle's own live values, decoded from the bridge's live-state
 /// query. A field is null when its signal hasn't answered yet, or when no

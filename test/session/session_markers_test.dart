@@ -243,6 +243,7 @@ void main() {
         savedAt: DateTime.utc(2026, 1, 1, 10, 0, 3),
         source: ReadingSource.confirmed,
         prefill: 10,
+        prefillOrigin: PrefillOrigin.entry,
         liveValue: 12,
         speedKmh: 0,
       );
@@ -255,6 +256,7 @@ void main() {
         'saved_at': '2026-01-01T10:00:03.000Z',
         'source': 'confirmed',
         'prefill': 10,
+        'prefill_origin': 'entry',
         'live_value': 12,
         'speed_kmh': 0,
       });
@@ -278,6 +280,7 @@ void main() {
         'saved_at': '2026-01-01T10:00:00.000Z',
         'source': 'typed',
         'prefill': null,
+        'prefill_origin': null,
         'live_value': null,
         'speed_kmh': null,
       });
