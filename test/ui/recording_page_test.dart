@@ -269,8 +269,8 @@ void main() {
   testWidgets('start recording button is enabled while idle', (tester) async {
     await pumpPage(tester);
 
-    final button = tester.widget<ElevatedButton>(
-      find.widgetWithText(ElevatedButton, 'Start recording'),
+    final button = tester.widget<FilledButton>(
+      find.widgetWithText(FilledButton, 'Start recording'),
     );
     expect(button.onPressed, isNotNull);
   });
@@ -286,27 +286,34 @@ void main() {
     expect(button.onPressed, isNull);
   });
 
-  testWidgets(
-    'starting a recording shows Stop and enables the share button once finished',
-    (tester) async {
-      final controller = _fakeController();
-      await pumpPage(tester, controller: controller);
+  testWidgets('Stop asks first, hides sharing while recording, and the '
+      'share button is enabled once finished', (tester) async {
+    final controller = _fakeController();
+    await pumpPage(tester, controller: controller);
 
-      await _startRecording(tester, controller);
+    await _startRecording(tester, controller);
 
-      expect(find.widgetWithText(ElevatedButton, 'Stop'), findsOneWidget);
-      expect(controller.phase, RecordingPhase.recording);
+    expect(controller.phase, RecordingPhase.recording);
+    expect(find.text('Share recording'), findsNothing);
 
-      await tester.tap(find.widgetWithText(ElevatedButton, 'Stop'));
-      await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(OutlinedButton, 'Stop'));
+    await tester.pumpAndSettle();
+    expect(find.text('Stop recording?'), findsOneWidget);
+    await tester.tap(find.widgetWithText(TextButton, 'Cancel'));
+    await tester.pumpAndSettle();
+    expect(controller.phase, RecordingPhase.recording);
 
-      expect(controller.phase, RecordingPhase.finished);
-      final shareButton = tester.widget<OutlinedButton>(
-        find.widgetWithText(OutlinedButton, 'Share recording'),
-      );
-      expect(shareButton.onPressed, isNotNull);
-    },
-  );
+    await tester.tap(find.widgetWithText(OutlinedButton, 'Stop'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(FilledButton, 'Stop recording'));
+    await tester.pumpAndSettle();
+
+    expect(controller.phase, RecordingPhase.finished);
+    final shareButton = tester.widget<OutlinedButton>(
+      find.widgetWithText(OutlinedButton, 'Share recording'),
+    );
+    expect(shareButton.onPressed, isNotNull);
+  });
 
   group('scouting card', () {
     testWidgets('hidden while idle, shown once recording starts', (
@@ -338,24 +345,6 @@ void main() {
         findsOneWidget,
       );
     });
-
-    testWidgets('share profile draft button is tappable with nothing '
-        'discovered yet (writeProfileDraft returns null, no share sheet '
-        'opens)', (tester) async {
-      final controller = _fakeController();
-      await pumpPage(tester, controller: controller);
-      await _startRecording(tester, controller);
-
-      await tester.scrollUntilVisible(
-        find.text('Share profile draft'),
-        200,
-        scrollable: find.byType(Scrollable).first,
-      );
-      await tester.tap(find.text('Share profile draft'));
-      await tester.pumpAndSettle();
-
-      expect(tester.takeException(), isNull);
-    });
   });
 
   testWidgets('tapping a phase button adds and highlights that phase', (
@@ -371,16 +360,19 @@ void main() {
     // to the phase button itself.
     expect(find.text('Charge'), findsNWidgets(2));
 
-    // Button widgets wrap their child in their own (unlabelled) Semantics
-    // node, so the closest Semantics ancestor of the text isn't necessarily
-    // the labelled one the page sets; search all Semantics nodes instead.
-    final chargeSemantics = tester
-        .widgetList<Semantics>(find.byType(Semantics))
-        .where(
-          (widget) => widget.properties.label?.contains('Charge') ?? false,
-        );
-    expect(chargeSemantics, isNotEmpty);
-    expect(chargeSemantics.first.properties.label, contains('current phase'));
+    expect(
+      tester.getSemantics(find.widgetWithText(FilledButton, 'Charge')),
+      isSemantics(
+        label: 'Charge',
+        isButton: true,
+        isSelected: true,
+        isInMutuallyExclusiveGroup: true,
+      ),
+    );
+    expect(
+      tester.getSemantics(find.widgetWithText(FilledButton, 'Drive')),
+      isSemantics(label: 'Drive', isSelected: false),
+    );
   });
 
   testWidgets('adding a note via its sheet shows it in the marker list', (

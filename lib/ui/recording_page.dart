@@ -109,13 +109,6 @@ class _RecordingPageState extends State<RecordingPage> {
     await share(_controller.shareableFiles);
   }
 
-  Future<void> _shareProfileDraft() async {
-    final path = await _controller.writeProfileDraft();
-    if (path == null) return;
-    final share = widget.onShare ?? _shareFiles;
-    await share([path]);
-  }
-
   Future<void> _openSettings() async {
     await Navigator.of(context).push<void>(
       MaterialPageRoute(
@@ -366,15 +359,6 @@ class _RecordingPageState extends State<RecordingPage> {
                   ],
                 ),
                 const SizedBox(height: 16),
-                SizedBox(
-                  width: double.infinity,
-                  child: OutlinedButton.icon(
-                    onPressed: _shareProfileDraft,
-                    icon: const Icon(Icons.description_outlined),
-                    label: const Text('Share profile draft'),
-                  ),
-                ),
-                const SizedBox(height: 16),
                 Text('Markers', style: Theme.of(context).textTheme.titleMedium),
                 const SizedBox(height: 8),
                 _MarkerList(markers: _controller.markers.markers),
@@ -451,6 +435,33 @@ class _StatusCard extends StatelessWidget {
   final RecordingController controller;
   final Future<void> Function() onShare;
 
+  /// Stops the recording once the owner confirms: Stop sits where Start
+  /// was, right above the phase buttons, and a stopped recording cannot
+  /// be resumed.
+  Future<void> _confirmStop(BuildContext context) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Stop recording?'),
+        content: const Text(
+          'A stopped recording cannot be continued; '
+          'Start recording begins a new one.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Stop recording'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed ?? false) await controller.stop();
+  }
+
   @override
   Widget build(BuildContext context) {
     final busy = _isBusy(controller.phase);
@@ -475,9 +486,9 @@ class _StatusCard extends StatelessWidget {
                 ),
                 const SizedBox(width: 8),
                 Expanded(
-                  child: Text(
-                    _statusText(controller),
-                    semanticsLabel: _statusText(controller),
+                  child: Semantics(
+                    liveRegion: true,
+                    child: Text(_statusText(controller)),
                   ),
                 ),
               ],
@@ -506,22 +517,27 @@ class _StatusCard extends StatelessWidget {
             SizedBox(
               width: double.infinity,
               height: 48,
-              child: ElevatedButton(
-                onPressed: busy
-                    ? null
-                    : (recording ? controller.stop : controller.start),
-                child: Text(recording ? 'Stop' : 'Start recording'),
-              ),
+              child: recording
+                  ? OutlinedButton(
+                      onPressed: () => _confirmStop(context),
+                      child: const Text('Stop'),
+                    )
+                  : FilledButton(
+                      onPressed: busy ? null : controller.start,
+                      child: const Text('Start recording'),
+                    ),
             ),
-            const SizedBox(height: 8),
-            SizedBox(
-              width: double.infinity,
-              height: 48,
-              child: OutlinedButton(
-                onPressed: controller.canShare ? onShare : null,
-                child: const Text('Share recording'),
+            if (!recording) ...[
+              const SizedBox(height: 8),
+              SizedBox(
+                width: double.infinity,
+                height: 48,
+                child: OutlinedButton(
+                  onPressed: controller.canShare ? onShare : null,
+                  child: const Text('Share recording'),
+                ),
               ),
-            ),
+            ],
           ],
         ),
       ),
@@ -537,7 +553,7 @@ class _PhaseButtonGrid extends StatelessWidget {
   static const _phases = [
     (MarkerPhase.drive, 'Drive', Icons.directions_car),
     (MarkerPhase.charge, 'Charge', Icons.ev_station),
-    (MarkerPhase.stand, 'Stand', Icons.pause_circle),
+    (MarkerPhase.stand, 'Stand', Icons.hourglass_empty),
     (MarkerPhase.park, 'Park', Icons.local_parking),
   ];
 
@@ -580,20 +596,22 @@ class _PhaseButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
-    return Semantics(
-      label: selected ? '$label, current phase' : label,
-      button: true,
-      child: SizedBox(
-        height: 64,
-        child: FilledButton.tonal(
-          onPressed: onPressed,
-          style: FilledButton.styleFrom(
-            backgroundColor: selected ? colorScheme.primary : null,
-            foregroundColor: selected ? colorScheme.onPrimary : null,
-          ),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [Icon(icon), const SizedBox(height: 4), Text(label)],
+    return MergeSemantics(
+      child: Semantics(
+        selected: selected,
+        inMutuallyExclusiveGroup: true,
+        child: SizedBox(
+          height: 64,
+          child: FilledButton.tonal(
+            onPressed: onPressed,
+            style: FilledButton.styleFrom(
+              backgroundColor: selected ? colorScheme.primary : null,
+              foregroundColor: selected ? colorScheme.onPrimary : null,
+            ),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [Icon(icon), const SizedBox(height: 4), Text(label)],
+            ),
           ),
         ),
       ),
@@ -733,7 +751,8 @@ class _ReadsPerMinuteKpi extends StatelessWidget {
 /// Compact one-line summary of [ScoutStatus], shown under the Scouting
 /// card for the whole recording -- e.g. `HCP1 · 1A40–1A4F · 284/min · NRC
 /// 31 · q 24`, or, once a batch has been pending more than 10 seconds,
-/// `waiting 16 for 12 s` in amber. Tapping opens the full event log.
+/// `waiting 16 for 12 s` in the error color. Tapping opens the full event
+/// log.
 class _ScoutStatusLine extends StatelessWidget {
   const _ScoutStatusLine({required this.status, required this.onTap});
 
@@ -752,13 +771,19 @@ class _ScoutStatusLine extends StatelessWidget {
         : _summaryText(status);
     final style = Theme.of(context).textTheme.bodySmall?.copyWith(
       fontFamily: 'monospace',
-      color: pendingLong ? Colors.amber.shade800 : null,
+      color: pendingLong ? Theme.of(context).colorScheme.error : null,
     );
     return InkWell(
       onTap: onTap,
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
-        child: Text(text, style: style),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(minHeight: 48),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: Align(
+            alignment: AlignmentDirectional.centerStart,
+            child: Text(text, style: style),
+          ),
+        ),
       ),
     );
   }
