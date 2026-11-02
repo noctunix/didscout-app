@@ -40,8 +40,7 @@ void main() {
       expect(
         {
           for (final experiment in experimentCatalog)
-            if (experiment.followUp case final followUp?)
-              experiment.id: followUp,
+            experiment.id: ?experiment.followUp,
         },
         {
           'climate-setpoint': ReadingQuantity.insideTemp,
