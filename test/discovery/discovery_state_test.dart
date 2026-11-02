@@ -45,6 +45,7 @@ void main() {
         },
         lastRediscoveryTime: DateTime.utc(2026, 10, 28, 9, 30),
         learnedRecordings: {'session-a'},
+        experimentCompletions: {'door-driver': 2, 'lights': 1},
       );
       original.ecus['ecus11-7A1'] = EcuInfo(
         requestHeader: '7A1',
@@ -104,11 +105,18 @@ void main() {
       expect(stats.stableRecordings, 3);
       expect(stats.everChanged, isTrue);
       expect(loaded.learnedRecordings, {'session-a'});
+      expect(loaded.experimentCompletions, {'door-driver': 2, 'lights': 1});
       expect(gateway.f197Name, 'Gateway');
 
       final other = loaded.ecus['ecus29-04']!;
       expect(other.responseHeader, '18DAF104');
       expect(other.asleepUntil, isNull);
+    });
+
+    test('a state saved without experiment completions loads with none', () {
+      final loaded = DiscoveryState.fromJson({'ecus': <String, dynamic>{}});
+
+      expect(loaded.experimentCompletions, isEmpty);
     });
 
     test('a persisted phantom 0x700 ECU is dropped on load', () async {

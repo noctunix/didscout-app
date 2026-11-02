@@ -3,6 +3,7 @@ import 'dart:typed_data';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:didscout_app/capture/readings.dart';
+import 'package:didscout_app/discovery/discovery_state.dart';
 import 'package:didscout_app/session/experiments.dart';
 import 'package:didscout_app/session/session_markers.dart';
 
@@ -282,6 +283,112 @@ void main() {
         [(0, 0x01, 0x09)],
       );
       expect((diffs[1].before.length, diffs[1].after.length), (3, 2));
+    });
+  });
+
+  group('experimentReads', () {
+    final now = DateTime.utc(2026, 11, 2, 12);
+    final doorDriver = experimentCatalog.firstWhere(
+      (experiment) => experiment.id == 'door-driver',
+    );
+
+    EcuInfo ecu(
+      String request,
+      Set<String> discovered, {
+      String? name = 'Door FL',
+      DateTime? asleepUntil,
+    }) => EcuInfo(
+      requestHeader: request,
+      responseHeader: '7B4',
+      protocol: 6,
+      identification: {'F197': ?name},
+      discovered: discovered,
+      asleepUntil: asleepUntil,
+    );
+
+    List<String> readsOf(
+      DiscoveryState state, {
+      bool includeProfileDids = false,
+      bool stationary = true,
+    }) => [
+      for (final read in experimentReads(
+        state,
+        doorDriver,
+        includeProfileDids: includeProfileDids,
+        stationary: stationary,
+        now: now,
+      ))
+        '${read.ecuId}/${read.did}',
+    ];
+
+    test('reads every found DID of the target ECUs, never VIN or serial '
+        'DIDs', () {
+      final state = DiscoveryState(
+        ecus: {
+          'b': ecu('74A', {'2A01', 'f187', 'F18C', 'F190', 'F802'}),
+          'a': ecu('74A', {'2A00'}),
+          'other': ecu('74B', {'2A00'}),
+        },
+      );
+      state.ecus['b']!.sampleStats['2A01'] = DidSampleStats(
+        lastPayloadHash: 1,
+        stableSamples: 1000,
+        stableRecordings: 100,
+      );
+
+      expect(readsOf(state), ['a/2A00', 'b/2A01', 'b/F187']);
+    });
+
+    test('adds the profile DIDs of a seeded ECU only when asked to', () {
+      final state = DiscoveryState(
+        ecus: {
+          'door-front-left': ecu('74A', {'2A00'}),
+        },
+      );
+
+      expect(readsOf(state), ['door-front-left/2A00']);
+      expect(readsOf(state, includeProfileDids: true), [
+        'door-front-left/2A00',
+        'door-front-left/F197',
+      ]);
+    });
+
+    test('leaves out an ECU asleep, one without a responder, and one the '
+        'moving blocklist keeps out unless stationary', () {
+      final state = DiscoveryState(
+        ecus: {
+          'asleep': ecu('74A', {
+            '2A00',
+          }, asleepUntil: now.add(const Duration(minutes: 1))),
+          'mute': EcuInfo(
+            requestHeader: '74A',
+            protocol: 6,
+            identification: {'F197': 'Door FL'},
+            discovered: {'2A00'},
+          ),
+          'unnamed': ecu('74A', {'2A00'}, name: null),
+        },
+      );
+
+      expect(readsOf(state), ['unnamed/2A00']);
+      expect(readsOf(state, stationary: false), isEmpty);
+    });
+
+    test('stops after maxExperimentReads reads', () {
+      final dids = [
+        for (var i = 0; i < maxExperimentReads + 5; i++)
+          (0x2A00 + i).toRadixString(16).toUpperCase(),
+      ];
+      final state = DiscoveryState(
+        ecus: {
+          'a': ecu('74A', dids.toSet()),
+          'b': ecu('74A', {'2A00'}),
+        },
+      );
+
+      expect(readsOf(state), [
+        for (final did in dids.take(maxExperimentReads)) 'a/$did',
+      ]);
     });
   });
 }

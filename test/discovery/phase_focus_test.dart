@@ -31,7 +31,7 @@ void main() {
       stationary: stationary,
       now: now,
     ))
-      '${read.ecu.moduleId}/${read.did}',
+      '${read.ecuId}/${read.did}',
   ];
 
   test('leaves out ECUs outside the focus, identification DIDs assumed '

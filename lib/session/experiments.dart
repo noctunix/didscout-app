@@ -1,7 +1,11 @@
 import 'package:flutter/foundation.dart';
 
+import '../bridge/vag_ppe_plan_data.dart';
 import '../capture/diff.dart';
 import '../capture/readings.dart';
+import '../discovery/did_order.dart';
+import '../discovery/discovery_state.dart';
+import '../discovery/phase_focus.dart';
 import 'session_markers.dart';
 
 /// One guided before/after experiment: a single action the owner takes
@@ -251,4 +255,127 @@ Map<String, List<DidDiff>> experimentChanges({
     }
   }
   return changes;
+}
+
+/// Most reads one before or after capture of an experiment queues.
+const int maxExperimentReads = 150;
+
+/// The reads both captures of [experiment] queue: every found DID of the
+/// ECUs in [state] addressed by one of [Experiment.targetHeaders], stable
+/// ones included -- an action can change a value that never changed
+/// before -- plus, with [includeProfileDids], the vag-ppe profile DIDs of
+/// an ECU seeded from that profile. ECUs come in id order, each with its
+/// DIDs sorted, cut off after [maxExperimentReads] reads.
+///
+/// Leaves out an ECU without a known responder and one [ecuReadable]
+/// rejects at [now] given [stationary]; never yields one of the [vinDids]
+/// or the [serialNumberDid].
+List<EcuDidRead> experimentReads(
+  DiscoveryState state,
+  Experiment experiment, {
+  required bool includeProfileDids,
+  required bool stationary,
+  required DateTime now,
+}) {
+  final profileDids = {
+    if (includeProfileDids)
+      for (final module in vagPpeModules)
+        module.id: [for (final did in module.dids) did.did.toUpperCase()],
+  };
+  final reads = <EcuDidRead>[];
+  for (final ecuId in state.ecus.keys.toList()..sort()) {
+    final ecu = state.ecus[ecuId]!;
+    final responseHeader = ecu.responseHeader;
+    if (responseHeader == null ||
+        !experiment.targetHeaders.contains(ecu.requestHeader) ||
+        !ecuReadable(ecu, stationary: stationary, now: now)) {
+      continue;
+    }
+    final dids = {
+      for (final did in ecu.discovered) did.toUpperCase(),
+      ...?profileDids[ecuId],
+    }.where((did) => !vinDids.contains(did) && did != serialNumberDid);
+    for (final did in dids.toList()..sort()) {
+      if (reads.length == maxExperimentReads) {
+        return reads;
+      }
+      reads.add((
+        ecuId: ecuId,
+        requestHeader: ecu.requestHeader,
+        responseHeader: responseHeader,
+        protocol: ecu.protocol,
+        did: did,
+      ));
+    }
+  }
+  return reads;
+}
+
+/// Why an experiment run ended without a result.
+enum ExperimentFailure {
+  /// The owner cancelled it.
+  cancelled,
+
+  /// The vehicle started moving, or its speed became unknown or stale.
+  moving,
+
+  /// The recording ended.
+  recordingStopped,
+
+  /// The adapter did not accept the reads.
+  rejected,
+
+  /// No target ECU returned a value.
+  noAnswer,
+}
+
+/// Where a guided experiment run stands: capturing the before reads,
+/// waiting for the owner's action, capturing the after reads, then done
+/// or failed.
+@immutable
+sealed class ExperimentRun {
+  const ExperimentRun(this.experiment);
+
+  final Experiment experiment;
+}
+
+/// The before ([after] false) or after reads are being collected;
+/// [answered] of [total] reads have returned so far.
+class ExperimentCapturing extends ExperimentRun {
+  const ExperimentCapturing(
+    super.experiment, {
+    required this.after,
+    required this.answered,
+    required this.total,
+  });
+
+  final bool after;
+  final int answered;
+  final int total;
+}
+
+/// The before reads are in; the owner is asked to take the action.
+class ExperimentAwaitingAction extends ExperimentRun {
+  const ExperimentAwaitingAction(super.experiment);
+}
+
+/// Both captures are in: [changes] as [experimentChanges] reports them,
+/// and the F197 name of each request header in [changes] whose ECU has
+/// one.
+class ExperimentDone extends ExperimentRun {
+  const ExperimentDone(
+    super.experiment, {
+    required this.changes,
+    required this.ecuNames,
+  });
+
+  final Map<String, List<DidDiff>> changes;
+  final Map<String, String> ecuNames;
+}
+
+/// The run ended before its result, for [failure].
+class ExperimentFailed extends ExperimentRun {
+  const ExperimentFailed(super.experiment, this.failure);
+
+  final ExperimentFailure failure;
 }

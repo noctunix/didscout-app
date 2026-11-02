@@ -248,8 +248,9 @@ Map<String, EcuInfo> _mergeByRequestHeader(Map<String, EcuInfo> ecus) {
 
 /// Persisted discovery state for one vehicle: known ECUs and their scan
 /// progress, inventory stages already completed and their sweep progress,
-/// and the last rediscovery time. JSON-serialisable; the caller owns where
-/// the file lives (one per vehicle label).
+/// the last rediscovery time, and how often each guided experiment was
+/// completed. JSON-serialisable; the caller owns where the file lives (one
+/// per vehicle label).
 class DiscoveryState {
   DiscoveryState({
     Map<String, EcuInfo>? ecus,
@@ -257,10 +258,12 @@ class DiscoveryState {
     Map<String, Set<String>>? inventorySwept,
     this.lastRediscoveryTime,
     Set<String>? learnedRecordings,
+    Map<String, int>? experimentCompletions,
   }) : ecus = ecus ?? {},
        inventoryStagesDone = inventoryStagesDone ?? {},
        inventorySwept = inventorySwept ?? {},
-       learnedRecordings = learnedRecordings ?? {};
+       learnedRecordings = learnedRecordings ?? {},
+       experimentCompletions = experimentCompletions ?? {};
 
   /// Known ECUs, keyed by module id.
   Map<String, EcuInfo> ecus;
@@ -282,6 +285,9 @@ class DiscoveryState {
   /// [EcuInfo.sampleStats].
   Set<String> learnedRecordings;
 
+  /// Completed runs per guided experiment id (`Experiment.id`).
+  Map<String, int> experimentCompletions;
+
   Map<String, dynamic> toJson() => {
     'ecus': ecus.map((key, value) => MapEntry(key, value.toJson())),
     'inventoryStagesDone': inventoryStagesDone.toList(),
@@ -290,6 +296,7 @@ class DiscoveryState {
     ),
     'lastRediscoveryTime': lastRediscoveryTime?.toUtc().toIso8601String(),
     'learnedRecordings': learnedRecordings.toList(),
+    'experimentCompletions': experimentCompletions,
   };
 
   /// Drops a [phantomEcu11EcuId] entry an earlier sweep persisted, so it is
@@ -320,6 +327,9 @@ class DiscoveryState {
           : null,
       learnedRecordings: Set<String>.from(
         json['learnedRecordings'] as List<dynamic>? ?? [],
+      ),
+      experimentCompletions: Map<String, int>.from(
+        json['experimentCompletions'] as Map<dynamic, dynamic>? ?? {},
       ),
     );
   }

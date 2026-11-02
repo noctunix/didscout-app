@@ -48,16 +48,22 @@ const Map<MarkerPhase, Set<String>> phaseFocusRequestHeaders = {
   MarkerPhase.park: _standFocus,
 };
 
-/// One found DID a focus sample reads, with the ECU it belongs to.
-typedef PhaseFocusRead = ({DiscoveredEcuPlan ecu, String did});
+/// One DID read of a one-shot sample, with the ECU it addresses: [ecuId]
+/// is the ECU's [DiscoveryState.ecus] key.
+typedef EcuDidRead = ({
+  String ecuId,
+  String requestHeader,
+  String responseHeader,
+  int protocol,
+  String did,
+});
 
 /// The found DIDs [discoveredPlanAdditions] plans for the ECUs in [state]
 /// addressed by one of [requestHeaders], minus the stable ones
 /// ([DiscoveredEcuPlan.stableDids]), in that same order. Leaves out an ECU
-/// paused asleep at [now] and, unless [stationary], one
-/// [movingDiscoveryBlocked] keeps out of reads while moving; never yields
-/// one of the [vinDids] or the [serialNumberDid].
-List<PhaseFocusRead> phaseFocusReads(
+/// [ecuReadable] rejects; never yields one of the [vinDids] or the
+/// [serialNumberDid].
+List<EcuDidRead> phaseFocusReads(
   DiscoveryState state,
   Set<String> requestHeaders, {
   required bool stationary,
@@ -65,15 +71,28 @@ List<PhaseFocusRead> phaseFocusReads(
 }) => [
   for (final ecu in discoveredPlanAdditions(state))
     if (requestHeaders.contains(ecu.requestHeader) &&
-        _readable(state.ecus[ecu.moduleId]!, stationary: stationary, now: now))
+        ecuReadable(
+          state.ecus[ecu.moduleId]!,
+          stationary: stationary,
+          now: now,
+        ))
       for (final did in ecu.dids)
         if (!ecu.stableDids.contains(did) &&
             !vinDids.contains(did) &&
             did != serialNumberDid)
-          (ecu: ecu, did: did),
+          (
+            ecuId: ecu.moduleId,
+            requestHeader: ecu.requestHeader,
+            responseHeader: ecu.responseHeader,
+            protocol: ecu.protocol,
+            did: did,
+          ),
 ];
 
-bool _readable(
+/// Whether a one-shot sample may read [ecu] at [now]: not while it is
+/// paused asleep, and, unless [stationary], not when
+/// [movingDiscoveryBlocked] keeps it out of reads while moving.
+bool ecuReadable(
   EcuInfo ecu, {
   required bool stationary,
   required DateTime now,

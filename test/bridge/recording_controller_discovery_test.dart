@@ -17,6 +17,7 @@ import 'package:didscout_app/discovery/discovery_state.dart';
 import 'package:didscout_app/discovery/discovery_ui_state.dart';
 import 'package:didscout_app/discovery/phase_focus.dart';
 import 'package:didscout_app/discovery/probe.dart';
+import 'package:didscout_app/session/experiments.dart';
 import 'package:didscout_app/session/session_markers.dart';
 import 'package:didscout_app/settings/app_settings.dart';
 import 'package:permission_handler/permission_handler.dart' as ph;
@@ -46,6 +47,9 @@ class _FakeNativeObdApi extends NativeObdApi {
   final List<List<ObdStepMessage>> enqueuedBatches = [];
   BridgeReadExecutor? Function()? executorGetter;
   String? Function(ObdStepMessage step)? respondToOneShot;
+
+  /// Signal ids whose one-shot reads never get a result.
+  final Set<String> unanswered = {};
 
   @override
   Future<void> configure(ObdBridgeConfigMessage config) async {}
@@ -106,6 +110,7 @@ class _FakeNativeObdApi extends NativeObdApi {
           final executor = executorGetter?.call();
           if (executor == null) return;
           for (final step in steps) {
+            if (unanswered.contains(step.signalId)) continue;
             executor.deliverOneShotResult(
               ObdSignalExchangeMessage(
                 signalId: step.signalId,
@@ -199,10 +204,14 @@ void main() {
   late DiscoveryState? persistedState;
   late List<DiscoveryState> savedStates;
 
+  /// [savedStates] as each was encoded at the moment it was saved.
+  late List<String> savedJsons;
+
   Future<DiscoveryState> loadState() async =>
       persistedState ?? DiscoveryState();
   Future<void> saveState(DiscoveryState state) async {
     savedStates.add(state);
+    savedJsons.add(jsonEncode(state.toJson()));
     persistedState = state;
   }
 
@@ -232,6 +241,7 @@ void main() {
     fakeNative = _FakeNativeObdApi();
     persistedState = null;
     savedStates = [];
+    savedJsons = [];
   });
 
   tearDown(() async {
@@ -797,6 +807,256 @@ void main() {
       await controller.stop();
 
       expect(fakeNative.enqueuedSteps, isEmpty);
+    });
+  });
+
+  group('guided experiments', () {
+    const doorSignal = 'door-front-left_22';
+    late int doorByte;
+
+    /// The driver door ECU under its vag-ppe seed id, with 2A01 stable.
+    DiscoveryState doorState(Set<String> discovered) => DiscoveryState(
+      ecus: {
+        'door-front-left': _namedEcu(
+          '74A',
+          '7B4',
+          'Door FL',
+          discovered,
+          sampleStats: {
+            '2A01': DidSampleStats(
+              lastPayloadHash: 1,
+              stableSamples: stableSampleCount,
+              stableRecordings: stableRecordingCount,
+            ),
+          },
+        ),
+      },
+    );
+
+    String? respondAsDoor(ObdStepMessage step) => switch (step.signalId) {
+      'door-front-left_222a00' =>
+        '7B4 04 62 2A 00 ${doorByte.toRadixString(16).padLeft(2, '0')}',
+      'door-front-left_222a01' => '7B4 04 62 2A 01 11',
+      // Refused rather than NO DATA, so discovery never pauses the ECU
+      // as asleep.
+      final id when id.startsWith(doorSignal) => '7B4 03 7F 22 31',
+      _ => null,
+    };
+
+    List<ExperimentStep> experimentSteps(RecordingController controller) => [
+      for (final marker
+          in controller.markers.markers.whereType<ExperimentMarker>())
+        marker.step,
+    ];
+
+    List<List<String>> experimentBatches() => [
+      for (final batch in fakeNative.enqueuedBatches)
+        if (batch.any((step) => step.signalId == '${doorSignal}2a01'))
+          [for (final step in batch) step.signalId],
+    ];
+
+    Future<RecordingController> startStationary({
+      Set<String> discovered = const {'2A00', '2A01', '2A02'},
+      DateTime Function()? clock,
+    }) async {
+      doorByte = 0x00;
+      fakeNative
+        ..respondToOneShot = respondAsDoor
+        ..liveStateResult = _liveStateWithSpeed(0);
+      persistedState = doorState(discovered);
+      final controller = makeController(clock: clock);
+      controller.addPhase(MarkerPhase.stand);
+      await controller.start();
+      await waitFor(() => controller.experimentSuggestions.isNotEmpty);
+      return controller;
+    }
+
+    test('nothing is suggested before the vehicle is known to stand', () async {
+      persistedState = doorState({'2A00'});
+      final controller = makeController();
+      controller.addPhase(MarkerPhase.stand);
+
+      await controller.start();
+      expect(controller.experimentSuggestions, isEmpty);
+
+      controller.startExperiment('door-driver');
+      expect(controller.experimentRun, isNull);
+      expect(experimentSteps(controller), isEmpty);
+
+      await controller.stop();
+    });
+
+    test('a run reads all found DIDs before and after the action and '
+        'reports what changed', () async {
+      final controller = await startStationary();
+      expect(
+        [
+          for (final experiment in controller.experimentSuggestions)
+            experiment.id,
+        ],
+        ['door-driver', 'window-driver', 'lock'],
+      );
+
+      controller.startExperiment('door-driver');
+      expect(controller.experimentRun, isA<ExperimentCapturing>());
+      expect(experimentSteps(controller), [ExperimentStep.before]);
+      await waitFor(() => controller.experimentRun is ExperimentAwaitingAction);
+      expect(experimentSteps(controller), [
+        ExperimentStep.before,
+        ExperimentStep.action,
+      ]);
+
+      doorByte = 0x01;
+      controller.confirmExperimentAction();
+      expect(
+        controller.experimentRun,
+        isA<ExperimentCapturing>().having((run) => run.after, 'after', true),
+      );
+      await waitFor(() => controller.experimentRun is ExperimentDone);
+      expect(experimentSteps(controller), [
+        ExperimentStep.before,
+        ExperimentStep.action,
+        ExperimentStep.after,
+      ]);
+
+      final done = controller.experimentRun! as ExperimentDone;
+      expect(done.experiment.id, 'door-driver');
+      expect(done.changes.keys, ['74A']);
+      final diff = done.changes['74A']!.single;
+      expect(diff.did, '2A00');
+      expect(
+        [
+          for (final change in diff.changes)
+            (change.position, change.before, change.after),
+        ],
+        [(0, 0x00, 0x01)],
+      );
+      expect(done.ecuNames, {'74A': 'Door FL'});
+
+      // The stable 2A01 is read as well, which focus sampling leaves out.
+      expect(experimentBatches(), [
+        for (var i = 0; i < 2; i++)
+          ['${doorSignal}2a00', '${doorSignal}2a01', '${doorSignal}2a02'],
+      ]);
+
+      bool completionSaved(String json) => switch (jsonDecode(json)) {
+        {'experimentCompletions': {'door-driver': 1}} => true,
+        _ => false,
+      };
+      await waitFor(() => savedJsons.any(completionSaved));
+      expect(
+        controller.experimentSuggestions.first.id,
+        'window-driver',
+        reason: 'the completed experiment moves to the back',
+      );
+
+      controller.dismissExperiment();
+      expect(controller.experimentRun, isNull);
+      await controller.stop();
+    });
+
+    test('a capture reads at most maxExperimentReads DIDs', () async {
+      final controller = await startStationary(
+        discovered: {
+          for (var i = 0; i < maxExperimentReads + 20; i++)
+            (0x2A00 + i).toRadixString(16).toUpperCase(),
+        },
+      );
+
+      controller.startExperiment('door-driver');
+      await waitFor(() => experimentBatches().isNotEmpty);
+
+      expect(experimentBatches().first, hasLength(maxExperimentReads));
+      await controller.stop();
+    });
+
+    test('a capture completes at its deadline without the unanswered '
+        'reads', () async {
+      var offset = Duration.zero;
+      fakeNative.unanswered.add('${doorSignal}2a01');
+      final controller = await startStationary(
+        clock: () => DateTime.now().add(offset),
+      );
+
+      controller.startExperiment('door-driver');
+      await waitFor(
+        () => switch (controller.experimentRun) {
+          ExperimentCapturing(:final answered, :final total) =>
+            answered == total - 1,
+          _ => false,
+        },
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      expect(controller.experimentRun, isA<ExperimentCapturing>());
+
+      // 30 s plus 2 s per read; still within the speed's freshness window.
+      offset = const Duration(seconds: 37);
+      await waitFor(() => controller.experimentRun is ExperimentAwaitingAction);
+
+      await controller.stop();
+    });
+
+    test('cancelling records a cancelled marker and drops the run', () async {
+      final controller = await startStationary();
+      controller.startExperiment('door-driver');
+      await waitFor(() => controller.experimentRun is ExperimentAwaitingAction);
+
+      controller.cancelExperiment();
+
+      expect(
+        controller.experimentRun,
+        isA<ExperimentFailed>().having(
+          (run) => run.failure,
+          'failure',
+          ExperimentFailure.cancelled,
+        ),
+      );
+      expect(experimentSteps(controller), [
+        ExperimentStep.before,
+        ExperimentStep.action,
+        ExperimentStep.cancelled,
+      ]);
+      controller.confirmExperimentAction();
+      expect(experimentSteps(controller), hasLength(3));
+      expect(persistedState!.experimentCompletions, isEmpty);
+
+      await controller.stop();
+    });
+
+    test('the run is cancelled once the vehicle moves', () async {
+      final controller = await startStationary();
+      controller.startExperiment('door-driver');
+      await waitFor(() => controller.experimentRun is ExperimentAwaitingAction);
+
+      fakeNative.liveStateResult = _liveStateWithSpeed(30);
+      await waitFor(() => controller.experimentRun is ExperimentFailed);
+
+      expect(
+        (controller.experimentRun! as ExperimentFailed).failure,
+        ExperimentFailure.moving,
+      );
+      expect(experimentSteps(controller).last, ExperimentStep.cancelled);
+      expect(controller.experimentSuggestions, isEmpty);
+
+      await controller.stop();
+    });
+
+    test('stopping the recording cancels the run', () async {
+      final controller = await startStationary();
+      controller.startExperiment('door-driver');
+      expect(controller.experimentRun, isA<ExperimentCapturing>());
+
+      await controller.stop();
+
+      expect(
+        (controller.experimentRun! as ExperimentFailed).failure,
+        ExperimentFailure.recordingStopped,
+      );
+      expect(experimentSteps(controller), [
+        ExperimentStep.before,
+        ExperimentStep.cancelled,
+      ]);
+      expect(controller.experimentSuggestions, isEmpty);
     });
   });
 }

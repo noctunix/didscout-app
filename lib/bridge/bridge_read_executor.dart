@@ -57,14 +57,14 @@ const List<String> _noAnswerMarkers = [
 class BridgeReadExecutor implements ReadExecutor {
   /// [onAccepted], if given, is called with a batch's modules once
   /// [ObdBridge.enqueueOneShot] has accepted it. [claimResult], if given,
-  /// is asked about every result's signal id first: a result it claims
-  /// (returns true for) belongs to reads queued on behalf of someone other
-  /// than the [results] listener, and is left out of [results].
+  /// is offered every parsed result first: a result it claims (returns
+  /// true for) belongs to reads queued on behalf of someone other than the
+  /// [results] listener, and is left out of [results].
   BridgeReadExecutor(this._bridge, {this._onAccepted, this._claimResult});
 
   final ObdBridge _bridge;
   final void Function(List<ProbeModule> modules)? _onAccepted;
-  final bool Function(String signalId)? _claimResult;
+  final bool Function(ProbeResult result)? _claimResult;
   final StreamController<ProbeResult> _results =
       StreamController<ProbeResult>.broadcast();
   int _queueDepth = 0;
@@ -103,8 +103,9 @@ class BridgeReadExecutor implements ReadExecutor {
   /// channel.
   void deliverOneShotResult(ObdSignalExchangeMessage result) {
     if (_queueDepth > 0) _queueDepth -= 1;
-    if (_claimResult?.call(result.signalId) ?? false) return;
-    _results.add(_toProbeResult(result));
+    final parsed = _toProbeResult(result);
+    if (_claimResult?.call(parsed) ?? false) return;
+    _results.add(parsed);
   }
 
   void dispose() => unawaited(_results.close());

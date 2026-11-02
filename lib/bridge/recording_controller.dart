@@ -19,10 +19,16 @@ import '../discovery/discovery_state_store.dart';
 import '../discovery/discovery_ui_state.dart';
 import '../discovery/phase_focus.dart';
 import '../discovery/probe.dart'
-    show ProbeModule, ProbeStep, ReadExecutorRejection, signalIdFor;
+    show
+        ProbeModule,
+        ProbeResult,
+        ProbeStep,
+        ReadExecutorRejection,
+        signalIdFor;
 import '../discovery/profile_export.dart';
 import '../discovery/scout_status.dart';
 import '../session/charge_reminder.dart';
+import '../session/experiments.dart';
 import '../session/session_markers.dart';
 import '../settings/app_settings.dart';
 import '../settings/settings_repository.dart';
@@ -46,6 +52,36 @@ class _DiscoveryEventsBridge implements ObdEventsApi {
 
   @override
   void onLinkState(ObdLinkStateMessage state) {}
+}
+
+/// One before or after capture of a guided experiment run.
+class _ExperimentCapture {
+  _ExperimentCapture({
+    required this.experiment,
+    required this.after,
+    required this.pending,
+    required this.deadline,
+  }) : total = pending.length;
+
+  final Experiment experiment;
+  final bool after;
+
+  /// Request header and DID of each read not answered yet, by signal id.
+  final Map<String, ({String header, String did})> pending;
+
+  final int total;
+
+  /// When the capture counts as complete even with reads unanswered.
+  final DateTime deadline;
+
+  final DidSnapshot snapshot = {};
+
+  ExperimentCapturing get progress => ExperimentCapturing(
+    experiment,
+    after: after,
+    answered: total - pending.length,
+    total: total,
+  );
 }
 
 /// The 29-bit module this app's fixed plan reads: ECU address `04`.
@@ -294,6 +330,27 @@ class RecordingController extends ChangeNotifier {
   /// Where in the current phase's [phaseFocusReads] the next focus sample
   /// starts.
   int _focusCursor = 0;
+
+  /// The discovery state as last persisted while discovery runs.
+  String? _savedDiscoveryJson;
+
+  ExperimentRun? _experimentRun;
+
+  /// The reads both captures of the current experiment run queue, fixed
+  /// when it starts so the two snapshots cover the same DIDs.
+  List<EcuDidRead> _experimentReads = const [];
+
+  _ExperimentCapture? _experimentCapture;
+  DidSnapshot _experimentBefore = const {};
+
+  /// The guided experiment run of this recording, in progress or last
+  /// finished; null before one was started or once dismissed.
+  ExperimentRun? get experimentRun => _experimentRun;
+
+  bool get _experimentActive => switch (_experimentRun) {
+    ExperimentCapturing() || ExperimentAwaitingAction() => true,
+    _ => false,
+  };
 
   /// Snapshot for the recording page's "Scouting" card -- null whenever
   /// discovery isn't currently running (not recording, or "scout while
@@ -559,6 +616,217 @@ class RecordingController extends ChangeNotifier {
     unawaited(_appendLatestMarker());
   }
 
+  /// The experiments worth suggesting right now ([suggestedExperiments]):
+  /// for the current phase, while stationary, whose target ECUs include
+  /// one with found DIDs that is not paused asleep, least often completed
+  /// on this vehicle first. Empty while discovery isn't running (not
+  /// recording, or [AppSettings.scoutWhileRecording] off).
+  List<Experiment> get experimentSuggestions {
+    final state = _discoveryState;
+    if (state == null) return const [];
+    final now = _now();
+    return suggestedExperiments(
+      phase: markers.currentPhase,
+      stationary: _isStationary(now),
+      answeringRequestHeaders: {
+        for (final ecu in state.ecus.values)
+          if (ecu.discovered.isNotEmpty &&
+              !(ecu.asleepUntil?.isAfter(now) ?? false))
+            ecu.requestHeader,
+      },
+      completedCounts: state.experimentCompletions,
+    );
+  }
+
+  /// Starts the experiment [id] from [experimentSuggestions]: records its
+  /// `before` marker and reads [experimentReads] of its target ECUs, as
+  /// [experimentRun] reports. Once those reads are in, [experimentRun]
+  /// asks the owner for the action and the `action` marker is recorded. A
+  /// no-op while another run is in progress or when [id] is not suggested
+  /// right now.
+  void startExperiment(String id) {
+    final state = _discoveryState;
+    if (_experimentActive || state == null) return;
+    final experiment = experimentSuggestions
+        .where((suggestion) => suggestion.id == id)
+        .firstOrNull;
+    if (experiment == null) return;
+    final now = _now();
+    _experimentReads = experimentReads(
+      state,
+      experiment,
+      includeProfileDids:
+          _settings.recordingMode == RecordingMode.scoutAndRecordKnown,
+      stationary: _isStationary(now),
+      now: now,
+    );
+    _addExperimentStep(experiment.id, ExperimentStep.before);
+    unawaited(_beginExperimentCapture(experiment, after: false));
+  }
+
+  /// The owner took the action: records the `after` marker and reads the
+  /// same DIDs again; [experimentRun] then reports the changes. Fails the
+  /// run instead when the vehicle is no longer stationary. A no-op unless
+  /// [experimentRun] is waiting for the action.
+  void confirmExperimentAction() {
+    final run = _experimentRun;
+    if (run is! ExperimentAwaitingAction) return;
+    if (!_isStationary(_now())) {
+      _failExperiment(ExperimentFailure.moving);
+      return;
+    }
+    _addExperimentStep(run.experiment.id, ExperimentStep.after);
+    unawaited(_beginExperimentCapture(run.experiment, after: true));
+  }
+
+  /// Abandons the experiment run in progress, recording its `cancelled`
+  /// marker; reads already queued still run, their results are dropped.
+  /// A no-op unless a run is in progress.
+  void cancelExperiment() => _failExperiment(ExperimentFailure.cancelled);
+
+  /// Clears a finished or failed [experimentRun]; a no-op while one is in
+  /// progress.
+  void dismissExperiment() {
+    if (_experimentRun == null || _experimentActive) return;
+    _experimentRun = null;
+    notifyListeners();
+  }
+
+  void _addExperimentStep(String id, ExperimentStep step) {
+    markers.addExperimentStep(id, step);
+    unawaited(_appendLatestMarker());
+  }
+
+  /// Queues [_experimentReads] for the before or [after] capture of
+  /// [experiment]. The capture completes once every read has returned
+  /// ([_claimExperimentResult]) or at the deadline a discovery batch that
+  /// size would get ([_superviseExperiment]).
+  Future<void> _beginExperimentCapture(
+    Experiment experiment, {
+    required bool after,
+  }) async {
+    final executor = _discoveryExecutor!;
+    final (modules, steps) = _probeBatch(_experimentReads);
+    final capture = _ExperimentCapture(
+      experiment: experiment,
+      after: after,
+      pending: {
+        for (final read in _experimentReads)
+          _readSignalId(read): (header: read.requestHeader, did: read.did),
+      },
+      deadline: _now().add(
+        defaultBatchDeadlineBase +
+            defaultBatchDeadlinePerStep * _experimentReads.length,
+      ),
+    );
+    _experimentCapture = capture;
+    _experimentRun = capture.progress;
+    notifyListeners();
+    if (capture.pending.isEmpty) {
+      _finishExperimentCapture();
+      return;
+    }
+    try {
+      await executor.submit(modules, steps);
+    } on ReadExecutorRejection {
+      if (identical(_experimentCapture, capture)) {
+        _failExperiment(ExperimentFailure.rejected);
+      }
+    }
+  }
+
+  /// Takes [result] if the current experiment capture is waiting for it,
+  /// keeping a positive payload in the capture's snapshot; NO DATA, an
+  /// NRC, a timeout or a cancelled read just count as returned.
+  bool _claimExperimentResult(ProbeResult result) {
+    final capture = _experimentCapture;
+    final read = capture?.pending.remove(result.signalId);
+    if (capture == null || read == null) return false;
+    if (result.payload case final payload?) {
+      capture.snapshot.putIfAbsent(read.header, () => {})[read.did] =
+          Uint8List.fromList(payload);
+    }
+    if (capture.pending.isEmpty) {
+      _finishExperimentCapture();
+    } else {
+      _experimentRun = capture.progress;
+      notifyListeners();
+    }
+    return true;
+  }
+
+  /// Ends the current capture with whatever returned: after the before
+  /// capture, asks for the action; after the after capture, reports the
+  /// changes and counts the experiment as completed. A capture in which
+  /// no read returned a value fails the run.
+  void _finishExperimentCapture() {
+    final capture = _experimentCapture!;
+    final experiment = capture.experiment;
+    if (capture.snapshot.isEmpty) {
+      _failExperiment(ExperimentFailure.noAnswer);
+      return;
+    }
+    _experimentCapture = null;
+    if (!capture.after) {
+      _experimentBefore = capture.snapshot;
+      _experimentRun = ExperimentAwaitingAction(experiment);
+      _addExperimentStep(experiment.id, ExperimentStep.action);
+      notifyListeners();
+      return;
+    }
+    final state = _discoveryState!;
+    // Persisted by the next discovery tick: saving here could overlap a
+    // save already in flight and corrupt the file.
+    state.experimentCompletions.update(
+      experiment.id,
+      (count) => count + 1,
+      ifAbsent: () => 1,
+    );
+    final changes = experimentChanges(
+      before: _experimentBefore,
+      after: capture.snapshot,
+    );
+    _experimentRun = ExperimentDone(
+      experiment,
+      changes: changes,
+      ecuNames: {
+        for (final ecu in state.ecus.values)
+          if (changes.containsKey(ecu.requestHeader))
+            if (ecu.f197Name case final name?) ecu.requestHeader: name,
+      },
+    );
+    _experimentBefore = const {};
+    notifyListeners();
+  }
+
+  /// Ends the run in progress as failed for [failure], recording its
+  /// `cancelled` marker; a no-op unless a run is in progress.
+  void _failExperiment(ExperimentFailure failure) {
+    final run = _experimentRun;
+    if (run == null || !_experimentActive) return;
+    _experimentCapture = null;
+    _experimentBefore = const {};
+    _experimentRun = ExperimentFailed(run.experiment, failure);
+    _addExperimentStep(run.experiment.id, ExperimentStep.cancelled);
+    notifyListeners();
+  }
+
+  /// Fails the run in progress once the vehicle is no longer stationary
+  /// -- experiments never run while moving -- and ends a capture whose
+  /// deadline passed.
+  void _superviseExperiment() {
+    if (!_experimentActive) return;
+    final now = _now();
+    if (!_isStationary(now)) {
+      _failExperiment(ExperimentFailure.moving);
+      return;
+    }
+    final capture = _experimentCapture;
+    if (capture != null && !now.isBefore(capture.deadline)) {
+      _finishExperimentCapture();
+    }
+  }
+
   Future<void> _appendLatestMarker() async {
     if (_bufferFilePath == null) {
       // No sidecar exists right now — the marker is held back and flushed
@@ -605,6 +873,7 @@ class RecordingController extends ChangeNotifier {
     _connectionStatus = null;
     _reconnectingSince = null;
     _reconnectPollAttempts = 0;
+    _experimentRun = null;
     try {
       _settings = await _loadSettings();
     } catch (_) {
@@ -795,10 +1064,11 @@ class RecordingController extends ChangeNotifier {
     _reconnectPollAttempts = 0;
   }
 
-  /// Starts the discovery engine and focus sampling ([_sampleFocus]) for
-  /// the recording that just started with [plan], when
-  /// [AppSettings.scoutWhileRecording] is on; a no-op otherwise, and
-  /// [discoveryUiState] then stays null for the whole recording.
+  /// Starts the discovery engine, focus sampling ([_sampleFocus]) and
+  /// experiment supervision ([_superviseExperiment]) for the recording
+  /// that just started with [plan], when [AppSettings.scoutWhileRecording]
+  /// is on; a no-op otherwise, and [discoveryUiState] then stays null and
+  /// [experimentSuggestions] empty for the whole recording.
   void _startDiscovery(DiscoveryState discoveryState, ObdPlanMessage plan) {
     if (!_settings.scoutWhileRecording) return;
     _discoveryState = discoveryState;
@@ -810,7 +1080,11 @@ class RecordingController extends ChangeNotifier {
       _bridge,
       onAccepted: (modules) =>
           _recordOneShotModules(sidecarPath, sidecarModuleIds, modules),
-      claimResult: _focusPending.remove,
+      // Focus first: a focus read queued before an experiment capture
+      // must not stand in for the capture's own read of the same DID.
+      claimResult: (result) =>
+          _focusPending.remove(result.signalId) ||
+          _claimExperimentResult(result),
     );
     _discoveryExecutor = executor;
     ObdEventsApi.setUp(_DiscoveryEventsBridge(executor));
@@ -822,6 +1096,7 @@ class RecordingController extends ChangeNotifier {
       batchSize: _settings.discoveryBatchSize,
     )..focusRequestHeaders = _focusRequestHeaders;
     _discoveryEngine = engine;
+    _savedDiscoveryJson = jsonEncode(discoveryState.toJson());
     final stationary = _isStationary(_now());
     _discoveryUiState = buildDiscoveryUiState(
       engine: engine,
@@ -830,10 +1105,10 @@ class RecordingController extends ChangeNotifier {
       sessionHits: _sessionDiscoveryHits,
       allowedToRun: stationary || _settings.scoutWhileDriving,
     );
-    _discoveryTimer = Timer.periodic(
-      _discoveryPumpInterval,
-      (_) => unawaited(_pumpDiscovery()),
-    );
+    _discoveryTimer = Timer.periodic(_discoveryPumpInterval, (_) {
+      _superviseExperiment();
+      unawaited(_pumpDiscovery());
+    });
     _focusTimer = Timer.periodic(
       _focusSampleInterval,
       (_) => unawaited(_sampleFocus()),
@@ -846,12 +1121,13 @@ class RecordingController extends ChangeNotifier {
       phaseFocusRequestHeaders[markers.currentPhase] ?? const {};
 
   /// Queues the next [maxPhaseFocusReads] of the current phase's
-  /// [phaseFocusReads], continuing where the previous sample left off,
-  /// under the signal ids the plan's survey steps use for the same DIDs --
-  /// they add samples to the same signals. Skipped while the previous
-  /// sample's reads are unanswered, up to the deadline a discovery batch
-  /// that size would get, and while [AppSettings.keepSamplingFoundDids] is
-  /// off; a rejected batch is simply left to the next sample.
+  /// [phaseFocusReads], continuing where the previous sample left off
+  /// ([_probeBatch]). Skipped while the previous sample's reads are
+  /// unanswered, up to the deadline a discovery batch that size would get,
+  /// and while [AppSettings.keepSamplingFoundDids] is off; a rejected
+  /// batch is simply left to the next sample. The target ECUs of an
+  /// experiment capture in progress are left out; the capture reads them
+  /// itself.
   Future<void> _sampleFocus() async {
     final executor = _discoveryExecutor;
     final discoveryState = _discoveryState;
@@ -865,38 +1141,54 @@ class RecordingController extends ChangeNotifier {
     _focusPending.clear();
     final reads = phaseFocusReads(
       discoveryState,
-      _focusRequestHeaders,
+      _focusRequestHeaders.difference({
+        ...?_experimentCapture?.experiment.targetHeaders,
+      }),
       stationary: _isStationary(now),
       now: now,
     );
     final count = min(reads.length, maxPhaseFocusReads);
     if (count == 0) return;
-    final modules = <String, ProbeModule>{};
-    final steps = <ProbeStep>[];
-    for (var i = 0; i < count; i++) {
-      final (:ecu, :did) = reads[(_focusCursor + i) % reads.length];
-      final moduleId = _effectiveModuleId(ecu.moduleId);
-      modules[moduleId] ??= ProbeModule(
-        id: moduleId,
-        requestHeader: ecu.requestHeader,
-        responseHeader: ecu.responseHeader,
-        protocol: ecu.protocol,
-      );
-      steps.add(
-        ProbeStep(signalId: signalIdFor(moduleId, '22$did'), command: '22$did'),
-      );
-    }
+    final (modules, steps) = _probeBatch([
+      for (var i = 0; i < count; i++) reads[(_focusCursor + i) % reads.length],
+    ]);
     _focusPending.addAll(steps.map((step) => step.signalId));
     _focusDeadline = now.add(
       defaultBatchDeadlineBase + defaultBatchDeadlinePerStep * count,
     );
     _focusCursor = (_focusCursor + count) % reads.length;
     try {
-      await executor.submit(modules.values.toList(), steps);
+      await executor.submit(modules, steps);
     } on ReadExecutorRejection {
       if (identical(_discoveryExecutor, executor)) _focusPending.clear();
     }
   }
+
+  /// The one-shot modules and steps for [reads], under the signal ids the
+  /// plan's survey steps use for the same DIDs -- the reads add samples to
+  /// the same signals.
+  static (List<ProbeModule>, List<ProbeStep>) _probeBatch(
+    List<EcuDidRead> reads,
+  ) {
+    final modules = <String, ProbeModule>{};
+    final steps = <ProbeStep>[];
+    for (final read in reads) {
+      final moduleId = _effectiveModuleId(read.ecuId);
+      modules[moduleId] ??= ProbeModule(
+        id: moduleId,
+        requestHeader: read.requestHeader,
+        responseHeader: read.responseHeader,
+        protocol: read.protocol,
+      );
+      steps.add(
+        ProbeStep(signalId: _readSignalId(read), command: '22${read.did}'),
+      );
+    }
+    return (modules.values.toList(), steps);
+  }
+
+  static String _readSignalId(EcuDidRead read) =>
+      signalIdFor(_effectiveModuleId(read.ecuId), '22${read.did}');
 
   /// Appends a `{"type":"modules",…}` line to the sidecar at [sidecarPath]
   /// for every module in [modules] that has a known responder and is not
@@ -939,8 +1231,8 @@ class RecordingController extends ChangeNotifier {
   /// while the vehicle is moving and [AppSettings.scoutWhileDriving] is
   /// off (the engine's own safety blocklist in `did_order.dart` applies
   /// regardless of this setting, inside `pump` itself), persists
-  /// [_discoveryState] whenever this tick actually changed it, and always
-  /// refreshes [discoveryUiState].
+  /// [_discoveryState] whenever it changed since it was last persisted,
+  /// and always refreshes [discoveryUiState].
   Future<void> _pumpDiscovery() async {
     if (_discoveryPumpInFlight) return;
     final engine = _discoveryEngine;
@@ -962,7 +1254,6 @@ class RecordingController extends ChangeNotifier {
     final stationary = _isStationary(now);
     final allowedToRun = stationary || _settings.scoutWhileDriving;
     if (allowedToRun) {
-      final before = jsonEncode(discoveryState.toJson());
       // A rejected enqueue (queue full, or no active recording while the
       // plugin reconnects) is backed off and retried inside `engine.pump`
       // itself until it is accepted or the engine is cancelled, so this
@@ -977,9 +1268,11 @@ class RecordingController extends ChangeNotifier {
       if (!identical(_discoveryEngine, engine)) {
         return;
       }
-      if (jsonEncode(discoveryState.toJson()) != before) {
-        await _saveDiscoveryState(discoveryState);
-      }
+    }
+    final json = jsonEncode(discoveryState.toJson());
+    if (json != _savedDiscoveryJson) {
+      _savedDiscoveryJson = json;
+      await _saveDiscoveryState(discoveryState);
     }
     _discoveryUiState = buildDiscoveryUiState(
       engine: engine,
@@ -992,9 +1285,11 @@ class RecordingController extends ChangeNotifier {
   }
 
   /// Stops and persists discovery for the recording that just ended (or is
-  /// ending), called from every exit path ([stop], [_handleNativeStop],
-  /// [dispose]) -- a no-op if discovery was never started for it.
+  /// ending), failing an experiment run in progress, called from every
+  /// exit path ([stop], [_handleNativeStop], [dispose]) -- a no-op if
+  /// discovery was never started for it.
   Future<void> _teardownDiscovery() async {
+    _failExperiment(ExperimentFailure.recordingStopped);
     _discoveryTimer?.cancel();
     _discoveryTimer = null;
     _focusTimer?.cancel();
@@ -1007,6 +1302,7 @@ class RecordingController extends ChangeNotifier {
     _discoveryExecutor?.dispose();
     _discoveryExecutor = null;
     _discoveryState = null;
+    _savedDiscoveryJson = null;
     _discoveryUiState = null;
     _sessionDiscoveryHits = 0;
     engine?.dispose();
