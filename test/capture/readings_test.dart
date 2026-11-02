@@ -105,6 +105,7 @@ void main() {
     expect(ReadingQuantity.insideTemp.wireName, 'inside_temp');
     expect(ReadingQuantity.range.wireName, 'range');
     expect(ReadingQuantity.chargePower.wireName, 'charge_power');
+    expect(ReadingQuantity.chargePowerMax.wireName, 'charge_power_max');
     expect(ReadingQuantity.odometer.wireName, 'odometer');
   });
 }

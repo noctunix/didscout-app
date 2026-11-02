@@ -9,7 +9,14 @@ enum ReadingQuantity {
   outsideTemp,
   insideTemp,
   range,
+
+  /// The power actually flowing into the battery while charging.
   chargePower,
+
+  /// The maximum charging power the vehicle predicts while not charging;
+  /// it falls with state of charge and rises with battery temperature.
+  chargePowerMax,
+
   odometer,
 }
 
@@ -21,6 +28,7 @@ extension ReadingQuantityWire on ReadingQuantity {
     ReadingQuantity.insideTemp => 'inside_temp',
     ReadingQuantity.range => 'range',
     ReadingQuantity.chargePower => 'charge_power',
+    ReadingQuantity.chargePowerMax => 'charge_power_max',
     ReadingQuantity.odometer => 'odometer',
   };
 
@@ -30,7 +38,8 @@ extension ReadingQuantityWire on ReadingQuantity {
     ReadingQuantity.outsideTemp => 'Outside temp.',
     ReadingQuantity.insideTemp => 'Inside temp.',
     ReadingQuantity.range => 'Range',
-    ReadingQuantity.chargePower => 'Charging power',
+    ReadingQuantity.chargePower => 'Charging power (now)',
+    ReadingQuantity.chargePowerMax => 'Max. charging power',
     ReadingQuantity.odometer => 'Odometer',
   };
 
@@ -41,6 +50,7 @@ extension ReadingQuantityWire on ReadingQuantity {
     ReadingQuantity.insideTemp => '°C',
     ReadingQuantity.range => 'km',
     ReadingQuantity.chargePower => 'kW',
+    ReadingQuantity.chargePowerMax => 'kW',
     ReadingQuantity.odometer => 'km',
   };
 }

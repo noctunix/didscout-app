@@ -323,7 +323,8 @@ num? _liveValueFor(
   ReadingQuantity.soc => info.socEstimatePercent(batteryTempC: batteryTempC),
   ReadingQuantity.batteryTemp ||
   ReadingQuantity.insideTemp ||
-  ReadingQuantity.chargePower => null,
+  ReadingQuantity.chargePower ||
+  ReadingQuantity.chargePowerMax => null,
 };
 
 /// Human-readable status line and icon for [RecordingPhase].
