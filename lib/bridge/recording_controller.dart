@@ -409,6 +409,8 @@ class RecordingController extends ChangeNotifier {
   /// window) is treated as moving, never as stationary, since discovery
   /// must not assume it's safe to scan a potentially-safety-relevant ECU
   /// just because speed hasn't been read recently.
+  bool get isStationary => _isStationary(_now());
+
   bool _isStationary(DateTime now) {
     final readAt = _speedReadAt;
     if (_liveInfo.speedKmh != 0 || readAt == null) return false;
@@ -616,6 +618,14 @@ class RecordingController extends ChangeNotifier {
     unawaited(_appendLatestMarker());
   }
 
+  /// The F197 name of an ECU addressed by [requestHeader], or null when
+  /// none has one or discovery isn't running.
+  String? ecuName(String requestHeader) => _discoveryState?.ecus.values
+      .where((ecu) => ecu.requestHeader == requestHeader)
+      .map((ecu) => ecu.f197Name)
+      .nonNulls
+      .firstOrNull;
+
   /// The experiments worth suggesting right now ([suggestedExperiments]):
   /// for the current phase, while stationary, whose target ECUs include
   /// one with found DIDs that is not paused asleep, least often completed
@@ -786,15 +796,7 @@ class RecordingController extends ChangeNotifier {
       before: _experimentBefore,
       after: capture.snapshot,
     );
-    _experimentRun = ExperimentDone(
-      experiment,
-      changes: changes,
-      ecuNames: {
-        for (final ecu in state.ecus.values)
-          if (changes.containsKey(ecu.requestHeader))
-            if (ecu.f197Name case final name?) ecu.requestHeader: name,
-      },
-    );
+    _experimentRun = ExperimentDone(experiment, changes: changes);
     _experimentBefore = const {};
     notifyListeners();
   }

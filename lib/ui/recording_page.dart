@@ -11,7 +11,9 @@ import '../discovery/discovery_ui_state.dart';
 import '../discovery/scout_status.dart';
 import '../power/power_monitor.dart';
 import '../power/power_recording_coordinator.dart';
+import '../session/reading_prompts.dart';
 import '../session/session_markers.dart';
+import 'experiment_card.dart';
 import 'recordings_page.dart';
 import 'settings_page.dart';
 
@@ -44,10 +46,11 @@ const List<ReadingQuantity> _tileQuantities = [
 const Duration _batteryTempMaxAge = Duration(minutes: 20);
 
 /// The main (and currently only) screen: adapter connection/recording
-/// status, phase buttons, the reading tile grid (with a bottom-sheet entry
-/// per tile), live vehicle info with one-tap confirmation, a free-text note
-/// and event quick entry, the session's marker log, and start/stop/share
-/// controls for the recording itself.
+/// status, phase buttons, guided experiments, the reading tile grid (with
+/// a bottom-sheet entry per tile, and the readings due now highlighted),
+/// live vehicle info with one-tap confirmation, a free-text note and event
+/// quick entry, the session's marker log, and start/stop/share controls
+/// for the recording itself.
 class RecordingPage extends StatefulWidget {
   RecordingPage({
     super.key,
@@ -176,6 +179,20 @@ class _RecordingPageState extends State<RecordingPage> {
     );
   }
 
+  /// The display values to read off now; none while not recording.
+  List<ReadingPrompt> get _readingPrompts {
+    if (_controller.phase != RecordingPhase.recording) return const [];
+    return readingPrompts(
+      phase: _controller.markers.currentPhase,
+      stationary: _controller.isStationary,
+      now: DateTime.now(),
+      lastReadAt: {
+        for (final marker in _controller.markers.markers)
+          if (marker is ReadingMarker) marker.quantity: marker.readAt,
+      },
+    );
+  }
+
   Future<void> _addNote() async {
     final text = await showModalBottomSheet<String>(
       context: context,
@@ -234,6 +251,7 @@ class _RecordingPageState extends State<RecordingPage> {
             });
           }
           _lastReminderVisible = reminderVisible;
+          final prompts = _readingPrompts;
           return SafeArea(
             child: ListView(
               padding: const EdgeInsets.all(16),
@@ -263,14 +281,28 @@ class _RecordingPageState extends State<RecordingPage> {
                     onDismiss: _controller.dismissChargeReminder,
                   ),
                 ],
+                if (ExperimentCard.visibleFor(_controller)) ...[
+                  const SizedBox(height: 16),
+                  ExperimentCard(
+                    controller: _controller,
+                    onEnterReading: _openTileSheet,
+                  ),
+                ],
                 const SizedBox(height: 16),
                 _LiveInfoCard(
                   liveInfo: _controller.liveInfo,
                   batteryTempC: _recentBatteryTempC,
                   onConfirm: _confirmLive,
                 ),
+                if (prompts.isNotEmpty) ...[
+                  const SizedBox(height: 16),
+                  _ReadingPromptHint(prompts: prompts),
+                ],
                 const SizedBox(height: 16),
-                _ReadingTileGrid(onTap: _openTileSheet),
+                _ReadingTileGrid(
+                  due: {for (final prompt in prompts) prompt.quantity},
+                  onTap: _openTileSheet,
+                ),
                 const SizedBox(height: 16),
                 Row(
                   children: [
@@ -910,8 +942,51 @@ class _LiveInfoRow extends StatelessWidget {
   }
 }
 
+/// Lists the display values to read off now, each with why; the
+/// matching tiles are highlighted.
+class _ReadingPromptHint extends StatelessWidget {
+  const _ReadingPromptHint({required this.prompts});
+
+  final List<ReadingPrompt> prompts;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return Material(
+      color: colorScheme.surfaceContainerHigh,
+      borderRadius: BorderRadius.circular(12),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(Icons.visibility_outlined, color: colorScheme.primary),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Read off the display',
+                    style: Theme.of(context).textTheme.titleSmall,
+                  ),
+                  for (final prompt in prompts)
+                    Text('${prompt.quantity.label}: ${prompt.reason}'),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _ReadingTileGrid extends StatelessWidget {
-  const _ReadingTileGrid({required this.onTap});
+  const _ReadingTileGrid({required this.due, required this.onTap});
+
+  /// The quantities a [ReadingPrompt] asks for now.
+  final Set<ReadingQuantity> due;
 
   final void Function(ReadingQuantity quantity) onTap;
 
@@ -926,27 +1001,46 @@ class _ReadingTileGrid extends StatelessWidget {
       childAspectRatio: 1.6,
       children: [
         for (final quantity in _tileQuantities)
-          _ReadingTile(quantity: quantity, onTap: () => onTap(quantity)),
+          _ReadingTile(
+            quantity: quantity,
+            due: due.contains(quantity),
+            onTap: () => onTap(quantity),
+          ),
       ],
     );
   }
 }
 
 class _ReadingTile extends StatelessWidget {
-  const _ReadingTile({required this.quantity, required this.onTap});
+  const _ReadingTile({
+    required this.quantity,
+    required this.due,
+    required this.onTap,
+  });
 
   final ReadingQuantity quantity;
+  final bool due;
   final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
     return Semantics(
-      label: '${quantity.label}, enter reading',
+      label: due
+          ? '${quantity.label}, reading due, enter reading'
+          : '${quantity.label}, enter reading',
       button: true,
       child: SizedBox(
         height: 72,
         child: FilledButton.tonal(
           onPressed: onTap,
+          style: due
+              ? FilledButton.styleFrom(
+                  side: BorderSide(
+                    color: Theme.of(context).colorScheme.primary,
+                    width: 2,
+                  ),
+                )
+              : null,
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [

@@ -359,18 +359,11 @@ class ExperimentAwaitingAction extends ExperimentRun {
   const ExperimentAwaitingAction(super.experiment);
 }
 
-/// Both captures are in: [changes] as [experimentChanges] reports them,
-/// and the F197 name of each request header in [changes] whose ECU has
-/// one.
+/// Both captures are in; [changes] as [experimentChanges] reports them.
 class ExperimentDone extends ExperimentRun {
-  const ExperimentDone(
-    super.experiment, {
-    required this.changes,
-    required this.ecuNames,
-  });
+  const ExperimentDone(super.experiment, {required this.changes});
 
   final Map<String, List<DidDiff>> changes;
-  final Map<String, String> ecuNames;
 }
 
 /// The run ended before its result, for [failure].

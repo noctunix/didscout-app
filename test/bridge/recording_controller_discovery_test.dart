@@ -931,7 +931,7 @@ void main() {
         ],
         [(0, 0x00, 0x01)],
       );
-      expect(done.ecuNames, {'74A': 'Door FL'});
+      expect(controller.ecuName('74A'), 'Door FL');
 
       // The stable 2A01 is read as well, which focus sampling leaves out.
       expect(experimentBatches(), [

@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -9,8 +10,10 @@ import 'package:obdbridge/src/obdbridge_api.g.dart' show NativeObdApi;
 
 import 'package:didscout_app/bridge/didscout_policy.dart';
 import 'package:didscout_app/bridge/recording_controller.dart';
+import 'package:didscout_app/capture/diff.dart';
 import 'package:didscout_app/capture/readings.dart';
 import 'package:didscout_app/discovery/discovery_state.dart';
+import 'package:didscout_app/session/experiments.dart';
 import 'package:didscout_app/session/session_markers.dart';
 import 'package:didscout_app/ui/recording_page.dart';
 
@@ -30,6 +33,9 @@ class _FakeNativeObdApi extends NativeObdApi {
 
   /// Same as [outsideTempResponse], for the `222AB8` (stored energy) step.
   String? storedEnergyResponse;
+
+  /// Same as [outsideTempResponse], for the `22F40D` (speed) step.
+  String? speedResponse;
 
   @override
   Future<void> configure(ObdBridgeConfigMessage config) async {}
@@ -83,6 +89,13 @@ class _FakeNativeObdApi extends NativeObdApi {
               rawResponseText: storedEnergyResponse,
               receivedAtEpochMs: DateTime.now().millisecondsSinceEpoch,
             ),
+          if (speedResponse != null)
+            ObdSignalExchangeMessage(
+              signalId: 'module7_22f40d',
+              transport: ObdTransportStatusMessage.ok,
+              rawResponseText: speedResponse,
+              receivedAtEpochMs: DateTime.now().millisecondsSinceEpoch,
+            ),
         ],
       );
 }
@@ -90,6 +103,7 @@ class _FakeNativeObdApi extends NativeObdApi {
 RecordingController _fakeController({
   _FakeNativeObdApi? fakeNative,
   Duration tickInterval = const Duration(hours: 1),
+  DiscoveryState? discoveryState,
 }) => RecordingController(
   bridge: ObdBridge(
     DidscoutPolicy(),
@@ -107,9 +121,60 @@ RecordingController _fakeController({
   // `path_provider`/file I/O `RecordingController.stop` would otherwise
   // await -- real I/O never completes under `pumpAndSettle`'s fake clock
   // outside `tester.runAsync` (see `_startRecording` above).
-  loadDiscoveryState: () async => DiscoveryState(),
+  loadDiscoveryState: () async => discoveryState ?? DiscoveryState(),
   saveDiscoveryState: (_) async {},
 );
+
+Experiment _experiment(String id) =>
+    experimentCatalog.firstWhere((experiment) => experiment.id == id);
+
+/// Reports [experimentRun] and [experimentSuggestions] as a test sets them,
+/// while recording, and records the experiment calls the card makes
+/// instead of running them.
+class _ExperimentCardController extends RecordingController {
+  _ExperimentCardController()
+    : super(
+        bridge: ObdBridge(DidscoutPolicy(), nativeApi: _FakeNativeObdApi()),
+        recordingsDirectory: () async => Directory.systemTemp,
+        requestRuntimePermissions: (_) async {},
+        loadDiscoveryState: () async => DiscoveryState(),
+        saveDiscoveryState: (_) async {},
+      );
+
+  ExperimentRun? run;
+  List<Experiment> suggestions = const [];
+  final List<String> calls = [];
+
+  void show(ExperimentRun? next) {
+    run = next;
+    notifyListeners();
+  }
+
+  @override
+  RecordingPhase get phase => RecordingPhase.recording;
+
+  @override
+  ExperimentRun? get experimentRun => run;
+
+  @override
+  List<Experiment> get experimentSuggestions => suggestions;
+
+  @override
+  String? ecuName(String requestHeader) =>
+      const {'74A': 'Door FL', '767': 'Climate'}[requestHeader];
+
+  @override
+  void startExperiment(String id) => calls.add('start $id');
+
+  @override
+  void confirmExperimentAction() => calls.add('confirm');
+
+  @override
+  void cancelExperiment() => calls.add('cancel');
+
+  @override
+  void dismissExperiment() => calls.add('dismiss');
+}
 
 /// Starts [controller] the same way tapping the "Start recording" button
 /// would (its `onPressed` is exactly [RecordingController.start]), via
@@ -523,6 +588,206 @@ void main() {
         findsOneWidget,
       );
       expect(find.textContaining('°C battery'), findsNothing);
+
+      await controller.stop();
+    });
+  });
+
+  group('experiments card', () {
+    testWidgets('hidden while not recording', (tester) async {
+      await pumpPage(tester);
+
+      expect(find.text('Experiments'), findsNothing);
+    });
+
+    testWidgets('shown while recording only once the vehicle stands', (
+      tester,
+    ) async {
+      final fakeNative = _FakeNativeObdApi()
+        ..speedResponse = '${_module7ResponseHeader}0462F40D1E';
+      final controller = _fakeController(
+        fakeNative: fakeNative,
+        tickInterval: const Duration(milliseconds: 1),
+        discoveryState: DiscoveryState(
+          ecus: {
+            'door-front-left': EcuInfo(
+              requestHeader: '74A',
+              responseHeader: '7B4',
+              protocol: 6,
+              identification: {'F197': 'Door FL'},
+              discovered: {'2A00'},
+            ),
+          },
+        ),
+      );
+      controller.addPhase(MarkerPhase.stand);
+      await pumpPage(tester, controller: controller);
+      await _startRecording(tester, controller);
+      Future<void> poll() async {
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 20)),
+        );
+        await tester.pumpAndSettle();
+      }
+
+      await poll();
+      expect(controller.liveInfo.speedKmh, 30);
+      expect(find.text('Experiments'), findsNothing);
+
+      fakeNative.speedResponse = '${_module7ResponseHeader}0462F40D00';
+      await poll();
+      expect(find.text('Experiments'), findsOneWidget);
+      expect(find.text('Driver door'), findsOneWidget);
+      expect(find.text('Reads Door FL'), findsOneWidget);
+
+      await controller.stop();
+      await tester.pumpAndSettle();
+      expect(find.text('Experiments'), findsNothing);
+    });
+
+    testWidgets('walks through the steps of a run', (tester) async {
+      final controller = _ExperimentCardController()
+        ..suggestions = [
+          _experiment('door-driver'),
+          _experiment('climate-setpoint'),
+        ];
+      await pumpPage(tester, controller: controller);
+      Future<void> tap(Finder finder) async {
+        await tester.ensureVisible(finder);
+        await tester.pumpAndSettle();
+        await tester.tap(finder);
+        await tester.pumpAndSettle();
+      }
+
+      expect(find.text('Driver door'), findsOneWidget);
+      expect(find.text('Reads Door FL'), findsOneWidget);
+      await tap(find.widgetWithText(FilledButton, 'Start'));
+      expect(controller.calls, ['start door-driver']);
+
+      await tap(find.widgetWithText(TextButton, 'Choose another'));
+      await tap(find.text('Cabin temperature'));
+      expect(controller.calls.last, 'start climate-setpoint');
+
+      final doorDriver = _experiment('door-driver');
+      controller.show(
+        ExperimentCapturing(doorDriver, after: false, answered: 1, total: 3),
+      );
+      await tester.pump();
+      expect(find.text('Reading before…'), findsOneWidget);
+      expect(find.text('1 of 3 reads'), findsOneWidget);
+      await tap(find.widgetWithText(TextButton, 'Cancel'));
+      expect(controller.calls.last, 'cancel');
+
+      controller.show(ExperimentAwaitingAction(doorDriver));
+      await tester.pump();
+      expect(find.text(doorDriver.instruction), findsOneWidget);
+      await tap(find.widgetWithText(FilledButton, 'Done'));
+      expect(controller.calls.last, 'confirm');
+
+      controller.show(
+        ExperimentCapturing(doorDriver, after: true, answered: 0, total: 3),
+      );
+      await tester.pump();
+      expect(find.text('Reading after…'), findsOneWidget);
+
+      controller.show(ExperimentDone(doorDriver, changes: const {}));
+      await tester.pump();
+      expect(find.text('No change seen'), findsOneWidget);
+      expect(find.textContaining('Enter '), findsNothing);
+      await tap(find.widgetWithText(TextButton, 'Close'));
+      expect(controller.calls.last, 'dismiss');
+
+      controller.show(ExperimentFailed(doorDriver, ExperimentFailure.moving));
+      await tester.pump();
+      expect(find.textContaining('the vehicle moved'), findsOneWidget);
+    });
+
+    testWidgets('a result lists the changed bytes per ECU and offers the '
+        'follow-up reading', (tester) async {
+      final controller = _ExperimentCardController();
+      await pumpPage(tester, controller: controller);
+      controller.show(
+        ExperimentDone(
+          _experiment('climate-setpoint'),
+          changes: {
+            '767': [
+              DidDiff(
+                module: '767',
+                did: '2A00',
+                before: Uint8List.fromList([0x00, 0x11]),
+                after: Uint8List.fromList([0x1A, 0x11, 0x22]),
+                changes: const [
+                  ByteDiff(position: 0, before: 0x00, after: 0x1A),
+                ],
+              ),
+            ],
+          },
+        ),
+      );
+      await tester.pump();
+
+      expect(find.text('Climate'), findsOneWidget);
+      expect(find.text('2A00  byte 0: 00 → 1A, length 2 → 3'), findsOneWidget);
+
+      final followUp = find.widgetWithText(
+        OutlinedButton,
+        'Enter Inside temp.',
+      );
+      await tester.ensureVisible(followUp);
+      await tester.pumpAndSettle();
+      await tester.tap(followUp);
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+      await tester.pumpAndSettle();
+
+      final marker = controller.markers.markers.single as ReadingMarker;
+      expect(marker.quantity, ReadingQuantity.insideTemp);
+    });
+  });
+
+  group('reading prompts', () {
+    bool tileLabelled(WidgetTester tester, String label) => tester
+        .widgetList<Semantics>(find.byType(Semantics))
+        .any((widget) => widget.properties.label == label);
+
+    testWidgets('none while not recording', (tester) async {
+      await pumpPage(tester);
+
+      expect(find.text('Read off the display'), findsNothing);
+      expect(
+        tileLabelled(tester, 'Battery temp., reading due, enter reading'),
+        isFalse,
+      );
+    });
+
+    testWidgets('list what to read off and highlight those tiles until '
+        'read', (tester) async {
+      final controller = _fakeController();
+      await pumpPage(tester, controller: controller);
+      await _startRecording(tester, controller);
+      controller.addPhase(MarkerPhase.charge);
+      await tester.pumpAndSettle();
+
+      expect(find.text('Read off the display'), findsOneWidget);
+      expect(find.text('Battery temp.: Not read yet'), findsOneWidget);
+      expect(find.text('Charging power (now): Not read yet'), findsOneWidget);
+      expect(find.text('State of charge: Not read yet'), findsOneWidget);
+      expect(
+        tileLabelled(tester, 'Battery temp., reading due, enter reading'),
+        isTrue,
+      );
+      expect(tileLabelled(tester, 'Odometer, enter reading'), isTrue);
+
+      await tester.ensureVisible(find.text('Battery temp.'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Battery temp.'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Battery temp.: Not read yet'), findsNothing);
+      expect(tileLabelled(tester, 'Battery temp., enter reading'), isTrue);
+      expect(find.text('State of charge: Not read yet'), findsOneWidget);
 
       await controller.stop();
     });
