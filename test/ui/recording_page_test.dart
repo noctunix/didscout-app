@@ -168,6 +168,7 @@ class _ReminderController extends _RecordingStubController {
 class _ExperimentCardController extends _RecordingStubController {
   ExperimentRun? run;
   List<Experiment> suggestions = const [];
+  bool stationary = true;
   final List<String> calls = [];
 
   void show(ExperimentRun? next) {
@@ -180,6 +181,9 @@ class _ExperimentCardController extends _RecordingStubController {
 
   @override
   List<Experiment> get experimentSuggestions => suggestions;
+
+  @override
+  bool get isStationary => stationary;
 
   @override
   String? ecuName(String requestHeader) =>
@@ -840,9 +844,8 @@ void main() {
       expect(find.text('Experiments'), findsNothing);
     });
 
-    testWidgets('shown while recording only once the vehicle stands', (
-      tester,
-    ) async {
+    testWidgets('shown while recording in a standing phase; starts once '
+        'the vehicle stands', (tester) async {
       final fakeNative = _FakeNativeObdApi()
         ..speedResponse = '${_module7ResponseHeader}0462F40D1E';
       final controller = _fakeController(
@@ -872,7 +875,14 @@ void main() {
 
       await poll();
       expect(controller.liveInfo.speedKmh, 30);
-      expect(find.text('Experiments'), findsNothing);
+      expect(find.text('Experiments'), findsOneWidget);
+      expect(find.text('Starts when the vehicle stands still'), findsOneWidget);
+      expect(
+        tester
+            .widget<FilledButton>(find.widgetWithText(FilledButton, 'Start'))
+            .onPressed,
+        isNull,
+      );
 
       fakeNative.speedResponse = '${_module7ResponseHeader}0462F40D00';
       await poll();
@@ -885,12 +895,45 @@ void main() {
       expect(find.text('Experiments'), findsNothing);
     });
 
+    testWidgets('hidden while driving unless a run is in progress', (
+      tester,
+    ) async {
+      final controller = _ExperimentCardController()
+        ..suggestions = [_experiment('door-driver')]
+        ..addPhase(MarkerPhase.drive);
+      await pumpPage(tester, controller: controller);
+      expect(find.text('Experiments'), findsNothing);
+
+      controller.show(
+        ExperimentCapturing(
+          _experiment('door-driver'),
+          after: false,
+          answered: 0,
+          total: 3,
+        ),
+      );
+      await tester.pump();
+      expect(find.text('Experiments'), findsOneWidget);
+    });
+
+    testWidgets('says when no experiment fits the ECUs found', (tester) async {
+      final controller = _ExperimentCardController()
+        ..addPhase(MarkerPhase.park);
+      await pumpPage(tester, controller: controller);
+
+      expect(
+        find.text('No experiment for the ECUs found so far'),
+        findsOneWidget,
+      );
+    });
+
     testWidgets('walks through the steps of a run', (tester) async {
       final controller = _ExperimentCardController()
         ..suggestions = [
           _experiment('door-driver'),
           _experiment('climate-setpoint'),
-        ];
+        ]
+        ..addPhase(MarkerPhase.stand);
       await pumpPage(tester, controller: controller);
       Future<void> tap(Finder finder) async {
         await tester.ensureVisible(finder);
@@ -969,10 +1012,7 @@ void main() {
       expect(find.text('Climate'), findsOneWidget);
       expect(find.text('2A00  byte 0: 00 → 1A, length 2 → 3'), findsOneWidget);
 
-      final followUp = find.widgetWithText(
-        OutlinedButton,
-        'Enter Inside temp.',
-      );
+      final followUp = find.widgetWithText(FilledButton, 'Enter Inside temp.');
       await tester.ensureVisible(followUp);
       await tester.pumpAndSettle();
       await tester.tap(followUp);
@@ -984,6 +1024,43 @@ void main() {
 
       final marker = controller.markers.markers.single as ReadingMarker;
       expect(marker.quantity, ReadingQuantity.insideTemp);
+    });
+  });
+
+  group('experiments card result', () {
+    testWidgets('lists at most 6 changed DIDs and the rest on demand', (
+      tester,
+    ) async {
+      final controller = _ExperimentCardController();
+      await pumpPage(tester, controller: controller);
+      final diffs = [
+        for (var i = 0; i < 8; i++)
+          DidDiff(
+            module: '767',
+            did: '2A0$i',
+            before: Uint8List.fromList([0x00]),
+            after: Uint8List.fromList([0x01]),
+            changes: const [ByteDiff(position: 0, before: 0x00, after: 0x01)],
+          ),
+      ];
+      controller.show(
+        ExperimentDone(
+          _experiment('climate-setpoint'),
+          changes: {'767': diffs},
+        ),
+      );
+      await tester.pump();
+
+      expect(find.text('2A05  byte 0: 00 → 01'), findsOneWidget);
+      expect(find.text('2A06  byte 0: 00 → 01'), findsNothing);
+      final showAll = find.widgetWithText(TextButton, 'Show all (8)');
+      await tester.ensureVisible(showAll);
+      await tester.pumpAndSettle();
+      await tester.tap(showAll);
+      await tester.pumpAndSettle();
+
+      expect(find.text('2A06  byte 0: 00 → 01'), findsOneWidget);
+      expect(find.text('2A07  byte 0: 00 → 01'), findsOneWidget);
     });
   });
 

@@ -315,13 +315,6 @@ class _RecordingPageState extends State<RecordingPage> {
                   ),
                 const SizedBox(height: 16),
                 _PhaseButtonGrid(controller: _controller),
-                if (ExperimentCard.visibleFor(_controller)) ...[
-                  const SizedBox(height: 16),
-                  ExperimentCard(
-                    controller: _controller,
-                    onEnterReading: _openTileSheet,
-                  ),
-                ],
                 const SizedBox(height: 24),
                 _ReadingsHeader(
                   recording: _controller.phase == RecordingPhase.recording,
@@ -345,6 +338,13 @@ class _RecordingPageState extends State<RecordingPage> {
                   now: now,
                   onTap: _openTileSheet,
                 ),
+                if (ExperimentCard.visibleFor(_controller)) ...[
+                  const SizedBox(height: 16),
+                  ExperimentCard(
+                    controller: _controller,
+                    onEnterReading: _openTileSheet,
+                  ),
+                ],
                 const SizedBox(height: 16),
                 Row(
                   children: [
