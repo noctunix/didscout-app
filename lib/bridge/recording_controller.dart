@@ -97,6 +97,54 @@ List<String> _adapterSequence(AppSettings settings) => [
 /// generated with a different (watch/once) interval are left alone.
 const int _generatedSurveyIntervalMs = 180000;
 
+/// Floor of one recurring read's cost: about one physical read over a BLE
+/// adapter on 11-bit or 29-bit CAN, measured.
+const int _minReadCostMs = 150;
+
+/// Share of the read time, in percent, the survey reads may take at most:
+/// the rest stays with the fixed steps and with discovery, whose one-shot
+/// reads only run in the poller's idle time.
+const int _maxSurveyReadPercent = 40;
+
+/// A recurring DID read planned on top of the fixed steps, before the
+/// survey interval is settled.
+class _RecurringRead {
+  const _RecurringRead({
+    required this.signalId,
+    required this.moduleId,
+    required this.command,
+    required this.responseHeader,
+    this.ownIntervalMs,
+    this.stable = false,
+  });
+
+  final String signalId;
+  final String moduleId;
+  final String command;
+  final String responseHeader;
+
+  /// The read's own interval, or null when it follows the survey interval.
+  final int? ownIntervalMs;
+
+  /// Whether the read follows the survey interval, but never more often
+  /// than every [stableDidIntervalMs].
+  final bool stable;
+
+  bool get atSurveyInterval => ownIntervalMs == null && !stable;
+
+  ObdStepMessage step(int surveyIntervalMs) => ObdStepMessage(
+    signalId: signalId,
+    moduleId: moduleId,
+    command: command,
+    responseHeader: responseHeader,
+    intervalMs:
+        ownIntervalMs ??
+        (stable
+            ? max(surveyIntervalMs, stableDidIntervalMs)
+            : surveyIntervalMs),
+  );
+}
+
 /// How long the native poller holds back a module whose planned reads keep
 /// answering NO DATA before probing it again (see
 /// `ObdLimitsMessage.quietModuleBackoffMs`) -- shorter than the survey
@@ -1012,20 +1060,20 @@ class RecordingController extends ChangeNotifier {
       ),
   ];
 
-  /// One read step per DID known to answer on this vehicle platform. DIDs
-  /// generated with the survey default ([_generatedSurveyIntervalMs]) use
-  /// [AppSettings.surveyIntervalMs] instead; every other (watch/once) DID
+  /// One read per DID known to answer on this vehicle platform. DIDs
+  /// generated with the survey default ([_generatedSurveyIntervalMs])
+  /// follow the survey interval instead; every other (watch/once) DID
   /// keeps its generated interval unchanged.
-  static List<ObdStepMessage> _knownDidSteps(AppSettings settings) => [
+  static List<_RecurringRead> _knownDidReads() => [
     for (final spec in vagPpeModules)
       for (final did in spec.dids)
-        ObdStepMessage(
+        _RecurringRead(
           signalId: '${_planModuleId(spec)}_22${did.did.toLowerCase()}',
           moduleId: _planModuleId(spec),
           command: '22${did.did}',
           responseHeader: spec.response,
-          intervalMs: did.intervalMs == _generatedSurveyIntervalMs
-              ? settings.surveyIntervalMs
+          ownIntervalMs: did.intervalMs == _generatedSurveyIntervalMs
+              ? null
               : did.intervalMs,
         ),
   ];
@@ -1067,19 +1115,18 @@ class RecordingController extends ChangeNotifier {
     ];
   }
 
-  /// One read step per discovered DID not already covered by
-  /// [_knownDidSteps], at the survey interval or, for a DID that has kept
-  /// one value ([DiscoveredEcuPlan.stableDids]), at [stableDidIntervalMs]
-  /// if that is longer -- empty whenever
+  /// One read per discovered DID, at the survey interval or, for a DID
+  /// that has kept one value ([DiscoveredEcuPlan.stableDids]), at
+  /// [stableDidIntervalMs] if that is longer -- empty whenever
   /// [AppSettings.keepSamplingFoundDids] is off.
-  static List<ObdStepMessage> _discoveredSteps(
+  static List<_RecurringRead> _discoveredReads(
     List<DiscoveredEcuPlan> additions,
     AppSettings settings,
   ) => [
     if (settings.keepSamplingFoundDids)
       for (final addition in additions)
         for (final did in addition.dids)
-          ObdStepMessage(
+          _RecurringRead(
             signalId: signalIdFor(
               _effectiveModuleId(addition.moduleId),
               '22$did',
@@ -1087,11 +1134,22 @@ class RecordingController extends ChangeNotifier {
             moduleId: _effectiveModuleId(addition.moduleId),
             command: '22$did',
             responseHeader: addition.responseHeader,
-            intervalMs: addition.stableDids.contains(did)
-                ? max(settings.surveyIntervalMs, stableDidIntervalMs)
-                : settings.surveyIntervalMs,
+            stable: addition.stableDids.contains(did),
           ),
   ];
+
+  /// [AppSettings.surveyIntervalMs], stretched where needed so that
+  /// [surveyReads] reads at that interval take at most
+  /// [_maxSurveyReadPercent] of the read time.
+  static int _surveyIntervalMs(AppSettings settings, int surveyReads) {
+    final readCostMs = max(
+      _minReadCostMs,
+      1000 ~/ max(settings.maxReadsPerSecond, 1),
+    );
+    final budgetedMs = (surveyReads * readCostMs * 100 / _maxSurveyReadPercent)
+        .ceil();
+    return max(settings.surveyIntervalMs, budgetedMs);
+  }
 
   @visibleForTesting
   static ObdPlanMessage buildPlanForTesting({
@@ -1211,14 +1269,27 @@ class RecordingController extends ChangeNotifier {
       ],
     ];
     final fixedSignalIds = {for (final step in fixedSteps) step.signalId};
-    final knownSteps = [
-      ...fixedSteps,
+    final knownReads = [
       // A profile DID that is also a fixed step keeps the fixed interval.
       if (recordKnown)
-        for (final step in _knownDidSteps(settings))
-          if (!fixedSignalIds.contains(step.signalId)) step,
+        for (final read in _knownDidReads())
+          if (!fixedSignalIds.contains(read.signalId)) read,
     ];
-    final knownSignalIds = {for (final step in knownSteps) step.signalId};
+    final knownSignalIds = {
+      ...fixedSignalIds,
+      for (final read in knownReads) read.signalId,
+    };
+    final recurringReads = [
+      ...knownReads,
+      // A gateway scan hit on a fixed module6 DID maps onto that step's
+      // own signal id.
+      for (final read in _discoveredReads(discoveredAdditions, settings))
+        if (!knownSignalIds.contains(read.signalId)) read,
+    ];
+    final surveyIntervalMs = _surveyIntervalMs(
+      settings,
+      recurringReads.where((read) => read.atSurveyInterval).length,
+    );
 
     return ObdPlanMessage(
       planId: 'didscout-fixed-plan',
@@ -1228,11 +1299,8 @@ class RecordingController extends ChangeNotifier {
       resync: adapterSequence,
       modules: [...knownModules, ...discoveredModules],
       steps: [
-        ...knownSteps,
-        // A gateway scan hit on a fixed module6 DID maps onto that step's
-        // own signal id.
-        for (final step in _discoveredSteps(discoveredAdditions, settings))
-          if (!knownSignalIds.contains(step.signalId)) step,
+        ...fixedSteps,
+        for (final read in recurringReads) read.step(surveyIntervalMs),
       ],
       limits: ObdLimitsMessage(
         maxResponseBytes: 4096,

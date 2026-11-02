@@ -156,7 +156,7 @@ class _SettingsPageState extends State<SettingsPage> {
                 const Divider(),
                 const _SectionHeader('Recording'),
                 _IntSliderSetting(
-                  label: 'Survey interval for exploratory DIDs',
+                  label: 'Minimum survey interval for exploratory DIDs',
                   value: settings.surveyIntervalMinutes,
                   min: 1,
                   max: 10,

@@ -720,7 +720,7 @@ void main() {
     final plan = RecordingController.buildPlanForTesting(
       settings: const AppSettings.defaultValues().copyWith(
         maxReadsPerSecond: 8,
-        surveyIntervalMinutes: 1,
+        surveyIntervalMinutes: 5,
         recordingMode: RecordingMode.scoutAndRecordKnown,
       ),
     );
@@ -729,7 +729,7 @@ void main() {
     final surveyStep = plan.steps.firstWhere(
       (s) => s.signalId == 'module6_222a04',
     );
-    expect(surveyStep.intervalMs, 60000);
+    expect(surveyStep.intervalMs, 5 * 60000);
     // Sanity check the fixture DID used above is really generated at the
     // survey default, matching vag_ppe_plan_data.dart.
     final gateway = vagPpeModules.firstWhere((m) => m.id == 'gateway');

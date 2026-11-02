@@ -81,10 +81,12 @@ class AppSettings {
   final int stopAfterNoVehicleDataMinutes;
   final int maxReadsPerSecond;
 
-  /// Interval applied to every DID in `vag_ppe_plan_data.dart` whose
+  /// Minimum interval of every DID in `vag_ppe_plan_data.dart` whose
   /// generated interval equals the generator's own survey default
-  /// (`_generatedSurveyIntervalMs` in `recording_controller.dart`); DIDs
-  /// generated with a different (watch/once) interval are left alone.
+  /// (`_generatedSurveyIntervalMs` in `recording_controller.dart`), and of
+  /// every discovered DID; a plan with more such reads than the adapter's
+  /// read time allows stretches it. DIDs generated with a different
+  /// (watch/once) interval are left alone.
   final int surveyIntervalMinutes;
   final int chargeReminderIntervalMinutes;
   final bool autoStartOnPower;

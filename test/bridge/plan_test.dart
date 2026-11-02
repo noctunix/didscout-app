@@ -285,6 +285,88 @@ void main() {
     });
   });
 
+  group('survey load budget', () {
+    List<String> didsFrom(int first, int count) => [
+      for (var did = first; did < first + count; did++)
+        did.toRadixString(16).toUpperCase().padLeft(4, '0'),
+    ];
+
+    Map<String, int> intervalsOf(ObdPlanMessage plan) => {
+      for (final s in plan.steps) s.signalId: s.intervalMs,
+    };
+
+    DiscoveryState stateWith(List<String> dids) => DiscoveryState()
+      ..ecus['ecus11-7B0'] = (EcuInfo(
+        requestHeader: '7B0',
+        responseHeader: '7B8',
+        protocol: 6,
+      )..discovered.addAll(dids));
+
+    test('a plan with many survey reads stretches the survey interval, '
+        'leaving fixed and stable reads alone', () {
+      // F187 is an identification DID and so stable: it does not count.
+      final state = stateWith([...didsFrom(0x2000, 1000), 'F187']);
+
+      final stretched = intervalsOf(
+        RecordingController.buildPlanForTesting(discoveryState: state),
+      );
+
+      // 1000 reads x 150 ms (one BLE read; 8 reads/s would allow 125 ms)
+      // may take 40 % of the read time.
+      const expectedSurveyMs = 375000;
+      expect(stretched['ecus11-7B0_222000'], expectedSurveyMs);
+      expect(stretched['ecus11-7B0_2223e7'], expectedSurveyMs);
+      expect(stretched['ecus11-7B0_22f187'], stableDidIntervalMs);
+      final fixed = intervalsOf(RecordingController.buildPlanForTesting());
+      for (final MapEntry(key: signalId, value: intervalMs) in fixed.entries) {
+        expect(stretched[signalId], intervalMs, reason: signalId);
+      }
+    });
+
+    test('a slower read cap stretches by its own read spacing', () {
+      final plan = RecordingController.buildPlanForTesting(
+        settings: const AppSettings.defaultValues().copyWith(
+          maxReadsPerSecond: 2,
+        ),
+        discoveryState: stateWith(didsFrom(0x2000, 1000)),
+      );
+
+      // 1000 reads x 500 ms / 0.4.
+      expect(intervalsOf(plan)['ecus11-7B0_222000'], 1250000);
+    });
+
+    test('a stable DID never drops below the stable interval, and follows '
+        'a survey interval stretched beyond it', () {
+      final plan = RecordingController.buildPlanForTesting(
+        discoveryState: stateWith([...didsFrom(0x2000, 5000), 'F187']),
+      );
+
+      // 5000 reads x 150 ms / 0.4, past the stable interval's 30 min.
+      expect(intervalsOf(plan)['ecus11-7B0_222000'], 1875000);
+      expect(intervalsOf(plan)['ecus11-7B0_22f187'], 1875000);
+    });
+
+    test('a plan with few survey reads keeps the configured interval', () {
+      final intervals = intervalsOf(
+        RecordingController.buildPlanForTesting(
+          settings: const AppSettings.defaultValues().copyWith(
+            recordingMode: RecordingMode.scoutAndRecordKnown,
+          ),
+          discoveryState: stateWith(didsFrom(0x2000, 10)),
+        ),
+      );
+
+      expect(
+        intervals['module6_222a04'],
+        const AppSettings.defaultValues().surveyIntervalMs,
+      );
+      expect(
+        intervals['ecus11-7B0_222000'],
+        const AppSettings.defaultValues().surveyIntervalMs,
+      );
+    });
+  });
+
   group('RecordingMode.scoutAndRecordKnown', () {
     test('omits discovered DIDs when keepSamplingFoundDids is off', () {
       final state = DiscoveryState();
