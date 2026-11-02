@@ -435,6 +435,7 @@ void main() {
     await Future<void>.delayed(const Duration(milliseconds: 600));
 
     expect(fakeNative.enqueuedSteps, isEmpty);
+    expect(controller.liveInfo.speedKmh, isNull);
     expect(
       controller.discoveryUiState?.activity,
       DiscoveryActivity.waitingMoving,

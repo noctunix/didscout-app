@@ -12,6 +12,7 @@ import 'package:didscout_app/bridge/connection_status.dart';
 import 'package:didscout_app/bridge/didscout_policy.dart';
 import 'package:didscout_app/bridge/recording_controller.dart';
 import 'package:didscout_app/bridge/vag_ppe_plan_data.dart';
+import 'package:didscout_app/capture/readings.dart';
 import 'package:didscout_app/discovery/discovery_state.dart';
 import 'package:didscout_app/session/session_markers.dart';
 import 'package:didscout_app/settings/app_settings.dart';
@@ -467,6 +468,101 @@ void main() {
       expect(limits.idleVehicleStopAfterMs, 1800000);
       // 0 means "no cap" — already past the 72h floor.
       expect(limits.maxRecordingMs, 0);
+    });
+  });
+
+  group('live values', () {
+    final now = DateTime.utc(2026, 1, 1, 12);
+
+    ObdSignalExchangeMessage exchange(
+      String signalId,
+      String responseHeader,
+      String frame,
+      Duration? age,
+    ) => ObdSignalExchangeMessage(
+      signalId: signalId,
+      transport: ObdTransportStatusMessage.ok,
+      rawResponseText: '$responseHeader $frame',
+      receivedAtEpochMs: age == null
+          ? null
+          : now.subtract(age).millisecondsSinceEpoch,
+    );
+
+    /// Speed 0 km/h, stored energy 61075 Wh (0x098B x 25 Wh) and outside
+    /// temp. 20 degC (0x3C minus the 40 degC offset), received
+    /// [speedAge]/[energyAge]/[slowAge] before [now].
+    ObdLiveStateMessage liveState({
+      Duration? speedAge,
+      Duration? energyAge,
+      Duration? slowAge,
+    }) => ObdLiveStateMessage(
+      link: ObdLinkStateMessage(state: ObdLinkStateValueMessage.connected),
+      timebaseId: 't1',
+      exchanges: [
+        exchange('module7_22f40d', '18DAF104', '04 62 F4 0D 00', speedAge),
+        exchange('module6_222ab8', '77A', '07 62 2A B8 00 00 09 8B', energyAge),
+        exchange('module7_22f446', '18DAF104', '04 62 F4 46 3C', slowAge),
+      ],
+    );
+
+    Future<void> startAndPoll() async {
+      controller = RecordingController(
+        requestRuntimePermissions: (_) async {},
+        bridge: ObdBridge(DidscoutPolicy(), nativeApi: fakeNative),
+        recordingsDirectory: () async => tempDir,
+        sessionIdFactory: () => 'fixed-session-id',
+        clock: () => now,
+        tickInterval: const Duration(milliseconds: 1),
+        loadSettings: () async => const AppSettings.defaultValues().copyWith(
+          scoutWhileRecording: false,
+        ),
+      );
+      await controller.start();
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+    }
+
+    test('a value received within 2.5 planned intervals is decoded', () async {
+      // Speed every 20 s (the default), energy every 15 s, outside temp.
+      // every 60 s.
+      fakeNative.liveStateResult = liveState(
+        speedAge: const Duration(seconds: 49),
+        energyAge: const Duration(seconds: 37),
+        slowAge: const Duration(seconds: 149),
+      );
+
+      await startAndPoll();
+
+      expect(controller.liveInfo.speedKmh, 0);
+      expect(controller.liveInfo.storedEnergyWh, 61075);
+      expect(controller.liveInfo.outsideTempC, 20);
+
+      await controller.stop();
+    });
+
+    test('a value older than 2.5 planned intervals, or without a receive '
+        'time, is left out, and a reading carries no stale speed', () async {
+      fakeNative.liveStateResult = liveState(
+        speedAge: const Duration(seconds: 51),
+        energyAge: const Duration(seconds: 38),
+      );
+
+      await startAndPoll();
+
+      expect(controller.liveInfo.speedKmh, isNull);
+      expect(controller.liveInfo.storedEnergyWh, isNull);
+      expect(controller.liveInfo.outsideTempC, isNull);
+      controller.addReading(
+        quantity: ReadingQuantity.outsideTemp,
+        value: 20,
+        readAt: now,
+        source: ReadingSource.typed,
+      );
+      final marker = controller.markers.markers.last as ReadingMarker;
+      expect(marker.speedKmh, isNull);
+      // Lets the marker's sidecar append land before the directory goes.
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+
+      await controller.stop();
     });
   });
 

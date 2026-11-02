@@ -74,12 +74,14 @@ class _FakeNativeObdApi extends NativeObdApi {
               signalId: 'module7_22f446',
               transport: ObdTransportStatusMessage.ok,
               rawResponseText: outsideTempResponse,
+              receivedAtEpochMs: DateTime.now().millisecondsSinceEpoch,
             ),
           if (storedEnergyResponse != null)
             ObdSignalExchangeMessage(
               signalId: 'module6_222ab8',
               transport: ObdTransportStatusMessage.ok,
               rawResponseText: storedEnergyResponse,
+              receivedAtEpochMs: DateTime.now().millisecondsSinceEpoch,
             ),
         ],
       );

@@ -58,21 +58,73 @@ const String _module8ResponseHeader = '18DAF106';
 const String _module6RequestHeader = '710';
 const String _module6ResponseHeader = '77A';
 
-/// A step's command and expected response header, keyed by its own
-/// [ObdStepMessage.signalId] — used to decode [ObdBridge.liveState]'s cached
-/// attempts back into a [LiveVehicleInfo] during a recording.
+/// A live value counts for this many of its step's planned intervals after
+/// it was received, the same rule as [AppSettings.speedFreshnessWindow]:
+/// one missed or slow read is tolerated, a stalled one is not shown.
+const double _liveFreshnessIntervals = 2.5;
+
+/// A fixed plan step whose answer is also decoded live, keyed by its own
+/// [ObdStepMessage.signalId] — used to plan it and to decode
+/// [ObdBridge.liveState]'s cached attempts back into a [LiveVehicleInfo]
+/// during a recording.
 class _LiveSignalSpec {
-  const _LiveSignalSpec(this.command, this.responseHeader);
+  const _LiveSignalSpec(
+    this.moduleId,
+    this.command,
+    this.responseHeader, [
+    this.intervalMs,
+  ]);
+  final String moduleId;
   final String command;
   final String responseHeader;
+
+  /// Planned read interval; null for the speed step, which follows
+  /// [AppSettings.speedPollIntervalMs].
+  final int? intervalMs;
+
+  int plannedIntervalMs(AppSettings settings) =>
+      intervalMs ?? settings.speedPollIntervalMs;
+
+  Duration freshnessWindow(AppSettings settings) => Duration(
+    milliseconds: (plannedIntervalMs(settings) * _liveFreshnessIntervals)
+        .round(),
+  );
 }
 
+/// Planned in every mode: the speed because discovery is motion-aware and
+/// needs it even in [RecordingMode.scoutOnly]; energy, range, odometer and
+/// outside temperature because they are what readings typed off the
+/// vehicle's displays are checked against.
 const Map<String, _LiveSignalSpec> _liveSignalSpecs = {
-  'module7_22f40d': _LiveSignalSpec('22F40D', _module7ResponseHeader),
-  'module7_22f446': _LiveSignalSpec('22F446', _module7ResponseHeader),
-  'module8_22f4a6': _LiveSignalSpec('22F4A6', _module8ResponseHeader),
-  'module6_222ab6': _LiveSignalSpec('222AB6', _module6ResponseHeader),
-  'module6_222ab8': _LiveSignalSpec('222AB8', _module6ResponseHeader),
+  'module7_22f40d': _LiveSignalSpec(
+    'module7',
+    '22F40D',
+    _module7ResponseHeader,
+  ),
+  'module6_222ab8': _LiveSignalSpec(
+    'module6',
+    '222AB8',
+    _module6ResponseHeader,
+    15000,
+  ),
+  'module6_222ab6': _LiveSignalSpec(
+    'module6',
+    '222AB6',
+    _module6ResponseHeader,
+    60000,
+  ),
+  'module8_22f4a6': _LiveSignalSpec(
+    'module8',
+    '22F4A6',
+    _module8ResponseHeader,
+    60000,
+  ),
+  'module7_22f446': _LiveSignalSpec(
+    'module7',
+    '22F446',
+    _module7ResponseHeader,
+    60000,
+  ),
 };
 
 const List<String> _adapterInitCommands = [
@@ -903,13 +955,17 @@ class RecordingController extends ChangeNotifier {
   }
 
   /// Queries [ObdBridge.liveState] for this plan's signals and decodes
-  /// whatever answered into [_liveInfo]. Any failure (no live-state support,
-  /// transport error, …) leaves [_liveInfo] at [LiveVehicleInfo.empty] — the
-  /// tiles then simply show no live info, never a stale or fabricated one.
-  /// Also records the link state exchanges carry, for [_pollConnectionStatus].
+  /// whatever answered into [_liveInfo]. A value only counts while it was
+  /// received within its step's [_LiveSignalSpec.freshnessWindow]; an
+  /// older one, or one without a receive time, is left null. Any failure
+  /// (no live-state support, transport error, …) leaves [_liveInfo] at
+  /// [LiveVehicleInfo.empty] — the tiles then simply show no live info,
+  /// never a stale or fabricated one. Also records the link state
+  /// exchanges carry, for [_pollConnectionStatus].
   Future<void> _pollLiveState() async {
     try {
       final state = await _bridge.liveState(_liveSignalSpecs.keys.toList());
+      final now = _now();
       _linkState = state.link.state;
       int? speedKmh;
       double? odometerKm;
@@ -922,7 +978,14 @@ class RecordingController extends ChangeNotifier {
           continue;
         }
         final spec = _liveSignalSpecs[exchange.signalId];
-        if (spec == null) continue;
+        final receivedAtEpochMs = exchange.receivedAtEpochMs;
+        if (spec == null || receivedAtEpochMs == null) continue;
+        final receivedAt = DateTime.fromMillisecondsSinceEpoch(
+          receivedAtEpochMs,
+        );
+        if (now.difference(receivedAt) > spec.freshnessWindow(_settings)) {
+          continue;
+        }
         final payload = decodePositivePayload(
           spec.command,
           exchange.rawResponseText!,
@@ -932,11 +995,7 @@ class RecordingController extends ChangeNotifier {
         switch (exchange.signalId) {
           case 'module7_22f40d':
             speedKmh = decodeSpeedKmh(payload);
-            _speedReadAt = exchange.receivedAtEpochMs == null
-                ? null
-                : DateTime.fromMillisecondsSinceEpoch(
-                    exchange.receivedAtEpochMs!,
-                  );
+            _speedReadAt = receivedAt;
           case 'module7_22f446':
             outsideTempC = decodeOutsideTempC(payload);
           case 'module8_22f4a6':
@@ -1211,46 +1270,15 @@ class RecordingController extends ChangeNotifier {
     final adapterSequence = _adapterSequence(settings);
 
     final fixedSteps = [
-      // The speed signal is always planned, driving or not -- discovery
-      // is motion-aware and needs it even in RecordingMode.scoutOnly.
-      ObdStepMessage(
-        signalId: 'module7_22f40d',
-        moduleId: 'module7',
-        command: '22F40D',
-        responseHeader: _module7ResponseHeader,
-        intervalMs: settings.speedPollIntervalMs,
-      ),
-      // Energy, range, odometer and outside temperature are planned in
-      // every mode as well: they are what readings typed off the vehicle's
-      // displays are checked against.
-      ObdStepMessage(
-        signalId: 'module6_222ab8',
-        moduleId: 'module6',
-        command: '222AB8',
-        responseHeader: _module6ResponseHeader,
-        intervalMs: 15000,
-      ),
-      ObdStepMessage(
-        signalId: 'module6_222ab6',
-        moduleId: 'module6',
-        command: '222AB6',
-        responseHeader: _module6ResponseHeader,
-        intervalMs: 60000,
-      ),
-      ObdStepMessage(
-        signalId: 'module8_22f4a6',
-        moduleId: 'module8',
-        command: '22F4A6',
-        responseHeader: _module8ResponseHeader,
-        intervalMs: 60000,
-      ),
-      ObdStepMessage(
-        signalId: 'module7_22f446',
-        moduleId: 'module7',
-        command: '22F446',
-        responseHeader: _module7ResponseHeader,
-        intervalMs: 60000,
-      ),
+      for (final MapEntry(key: signalId, value: spec)
+          in _liveSignalSpecs.entries)
+        ObdStepMessage(
+          signalId: signalId,
+          moduleId: spec.moduleId,
+          command: spec.command,
+          responseHeader: spec.responseHeader,
+          intervalMs: spec.plannedIntervalMs(settings),
+        ),
       if (recordKnown) ...[
         ObdStepMessage(
           signalId: 'module7_22f449',
