@@ -1126,14 +1126,11 @@ void main() {
       );
       final ids = [for (var i = 0; i < 10; i++) 'ecu$i'];
       for (var i = 0; i < ids.length; i++) {
-        state.ecus[ids[i]] = EcuInfo(
-          requestHeader: 'H$i',
-          protocol: 6,
-          // Far more DIDs than one batch covers, so every one of these
-          // ECUs always has work left -- the only thing that can stop
-          // an earlier one from monopolizing every round is rotation.
-          discoverRanges: [(0x2A00, 0x2AFF)],
-        );
+        // No discover ranges, so none of them is prioritized, and the
+        // full DID space leaves every one of them work far beyond one
+        // batch -- the only thing that can stop an earlier one from
+        // monopolizing every round is rotation.
+        state.ecus[ids[i]] = EcuInfo(requestHeader: 'H$i', protocol: 6);
       }
       final engine = DiscoveryEngine(
         executor: executor,
@@ -1142,6 +1139,7 @@ void main() {
         // 2 ECUs' worth (16 DIDs each) per round.
         maxQueueDepth: 32,
       );
+      state.ecus.removeWhere((id, _) => !ids.contains(id));
       executor.respond = (step) => ProbeResult(
         signalId: step.signalId,
         status: const ProbeOk(),
@@ -1161,6 +1159,77 @@ void main() {
           reason: '$id must have been offered exactly one batch',
         );
       }
+
+      engine.dispose();
+    });
+
+    test('an ECU with its discover ranges left gets a batch every round, '
+        'then goes back to the rotation', () async {
+      final executor = FakeExecutor();
+      final state = DiscoveryState(
+        inventoryStagesDone: {'ecus11', 'ecus29', 'vag29'},
+      );
+      final ids = [for (var i = 0; i < 6; i++) 'ecu$i'];
+      for (var i = 0; i < ids.length; i++) {
+        state.ecus[ids[i]] = EcuInfo(requestHeader: 'H$i', protocol: 6);
+      }
+      // Two batches' worth of discover ranges, and last in key order, so
+      // plain rotation would reach it only in the fourth round.
+      state.ecus['targeted'] = EcuInfo(
+        requestHeader: '7A1',
+        protocol: 6,
+        discoverRanges: [(0x2A00, 0x2A1F)],
+      );
+      final engine = DiscoveryEngine(
+        executor: executor,
+        state: state,
+        onHit: (_, _, _) {},
+        // 2 ECUs' worth (16 DIDs each) per round.
+        maxQueueDepth: 32,
+      );
+      state.ecus.removeWhere((id, _) => id != 'targeted' && !ids.contains(id));
+      executor.respond = (step) => ProbeResult(
+        signalId: step.signalId,
+        status: const ProbeOk(),
+        at: now,
+      );
+      Map<String, int> positions() => {
+        for (final entry in state.ecus.entries)
+          entry.key: entry.value.scanPosition,
+      };
+
+      await engine.pump(stationary: true, now: now);
+      expect(positions(), {
+        'ecu0': 16,
+        'ecu1': 0,
+        'ecu2': 0,
+        'ecu3': 0,
+        'ecu4': 0,
+        'ecu5': 0,
+        'targeted': 16,
+      });
+
+      await engine.pump(stationary: true, now: now);
+      expect(positions(), {
+        'ecu0': 16,
+        'ecu1': 16,
+        'ecu2': 0,
+        'ecu3': 0,
+        'ecu4': 0,
+        'ecu5': 0,
+        'targeted': 32,
+      });
+
+      await engine.pump(stationary: true, now: now);
+      await engine.pump(stationary: true, now: now);
+      expect(positions(), {
+        for (final id in ids) id: 16,
+        'targeted': 32,
+      }, reason: 'once its discover ranges are scanned, it waits its turn');
+
+      await engine.pump(stationary: true, now: now);
+      expect(state.ecus['targeted']!.scanPosition, 48);
+      expect(state.ecus['ecu0']!.scanPosition, 32);
 
       engine.dispose();
     });

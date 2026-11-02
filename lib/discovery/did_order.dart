@@ -84,6 +84,11 @@ List<int> _didOrderFrom(Iterable<(int, int)> ranges) {
   return ordered;
 }
 
+/// The DIDs [profileRanges] alone contribute -- a prefix of
+/// [discoveryDidOrder].
+List<int> profileDidOrder(List<(int, int)> profileRanges) =>
+    _didOrderFrom(profileRanges);
+
 /// The DIDs most likely to answer for one ECU: [profileRanges] first, then
 /// the standardized [discoveryPriorityRanges] -- a prefix of
 /// [discoveryDidOrder], used to size scan progress against the DIDs worth

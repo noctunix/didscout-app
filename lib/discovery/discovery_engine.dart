@@ -186,6 +186,7 @@ class DiscoveryEngine {
   final Map<String, Completer<ProbeResult>> _pending = {};
   final Map<String, List<int>> _orderCache = {};
   final Map<String, List<int>> _priorityOrderCache = {};
+  final Map<String, int> _profileOrderLengthCache = {};
   late final StreamSubscription<ProbeResult> _subscription;
 
   /// Index into `state.ecus.keys` [pump] starts its next round from -- see
@@ -411,6 +412,7 @@ class DiscoveryEngine {
       ..scanPosition = 0;
     _orderCache.remove(ecuId);
     _priorityOrderCache.remove(ecuId);
+    _profileOrderLengthCache.remove(ecuId);
   }
 
   List<int> _orderFor(String ecuId, List<(int, int)> ranges) =>
@@ -418,6 +420,15 @@ class DiscoveryEngine {
 
   List<int> _priorityOrderFor(String ecuId, List<(int, int)> ranges) =>
       _priorityOrderCache.putIfAbsent(ecuId, () => priorityDidOrder(ranges));
+
+  /// Whether [ecuId]'s scan has not yet passed the DIDs of its own
+  /// [EcuInfo.discoverRanges].
+  bool _hasProfileRangeWork(String ecuId, EcuInfo ecu) =>
+      ecu.scanPosition <
+      _profileOrderLengthCache.putIfAbsent(
+        ecuId,
+        () => profileDidOrder(ecu.discoverRanges).length,
+      );
 
   /// Sweeps the 11-bit manufacturer-ECU request range for any header not
   /// already known in [state], identifies each newly found ECU, and
@@ -677,16 +688,21 @@ class DiscoveryEngine {
     required bool stationary,
     required DateTime now,
   }) {
-    for (final entry in state.ecus.entries) {
-      if (!stationary && movingDiscoveryBlocked(entry.value.f197Name)) {
-        continue;
-      }
-      if (hasDiscoveryWork(entry.key, now)) {
-        return entry.key;
+    for (final ecuId in state.ecus.keys) {
+      if (_scannable(ecuId, stationary: stationary, now: now)) {
+        return ecuId;
       }
     }
     return null;
   }
+
+  bool _scannable(
+    String ecuId, {
+    required bool stationary,
+    required DateTime now,
+  }) =>
+      (stationary || !movingDiscoveryBlocked(state.ecus[ecuId]!.f197Name)) &&
+      hasDiscoveryWork(ecuId, now);
 
   /// The next batch of DIDs [ecuId] would read -- its pending conditional
   /// retries first, else the next slice of its scan order -- without
@@ -920,17 +936,24 @@ class DiscoveryEngine {
   }
 
   /// One scheduler tick: while stationary, tops up any pending ECU
-  /// (re)discovery and names unnamed ECUs ([nameUnnamedEcus]); then groups one batch from every currently eligible
-  /// ECU into a single submission -- so the executor's queue is topped
-  /// up by several ECUs at once, bounded by [maxQueueDepth] -- and
-  /// returns. The caller invokes this repeatedly (e.g. once per
-  /// scheduler iteration) rather than draining all discovery work in one
-  /// call, keeping the queue in the [minQueueDepth]-[maxQueueDepth] band
-  /// over time instead of flooding it. A no-op once [suspended]; while the
-  /// executor rejects batches (see [_submitAndAwait]) this call keeps
-  /// retrying until it accepts again or [cancel] runs.
+  /// (re)discovery and names unnamed ECUs ([nameUnnamedEcus]); then groups
+  /// one batch from every currently eligible ECU into a single submission
+  /// -- so the executor's queue is topped up by several ECUs at once,
+  /// bounded by [maxQueueDepth] -- and returns. The caller invokes this
+  /// repeatedly (e.g. once per scheduler iteration) rather than draining
+  /// all discovery work in one call, keeping the queue in the
+  /// [minQueueDepth]-[maxQueueDepth] band over time instead of flooding
+  /// it. A no-op once [suspended]; while the executor rejects batches (see
+  /// [_submitAndAwait]) this call keeps retrying until it accepts again or
+  /// [cancel] runs.
   ///
-  /// Each round starts scanning known ECUs from just after wherever the
+  /// Every eligible ECU whose scan has not yet passed its own
+  /// [EcuInfo.discoverRanges] gets a batch in every round, ahead of the
+  /// rest: those ranges are where its useful DIDs are expected, and a
+  /// plain rotation over a few dozen ECUs would reach each of them only
+  /// once every few rounds.
+  ///
+  /// The remaining room is filled starting from just after wherever the
   /// previous round left off ([_roundRobinCursor]) rather than always from
   /// the first known ECU: an ECU with a long scan order always has more
   /// work left than one near the end of its own, so starting from the
@@ -960,23 +983,27 @@ class DiscoveryEngine {
       return;
     }
     final round = <String>[];
-    var lastIndexConsidered = _roundRobinCursor % keys.length;
-    for (var step = 0; step < keys.length; step++) {
-      final index = (_roundRobinCursor + step) % keys.length;
-      final ecuId = keys[index];
-      lastIndexConsidered = index;
-      if (!stationary && movingDiscoveryBlocked(state.ecus[ecuId]!.f197Name)) {
-        continue;
-      }
-      if (!hasDiscoveryWork(ecuId, now)) {
-        continue;
-      }
-      round.add(ecuId);
-      if (round.length * batchSize >= maxQueueDepth) {
+    bool roundFull() => round.length * batchSize >= maxQueueDepth;
+
+    for (final ecuId in keys) {
+      if (roundFull()) {
         break;
       }
+      if (_hasProfileRangeWork(ecuId, state.ecus[ecuId]!) &&
+          _scannable(ecuId, stationary: stationary, now: now)) {
+        round.add(ecuId);
+      }
     }
-    _roundRobinCursor = (lastIndexConsidered + 1) % keys.length;
+    var considered = 0;
+    while (considered < keys.length && !roundFull()) {
+      final ecuId = keys[(_roundRobinCursor + considered) % keys.length];
+      considered += 1;
+      if (!round.contains(ecuId) &&
+          _scannable(ecuId, stationary: stationary, now: now)) {
+        round.add(ecuId);
+      }
+    }
+    _roundRobinCursor = (_roundRobinCursor + considered) % keys.length;
     if (round.isEmpty) {
       return;
     }
