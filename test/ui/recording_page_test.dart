@@ -128,11 +128,9 @@ RecordingController _fakeController({
 Experiment _experiment(String id) =>
     experimentCatalog.firstWhere((experiment) => experiment.id == id);
 
-/// Reports [experimentRun] and [experimentSuggestions] as a test sets them,
-/// while recording, and records the experiment calls the card makes
-/// instead of running them.
-class _ExperimentCardController extends RecordingController {
-  _ExperimentCardController()
+/// Claims to be recording without ever connecting.
+class _RecordingStubController extends RecordingController {
+  _RecordingStubController()
     : super(
         bridge: ObdBridge(DidscoutPolicy(), nativeApi: _FakeNativeObdApi()),
         recordingsDirectory: () async => Directory.systemTemp,
@@ -141,6 +139,33 @@ class _ExperimentCardController extends RecordingController {
         saveDiscoveryState: (_) async {},
       );
 
+  @override
+  RecordingPhase get phase => RecordingPhase.recording;
+}
+
+/// Shows and dismisses the charging-round reminder as a test says.
+class _ReminderController extends _RecordingStubController {
+  bool reminder = false;
+
+  void showReminder() {
+    reminder = true;
+    notifyListeners();
+  }
+
+  @override
+  bool get chargeReminderVisible => reminder;
+
+  @override
+  void dismissChargeReminder() {
+    reminder = false;
+    notifyListeners();
+  }
+}
+
+/// Reports [experimentRun] and [experimentSuggestions] as a test sets them,
+/// while recording, and records the experiment calls the card makes
+/// instead of running them.
+class _ExperimentCardController extends _RecordingStubController {
   ExperimentRun? run;
   List<Experiment> suggestions = const [];
   final List<String> calls = [];
@@ -149,9 +174,6 @@ class _ExperimentCardController extends RecordingController {
     run = next;
     notifyListeners();
   }
-
-  @override
-  RecordingPhase get phase => RecordingPhase.recording;
 
   @override
   ExperimentRun? get experimentRun => run;
@@ -194,6 +216,7 @@ void main() {
   Future<void> pumpPage(
     WidgetTester tester, {
     RecordingController? controller,
+    Future<void> Function()? onReminderVibration,
   }) async {
     // The default 800x600 test surface is too short to fit the status card,
     // phase grid, tile grid and marker list at once; use a phone-sized
@@ -212,7 +235,7 @@ void main() {
       MaterialApp(
         home: RecordingPage(
           controller: controller ?? _fakeController(),
-          onReminderVibration: () async {},
+          onReminderVibration: onReminderVibration ?? () async {},
         ),
       ),
     );
@@ -968,7 +991,9 @@ void main() {
     testWidgets('none while not recording', (tester) async {
       await pumpPage(tester);
 
-      expect(find.text('Read off the display'), findsNothing);
+      expect(find.text('Readings'), findsOneWidget);
+      expect(find.text('Nothing due right now'), findsNothing);
+      expect(find.textContaining('Read now'), findsNothing);
       expect(labelled(tester, 'Battery temp., not read'), isTrue);
     });
 
@@ -980,10 +1005,12 @@ void main() {
       controller.addPhase(MarkerPhase.charge);
       await tester.pumpAndSettle();
 
-      expect(find.text('Read off the display'), findsOneWidget);
-      expect(find.text('Battery temp.: Not read yet'), findsOneWidget);
-      expect(find.text('Charging power (now): Not read yet'), findsOneWidget);
-      expect(find.text('State of charge: Not read yet'), findsOneWidget);
+      expect(
+        find.text(
+          'Read now: Battery temp., Charging power (now), State of charge',
+        ),
+        findsOneWidget,
+      );
       expect(labelled(tester, 'Battery temp., not read, reading due'), isTrue);
       expect(labelled(tester, 'Odometer, not read'), isTrue);
 
@@ -996,14 +1023,59 @@ void main() {
       await tester.tap(find.widgetWithText(FilledButton, 'Save'));
       await tester.pumpAndSettle();
 
-      expect(find.text('Battery temp.: Not read yet'), findsNothing);
+      expect(
+        find.text('Read now: Charging power (now), State of charge'),
+        findsOneWidget,
+      );
       expect(
         labelled(tester, 'Battery temp., 20 degrees Celsius, entered just now'),
         isTrue,
       );
-      expect(find.text('State of charge: Not read yet'), findsOneWidget);
 
       await controller.stop();
+    });
+
+    testWidgets('say so when nothing is due', (tester) async {
+      final controller = _RecordingStubController()
+        ..addReading(
+          quantity: ReadingQuantity.batteryTemp,
+          value: 20,
+          readAt: DateTime.now(),
+          source: ReadingSource.typed,
+        );
+      await pumpPage(tester, controller: controller);
+
+      expect(find.text('Nothing due right now'), findsOneWidget);
+    });
+
+    testWidgets('the charging-round reminder takes the due line\'s place '
+        'until dismissed, vibrating once', (tester) async {
+      var vibrations = 0;
+      final controller = _ReminderController();
+      await pumpPage(
+        tester,
+        controller: controller,
+        onReminderVibration: () async => vibrations++,
+      );
+      expect(find.text('Read now: Battery temp.'), findsOneWidget);
+
+      controller.showReminder();
+      await tester.pumpAndSettle();
+      expect(
+        find.text('Charging round: check SoC and battery temp.'),
+        findsOneWidget,
+      );
+      expect(find.text('Read now: Battery temp.'), findsNothing);
+      expect(vibrations, 1);
+
+      await tester.tap(find.byTooltip('Dismiss'));
+      await tester.pumpAndSettle();
+      expect(
+        find.text('Charging round: check SoC and battery temp.'),
+        findsNothing,
+      );
+      expect(find.text('Read now: Battery temp.'), findsOneWidget);
+      expect(vibrations, 1);
     });
   });
 }

@@ -315,12 +315,6 @@ class _RecordingPageState extends State<RecordingPage> {
                   ),
                 const SizedBox(height: 16),
                 _PhaseButtonGrid(controller: _controller),
-                if (reminderVisible) ...[
-                  const SizedBox(height: 16),
-                  _ChargeReminderBanner(
-                    onDismiss: _controller.dismissChargeReminder,
-                  ),
-                ],
                 if (ExperimentCard.visibleFor(_controller)) ...[
                   const SizedBox(height: 16),
                   ExperimentCard(
@@ -328,11 +322,14 @@ class _RecordingPageState extends State<RecordingPage> {
                     onEnterReading: _openTileSheet,
                   ),
                 ],
-                if (prompts.isNotEmpty) ...[
-                  const SizedBox(height: 16),
-                  _ReadingPromptHint(prompts: prompts),
-                ],
-                const SizedBox(height: 16),
+                const SizedBox(height: 24),
+                _ReadingsHeader(
+                  recording: _controller.phase == RecordingPhase.recording,
+                  prompts: prompts,
+                  chargeReminder: reminderVisible,
+                  onDismissReminder: _controller.dismissChargeReminder,
+                ),
+                const SizedBox(height: 8),
                 ReadingTiles(
                   liveValues: {
                     for (final quantity in ReadingQuantity.values)
@@ -643,35 +640,6 @@ class _NativeStopBanner extends StatelessWidget {
   }
 }
 
-class _ChargeReminderBanner extends StatelessWidget {
-  const _ChargeReminderBanner({required this.onDismiss});
-
-  final VoidCallback onDismiss;
-
-  @override
-  Widget build(BuildContext context) {
-    return Material(
-      color: Theme.of(context).colorScheme.secondaryContainer,
-      borderRadius: BorderRadius.circular(12),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-        child: Row(
-          children: [
-            const Icon(Icons.notifications_active_outlined),
-            const SizedBox(width: 12),
-            const Expanded(child: Text('How\'s SoC and battery temp. doing?')),
-            IconButton(
-              onPressed: onDismiss,
-              icon: const Icon(Icons.close),
-              tooltip: 'Dismiss',
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
 /// Human-readable label for [DiscoveryUiState.activity].
 String _discoveryActivityText(DiscoveryUiState state) =>
     switch (state.activity) {
@@ -888,42 +856,83 @@ class _ScoutEventRow extends StatelessWidget {
   }
 }
 
-/// Lists the display values to read off now, each with why; the
-/// matching tiles are highlighted.
-class _ReadingPromptHint extends StatelessWidget {
-  const _ReadingPromptHint({required this.prompts});
+/// The readings section's title and, while recording, one line naming
+/// the display values to read off now, or the charging-round reminder in
+/// its place. The line keeps one height so the tiles below never move.
+class _ReadingsHeader extends StatelessWidget {
+  const _ReadingsHeader({
+    required this.recording,
+    required this.prompts,
+    required this.chargeReminder,
+    required this.onDismissReminder,
+  });
 
+  final bool recording;
   final List<ReadingPrompt> prompts;
+
+  /// Whether the charging-round reminder is due.
+  final bool chargeReminder;
+
+  final VoidCallback onDismissReminder;
 
   @override
   Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
-    return Material(
-      color: colorScheme.surfaceContainerHigh,
-      borderRadius: BorderRadius.circular(12),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Icon(Icons.visibility_outlined, color: colorScheme.primary),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
+    final colors = Theme.of(context).colorScheme;
+    final textTheme = Theme.of(context).textTheme;
+    final (icon, iconColor, text, textColor) = switch ((
+      chargeReminder,
+      prompts,
+    )) {
+      (true, _) => (
+        Icons.notifications_active_outlined,
+        colors.primary,
+        'Charging round: check SoC and battery temp.',
+        null,
+      ),
+      (false, []) => (
+        Icons.visibility_outlined,
+        colors.onSurfaceVariant,
+        'Nothing due right now',
+        colors.onSurfaceVariant,
+      ),
+      (false, _) => (
+        Icons.visibility_outlined,
+        colors.primary,
+        'Read now: '
+            '${prompts.map((prompt) => prompt.quantity.label).join(', ')}',
+        null,
+      ),
+    };
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('Readings', style: textTheme.titleMedium),
+        if (recording)
+          Semantics(
+            liveRegion: true,
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(minHeight: 48),
+              child: Row(
                 children: [
-                  Text(
-                    'Read off the display',
-                    style: Theme.of(context).textTheme.titleSmall,
+                  Icon(icon, size: 20, color: iconColor),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      text,
+                      style: textTheme.bodyMedium?.copyWith(color: textColor),
+                    ),
                   ),
-                  for (final prompt in prompts)
-                    Text('${prompt.quantity.label}: ${prompt.reason}'),
+                  if (chargeReminder)
+                    IconButton(
+                      onPressed: onDismissReminder,
+                      icon: const Icon(Icons.close),
+                      tooltip: 'Dismiss',
+                    ),
                 ],
               ),
             ),
-          ],
-        ),
-      ),
+          ),
+      ],
     );
   }
 }
