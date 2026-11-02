@@ -5,6 +5,12 @@ import '../capture/readings.dart';
 /// The driving/charging phase a [PhaseMarker] records.
 enum MarkerPhase { drive, charge, stand, park }
 
+/// The step of a guided before/after experiment an [ExperimentMarker]
+/// records: the "before" reads start, the owner is shown the action, the
+/// owner tapped "Done" and the "after" reads start, or the experiment was
+/// abandoned without its "after" reads.
+enum ExperimentStep { before, action, after, cancelled }
+
 /// A single, immutable entry in a session's marker log, and the exact JSON
 /// shape ([toJson]) the marker sidecar file (`<buffer>.markers.jsonl`)
 /// records it as — one object per line, parsed by another component, so
@@ -68,6 +74,32 @@ class EventMarker extends SessionMarker {
   Map<String, dynamic> toJson() => {
     'type': 'event',
     'label': label,
+    'at': at.toIso8601String(),
+  };
+}
+
+class ExperimentMarker extends SessionMarker {
+  const ExperimentMarker({
+    required this.at,
+    required this.id,
+    required this.step,
+  });
+
+  final DateTime at;
+
+  /// The experiment's stable catalog id.
+  final String id;
+
+  final ExperimentStep step;
+
+  @override
+  DateTime get timestamp => at;
+
+  @override
+  Map<String, dynamic> toJson() => {
+    'type': 'experiment',
+    'id': id,
+    'step': step.name,
     'at': at.toIso8601String(),
   };
 }
@@ -174,6 +206,11 @@ class SessionMarkerLog extends ChangeNotifier {
 
   void addEvent(String label) {
     _markers.add(EventMarker(at: _clock().toUtc(), label: label));
+    notifyListeners();
+  }
+
+  void addExperimentStep(String id, ExperimentStep step) {
+    _markers.add(ExperimentMarker(at: _clock().toUtc(), id: id, step: step));
     notifyListeners();
   }
 

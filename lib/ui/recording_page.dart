@@ -1236,6 +1236,10 @@ class _MarkerList extends StatelessWidget {
     PhaseMarker(phase: final phase) => (Icons.flag, _phaseLabel(phase)),
     NoteMarker(text: final text) => (Icons.sticky_note_2, text),
     EventMarker(label: final label) => (Icons.bolt, label),
+    ExperimentMarker(id: final id, step: final step) => (
+      Icons.science,
+      'Experiment $id: ${step.name}',
+    ),
     ReadingMarker(
       quantity: final quantity,
       value: final value,

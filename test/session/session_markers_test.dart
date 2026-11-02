@@ -86,6 +86,17 @@ void main() {
       expect((log.markers.single as EventMarker).label, 'climate on');
     });
 
+    test('addExperimentStep records an experiment marker', () {
+      final at = DateTime.utc(2026, 1, 1, 10);
+      final log = SessionMarkerLog(clock: () => at);
+      log.addExperimentStep('door-driver', ExperimentStep.after);
+
+      final marker = log.markers.single as ExperimentMarker;
+      expect(marker.id, 'door-driver');
+      expect(marker.step, ExperimentStep.after);
+      expect(marker.timestamp, at);
+    });
+
     test('addReading records read_at separately from saved_at', () {
       final savedAt = DateTime.utc(2026, 1, 1, 10, 5);
       final readAt = DateTime.utc(2026, 1, 1, 10, 0);
@@ -200,6 +211,27 @@ void main() {
         'label': 'climate on',
         'at': '2026-01-01T10:00:00.000Z',
       });
+    });
+
+    test('experiment marker', () {
+      for (final (step, wire) in [
+        (ExperimentStep.before, 'before'),
+        (ExperimentStep.action, 'action'),
+        (ExperimentStep.after, 'after'),
+        (ExperimentStep.cancelled, 'cancelled'),
+      ]) {
+        final marker = ExperimentMarker(
+          at: DateTime.utc(2026, 1, 1, 10, 0),
+          id: 'charge-flap-left',
+          step: step,
+        );
+        expect(marker.toJson(), {
+          'type': 'experiment',
+          'id': 'charge-flap-left',
+          'step': wire,
+          'at': '2026-01-01T10:00:00.000Z',
+        });
+      }
     });
 
     test('reading marker, every field present', () {
