@@ -15,6 +15,7 @@ import 'package:didscout_app/bridge/recording_controller.dart';
 import 'package:didscout_app/discovery/did_stability.dart';
 import 'package:didscout_app/discovery/discovery_state.dart';
 import 'package:didscout_app/discovery/discovery_ui_state.dart';
+import 'package:didscout_app/discovery/phase_focus.dart';
 import 'package:didscout_app/discovery/probe.dart';
 import 'package:didscout_app/session/session_markers.dart';
 import 'package:didscout_app/settings/app_settings.dart';
@@ -42,6 +43,7 @@ class _FakeNativeObdApi extends NativeObdApi {
   ObdStartRecordingRequest? lastStartRecordingRequest;
 
   final List<ObdStepMessage> enqueuedSteps = [];
+  final List<List<ObdStepMessage>> enqueuedBatches = [];
   BridgeReadExecutor? Function()? executorGetter;
   String? Function(ObdStepMessage step)? respondToOneShot;
 
@@ -93,6 +95,7 @@ class _FakeNativeObdApi extends NativeObdApi {
     List<ObdStepMessage> steps,
   ) async {
     enqueuedSteps.addAll(steps);
+    enqueuedBatches.add(steps);
     final respond = respondToOneShot;
     if (respond != null) {
       // Scheduled on the event queue (not a microtask) so it always runs
@@ -153,6 +156,28 @@ DiscoveryState _namedGatewayState() => DiscoveryState(
   },
 );
 
+/// A named 11-bit ECU as an inventory sweep stores it, with [discovered]
+/// DIDs.
+EcuInfo _namedEcu(
+  String request,
+  String response,
+  String name,
+  Set<String> discovered, {
+  Map<String, DidSampleStats>? sampleStats,
+}) => EcuInfo(
+  requestHeader: request,
+  responseHeader: response,
+  protocol: 6,
+  identification: {'F197': name},
+  discovered: discovered,
+  sampleStats: sampleStats,
+);
+
+/// Settings that keep discovery itself idle while the speed is unknown, so
+/// every one-shot read a test sees is a focus read.
+final AppSettings _focusOnlySettings = const AppSettings.defaultValues()
+    .copyWith(scoutWhileDriving: false);
+
 /// The `modules` entries of every `{"type":"modules",…}` line in the
 /// sidecar at [path], one list per line.
 List<List<dynamic>> _sidecarModulesLines(String path) => [
@@ -192,6 +217,7 @@ void main() {
       sessionIdFactory: () => 'fixed-session-id',
       tickInterval: const Duration(milliseconds: 500),
       discoveryPumpInterval: const Duration(milliseconds: 5),
+      focusSampleInterval: const Duration(milliseconds: 20),
       loadSettings: () async => settings,
       loadDiscoveryState: loadState,
       saveDiscoveryState: saveState,
@@ -586,5 +612,191 @@ void main() {
     expect(gateway.retryQueue, isNotEmpty);
 
     await controller.stop();
+  });
+
+  group('phase focus sampling', () {
+    test("reads the current phase's focus ECUs only, under the plan's "
+        'signal ids, leaving out stable DIDs', () async {
+      fakeNative.respondToOneShot = (_) => null;
+      persistedState = DiscoveryState(
+        ecus: {
+          'ecus11-74A': _namedEcu(
+            '74A',
+            '7B4',
+            'Door FL',
+            {'2A00', '2A01', '2A02', 'F187'},
+            sampleStats: {
+              '2A02': DidSampleStats(
+                lastPayloadHash: 1,
+                stableSamples: stableSampleCount,
+                stableRecordings: stableRecordingCount,
+              ),
+            },
+          ),
+          'ecus11-742': _namedEcu('742', '7AC', 'Thermal', {'2600'}),
+        },
+      );
+      final controller = makeController(settings: _focusOnlySettings);
+
+      await controller.start();
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      expect(fakeNative.enqueuedSteps, isEmpty, reason: 'no phase set yet');
+
+      controller.addPhase(MarkerPhase.stand);
+      expect(
+        controller.discoveryEngineForTesting!.focusRequestHeaders,
+        phaseFocusRequestHeaders[MarkerPhase.stand],
+      );
+      await waitFor(() => fakeNative.enqueuedBatches.isNotEmpty);
+      final standBatch = fakeNative.enqueuedBatches.first;
+      expect(
+        [for (final step in standBatch) step.signalId],
+        ['ecus11-74A_222a00', 'ecus11-74A_222a01'],
+      );
+      expect(
+        [for (final step in standBatch) step.command],
+        ['222A00', '222A01'],
+      );
+      final planSignalIds = {
+        for (final step in fakeNative.lastStartRecordingRequest!.plan.steps)
+          step.signalId,
+      };
+      expect(planSignalIds, containsAll(standBatch.map((s) => s.signalId)));
+
+      controller.addPhase(MarkerPhase.charge);
+      expect(
+        controller.discoveryEngineForTesting!.focusRequestHeaders,
+        phaseFocusRequestHeaders[MarkerPhase.charge],
+      );
+      final batchesBefore = fakeNative.enqueuedBatches.length;
+      await waitFor(() => fakeNative.enqueuedBatches.length > batchesBefore);
+      expect(
+        [for (final step in fakeNative.enqueuedBatches.last) step.signalId],
+        ['ecus11-742_222600'],
+      );
+      expect(
+        controller.scoutStatus?.lastResultSummary,
+        isNull,
+        reason: 'focus results never reach the discovery engine',
+      );
+
+      await controller.stop();
+    });
+
+    test('reads at most maxPhaseFocusReads per sample, rotating through '
+        'the rest', () async {
+      fakeNative.respondToOneShot = (_) => null;
+      final dids = [
+        for (var i = 0; i < maxPhaseFocusReads + 10; i++)
+          (0x2A00 + i).toRadixString(16).toUpperCase(),
+      ];
+      persistedState = DiscoveryState(
+        ecus: {'ecus11-74A': _namedEcu('74A', '7B4', 'Door FL', dids.toSet())},
+      );
+      final controller = makeController(settings: _focusOnlySettings);
+      controller.addPhase(MarkerPhase.park);
+
+      await controller.start();
+      await waitFor(() => fakeNative.enqueuedBatches.length >= 2);
+      await controller.stop();
+
+      List<String> commandsOf(List<ObdStepMessage> batch) => [
+        for (final step in batch) step.command.substring(2),
+      ];
+      expect(commandsOf(fakeNative.enqueuedBatches[0]), [
+        ...dids.take(maxPhaseFocusReads),
+      ]);
+      expect(commandsOf(fakeNative.enqueuedBatches[1]), [
+        ...dids.skip(maxPhaseFocusReads),
+        ...dids.take(maxPhaseFocusReads - 10),
+      ]);
+    });
+
+    test('skips a sample while the previous one is unanswered', () async {
+      // Never set up: no focus read is ever answered.
+      fakeNative.respondToOneShot = null;
+      persistedState = DiscoveryState(
+        ecus: {
+          'ecus11-74A': _namedEcu('74A', '7B4', 'Door FL', {'2A00'}),
+        },
+      );
+      final controller = makeController(settings: _focusOnlySettings);
+      controller.addPhase(MarkerPhase.stand);
+
+      await controller.start();
+      await waitFor(() => fakeNative.enqueuedBatches.isNotEmpty);
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+      await controller.stop();
+
+      expect(fakeNative.enqueuedBatches, hasLength(1));
+    });
+
+    test('never samples after stop', () async {
+      fakeNative.respondToOneShot = (_) => null;
+      persistedState = DiscoveryState(
+        ecus: {
+          'ecus11-74A': _namedEcu('74A', '7B4', 'Door FL', {'2A00'}),
+        },
+      );
+      final controller = makeController(settings: _focusOnlySettings);
+      controller.addPhase(MarkerPhase.stand);
+
+      await controller.start();
+      await waitFor(() => fakeNative.enqueuedBatches.length >= 2);
+      await controller.stop();
+      final batchesAtStop = fakeNative.enqueuedBatches.length;
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+
+      expect(fakeNative.enqueuedBatches, hasLength(batchesAtStop));
+    });
+
+    test(
+      'while moving, never reads an ECU the moving blocklist keeps out',
+      () async {
+        fakeNative.respondToOneShot = (_) => null;
+        persistedState = DiscoveryState(
+          ecus: {
+            'ecus11-74A': _namedEcu('74A', '7B4', 'Door FL', {'2A00'}),
+            'ecus11-74B': _namedEcu('74B', '7B5', 'Airbag', {'2A00'}),
+            // No F197 name: unknown, so blocked as well.
+            'ecus11-73E': EcuInfo(
+              requestHeader: '73E',
+              responseHeader: '7A8',
+              protocol: 6,
+              discovered: {'2A00'},
+            ),
+          },
+        );
+        final controller = makeController(settings: _focusOnlySettings);
+        controller.addPhase(MarkerPhase.stand);
+
+        await controller.start();
+        await waitFor(() => fakeNative.enqueuedBatches.length >= 2);
+        await controller.stop();
+
+        expect(
+          {for (final step in fakeNative.enqueuedSteps) step.signalId},
+          {'ecus11-74A_222a00'},
+        );
+      },
+    );
+
+    test('keepSamplingFoundDids off never samples', () async {
+      persistedState = DiscoveryState(
+        ecus: {
+          'ecus11-74A': _namedEcu('74A', '7B4', 'Door FL', {'2A00'}),
+        },
+      );
+      final controller = makeController(
+        settings: _focusOnlySettings.copyWith(keepSamplingFoundDids: false),
+      );
+      controller.addPhase(MarkerPhase.stand);
+
+      await controller.start();
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+      await controller.stop();
+
+      expect(fakeNative.enqueuedSteps, isEmpty);
+    });
   });
 }

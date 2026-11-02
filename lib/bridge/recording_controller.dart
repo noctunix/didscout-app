@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:math' show max;
+import 'dart:math' show max, min;
 
 import 'package:flutter/foundation.dart';
 import 'package:obdbridge/obdbridge.dart';
@@ -17,7 +17,9 @@ import '../discovery/discovery_plan.dart';
 import '../discovery/discovery_state.dart';
 import '../discovery/discovery_state_store.dart';
 import '../discovery/discovery_ui_state.dart';
-import '../discovery/probe.dart' show ProbeModule, signalIdFor;
+import '../discovery/phase_focus.dart';
+import '../discovery/probe.dart'
+    show ProbeModule, ProbeStep, ReadExecutorRejection, signalIdFor;
 import '../discovery/profile_export.dart';
 import '../discovery/scout_status.dart';
 import '../session/charge_reminder.dart';
@@ -238,6 +240,7 @@ class RecordingController extends ChangeNotifier {
     this._scanDurationMs = 8000,
     Duration tickInterval = const Duration(seconds: 5),
     this._discoveryPumpInterval = const Duration(seconds: 2),
+    this._focusSampleInterval = phaseFocusSampleInterval,
     Future<void> Function(List<ph.Permission>)? requestRuntimePermissions,
     Future<AppSettings> Function()? loadSettings,
     Future<DiscoveryState> Function()? loadDiscoveryState,
@@ -266,6 +269,7 @@ class RecordingController extends ChangeNotifier {
   final int _scanDurationMs;
   final Duration _tickInterval;
   final Duration _discoveryPumpInterval;
+  final Duration _focusSampleInterval;
   final Future<AppSettings> Function() _loadSettings;
   final Future<DiscoveryState> Function() _loadDiscoveryState;
   final Future<void> Function(DiscoveryState) _saveDiscoveryState;
@@ -279,6 +283,17 @@ class RecordingController extends ChangeNotifier {
   Timer? _discoveryTimer;
   int _sessionDiscoveryHits = 0;
   DiscoveryUiState? _discoveryUiState;
+  Timer? _focusTimer;
+
+  /// Signal ids of the last focus sample's reads still unanswered, until
+  /// [_focusDeadline] -- their results are claimed from the discovery
+  /// executor, never handed to the discovery engine.
+  final Set<String> _focusPending = {};
+  DateTime? _focusDeadline;
+
+  /// Where in the current phase's [phaseFocusReads] the next focus sample
+  /// starts.
+  int _focusCursor = 0;
 
   /// Snapshot for the recording page's "Scouting" card -- null whenever
   /// discovery isn't currently running (not recording, or "scout while
@@ -492,14 +507,19 @@ class RecordingController extends ChangeNotifier {
 
   /// Records a phase marker, mirroring [SessionMarkerLog.addPhase]; appended
   /// to the session's marker sidecar file once one exists. Entering or
-  /// leaving [MarkerPhase.charge] arms/disarms the charging-round reminder.
+  /// leaving [MarkerPhase.charge] arms/disarms the charging-round reminder;
+  /// [phase]'s focus ECUs replace the previous phase's in discovery and
+  /// focus sampling.
   void addPhase(MarkerPhase phase) {
     markers.addPhase(phase);
     _chargeReminder.phaseChanged(phase);
     if (phase != MarkerPhase.charge) {
       _chargeReminderVisible = false;
     }
-    _discoveryEngine?.handlePhaseChange();
+    _discoveryEngine
+      ?..handlePhaseChange()
+      ..focusRequestHeaders = _focusRequestHeaders;
+    _focusCursor = 0;
     unawaited(_appendLatestMarker());
   }
 
@@ -775,10 +795,10 @@ class RecordingController extends ChangeNotifier {
     _reconnectPollAttempts = 0;
   }
 
-  /// Starts the discovery engine for the recording that just started with
-  /// [plan], when [AppSettings.scoutWhileRecording] is on; a no-op
-  /// otherwise, and [discoveryUiState] then stays null for the whole
-  /// recording.
+  /// Starts the discovery engine and focus sampling ([_sampleFocus]) for
+  /// the recording that just started with [plan], when
+  /// [AppSettings.scoutWhileRecording] is on; a no-op otherwise, and
+  /// [discoveryUiState] then stays null for the whole recording.
   void _startDiscovery(DiscoveryState discoveryState, ObdPlanMessage plan) {
     if (!_settings.scoutWhileRecording) return;
     _discoveryState = discoveryState;
@@ -790,6 +810,7 @@ class RecordingController extends ChangeNotifier {
       _bridge,
       onAccepted: (modules) =>
           _recordOneShotModules(sidecarPath, sidecarModuleIds, modules),
+      claimResult: _focusPending.remove,
     );
     _discoveryExecutor = executor;
     ObdEventsApi.setUp(_DiscoveryEventsBridge(executor));
@@ -799,7 +820,7 @@ class RecordingController extends ChangeNotifier {
       state: discoveryState,
       onHit: (_, _, _) => _sessionDiscoveryHits++,
       batchSize: _settings.discoveryBatchSize,
-    );
+    )..focusRequestHeaders = _focusRequestHeaders;
     _discoveryEngine = engine;
     final stationary = _isStationary(_now());
     _discoveryUiState = buildDiscoveryUiState(
@@ -813,6 +834,68 @@ class RecordingController extends ChangeNotifier {
       _discoveryPumpInterval,
       (_) => unawaited(_pumpDiscovery()),
     );
+    _focusTimer = Timer.periodic(
+      _focusSampleInterval,
+      (_) => unawaited(_sampleFocus()),
+    );
+  }
+
+  /// Request headers of the current phase's focus ECUs; empty while no
+  /// phase is set.
+  Set<String> get _focusRequestHeaders =>
+      phaseFocusRequestHeaders[markers.currentPhase] ?? const {};
+
+  /// Queues the next [maxPhaseFocusReads] of the current phase's
+  /// [phaseFocusReads], continuing where the previous sample left off,
+  /// under the signal ids the plan's survey steps use for the same DIDs --
+  /// they add samples to the same signals. Skipped while the previous
+  /// sample's reads are unanswered, up to the deadline a discovery batch
+  /// that size would get, and while [AppSettings.keepSamplingFoundDids] is
+  /// off; a rejected batch is simply left to the next sample.
+  Future<void> _sampleFocus() async {
+    final executor = _discoveryExecutor;
+    final discoveryState = _discoveryState;
+    final now = _now();
+    if (executor == null ||
+        discoveryState == null ||
+        !_settings.keepSamplingFoundDids ||
+        (_focusPending.isNotEmpty && now.isBefore(_focusDeadline!))) {
+      return;
+    }
+    _focusPending.clear();
+    final reads = phaseFocusReads(
+      discoveryState,
+      _focusRequestHeaders,
+      stationary: _isStationary(now),
+      now: now,
+    );
+    final count = min(reads.length, maxPhaseFocusReads);
+    if (count == 0) return;
+    final modules = <String, ProbeModule>{};
+    final steps = <ProbeStep>[];
+    for (var i = 0; i < count; i++) {
+      final (:ecu, :did) = reads[(_focusCursor + i) % reads.length];
+      final moduleId = _effectiveModuleId(ecu.moduleId);
+      modules[moduleId] ??= ProbeModule(
+        id: moduleId,
+        requestHeader: ecu.requestHeader,
+        responseHeader: ecu.responseHeader,
+        protocol: ecu.protocol,
+      );
+      steps.add(
+        ProbeStep(signalId: signalIdFor(moduleId, '22$did'), command: '22$did'),
+      );
+    }
+    _focusPending.addAll(steps.map((step) => step.signalId));
+    _focusDeadline = now.add(
+      defaultBatchDeadlineBase + defaultBatchDeadlinePerStep * count,
+    );
+    _focusCursor = (_focusCursor + count) % reads.length;
+    try {
+      await executor.submit(modules.values.toList(), steps);
+    } on ReadExecutorRejection {
+      if (identical(_discoveryExecutor, executor)) _focusPending.clear();
+    }
   }
 
   /// Appends a `{"type":"modules",…}` line to the sidecar at [sidecarPath]
@@ -914,6 +997,10 @@ class RecordingController extends ChangeNotifier {
   Future<void> _teardownDiscovery() async {
     _discoveryTimer?.cancel();
     _discoveryTimer = null;
+    _focusTimer?.cancel();
+    _focusTimer = null;
+    _focusPending.clear();
+    _focusCursor = 0;
     final engine = _discoveryEngine;
     final discoveryState = _discoveryState;
     _discoveryEngine = null;
