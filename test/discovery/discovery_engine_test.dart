@@ -1838,6 +1838,37 @@ void main() {
 
       engine.dispose();
     });
+
+    test('the HV battery controller the VW/Audi inventory finds at 17FC007B '
+        'gets the battery-management ranges', () async {
+      final executor = FakeExecutor();
+      final state = DiscoveryState();
+      final engine = buildEngine(executor, state);
+      executor.respond = (step) => ProbeResult(
+        signalId: step.signalId,
+        status: moduleIdOf(step.signalId) == 'vag29-7B'
+            ? const ProbeOk()
+            : const ProbeNoData(),
+        at: now,
+      );
+
+      await engine.runVag29Inventory();
+      executor.submittedSteps.clear();
+      await engine.runDiscoveryBatch('vag29-7B', now);
+
+      expect(state.ecus['vag29-7B']!.discoverRanges, [
+        (0x1E00, 0x1EFF),
+        (0x1800, 0x18FF),
+        (0x2A00, 0x2AFF),
+        (0x0600, 0x06FF),
+      ]);
+      expect(
+        executor.submittedSteps.map((s) => s.command).toList(),
+        commandsFrom(0x1E00),
+      );
+
+      engine.dispose();
+    });
   });
 
   group('batchSize', () {
