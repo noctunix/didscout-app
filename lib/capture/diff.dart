@@ -98,7 +98,7 @@ List<DidDiff> computeDiff({
     );
     if (isNoisy) continue;
 
-    final changes = _diffBytes(beforeSample.payload, afterSample.payload);
+    final changes = diffBytes(beforeSample.payload, afterSample.payload);
     if (changes.isEmpty) continue;
 
     results.add(
@@ -189,7 +189,9 @@ bool _bytesEqual(Uint8List a, Uint8List b) {
   return true;
 }
 
-List<ByteDiff> _diffBytes(Uint8List before, Uint8List after) {
+/// The byte positions at which [before] and [after] differ, ascending,
+/// compared over the shorter payload's length.
+List<ByteDiff> diffBytes(Uint8List before, Uint8List after) {
   final changes = <ByteDiff>[];
   final length = before.length < after.length ? before.length : after.length;
   for (var i = 0; i < length; i++) {
