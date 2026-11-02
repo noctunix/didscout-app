@@ -53,6 +53,17 @@ extension ReadingQuantityWire on ReadingQuantity {
     ReadingQuantity.chargePowerMax => 'kW',
     ReadingQuantity.odometer => 'km',
   };
+
+  /// [unit] spelled out for screen readers.
+  String get spokenUnit => switch (this) {
+    ReadingQuantity.soc => 'percent',
+    ReadingQuantity.batteryTemp ||
+    ReadingQuantity.outsideTemp ||
+    ReadingQuantity.insideTemp => 'degrees Celsius',
+    ReadingQuantity.range || ReadingQuantity.odometer => 'kilometres',
+    ReadingQuantity.chargePower ||
+    ReadingQuantity.chargePowerMax => 'kilowatts',
+  };
 }
 
 /// Where a [ReadingMarker]'s value came from: the numeric keypad, the ±1

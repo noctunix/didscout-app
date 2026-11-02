@@ -108,4 +108,16 @@ void main() {
     expect(ReadingQuantity.chargePowerMax.wireName, 'charge_power_max');
     expect(ReadingQuantity.odometer.wireName, 'odometer');
   });
+
+  test('spokenUnit spells out each unit', () {
+    for (final quantity in ReadingQuantity.values) {
+      expect(quantity.spokenUnit, switch (quantity.unit) {
+        '%' => 'percent',
+        '°C' => 'degrees Celsius',
+        'km' => 'kilometres',
+        'kW' => 'kilowatts',
+        _ => fail('unexpected unit ${quantity.unit}'),
+      });
+    }
+  });
 }

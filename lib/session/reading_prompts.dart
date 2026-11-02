@@ -80,3 +80,15 @@ List<ReadingPrompt> readingPrompts({
       ?due(ReadingQuantity.chargePowerMax, chargePowerMaxPromptInterval),
   ];
 }
+
+/// How long a reading of [quantity] stays current in [phase]: as long as
+/// [readingPrompts] waits before asking for it again, and
+/// [batteryTempPromptInterval] for everything it does not ask for.
+Duration readingStaleAfter(ReadingQuantity quantity, MarkerPhase? phase) =>
+    switch (quantity) {
+      ReadingQuantity.chargePower || ReadingQuantity.soc
+          when phase == MarkerPhase.charge =>
+        chargingPromptInterval,
+      ReadingQuantity.chargePowerMax => chargePowerMaxPromptInterval,
+      _ => batteryTempPromptInterval,
+    };

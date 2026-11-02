@@ -184,9 +184,9 @@ class SessionMarkerLog extends ChangeNotifier {
     return null;
   }
 
-  /// The most recently added reading for [quantity], or null if none yet —
-  /// used to prefill a tile's entry sheet. With [maxAge], also null when
-  /// that reading was taken more than [maxAge] ago.
+  /// The most recently added reading for [quantity], or null if none yet.
+  /// With [maxAge], also null when that reading was taken more than
+  /// [maxAge] ago.
   num? lastValueFor(ReadingQuantity quantity, {Duration? maxAge}) {
     for (final marker in _markers.reversed) {
       if (marker is ReadingMarker && marker.quantity == quantity) {

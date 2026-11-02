@@ -17,7 +17,8 @@ num? _parseReading(String text) {
 }
 
 /// Opens the entry sheet for one reading of [quantity], its field
-/// prefilled with [prefill] (left empty when null).
+/// prefilled with [prefill] (left empty when null) and [contextLine]
+/// explaining where that value came from.
 ///
 /// Returns the saved value and where it came from: [ReadingSource.confirmed]
 /// when it equals [prefill], otherwise how the owner last changed it; null
@@ -26,20 +27,29 @@ Future<(num, ReadingSource)?> showReadingEntrySheet(
   BuildContext context, {
   required ReadingQuantity quantity,
   required num? prefill,
+  required String contextLine,
 }) => showModalBottomSheet<(num, ReadingSource)>(
   context: context,
   isScrollControlled: true,
   showDragHandle: true,
   useSafeArea: true,
-  builder: (context) =>
-      _ReadingEntrySheet(quantity: quantity, prefill: prefill),
+  builder: (context) => _ReadingEntrySheet(
+    quantity: quantity,
+    prefill: prefill,
+    contextLine: contextLine,
+  ),
 );
 
 class _ReadingEntrySheet extends StatefulWidget {
-  const _ReadingEntrySheet({required this.quantity, required this.prefill});
+  const _ReadingEntrySheet({
+    required this.quantity,
+    required this.prefill,
+    required this.contextLine,
+  });
 
   final ReadingQuantity quantity;
   final num? prefill;
+  final String contextLine;
 
   @override
   State<_ReadingEntrySheet> createState() => _ReadingEntrySheetState();
@@ -122,6 +132,13 @@ class _ReadingEntrySheetState extends State<_ReadingEntrySheet> {
             child: Text(
               widget.quantity.label,
               style: Theme.of(context).textTheme.titleLarge,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            widget.contextLine,
+            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
             ),
           ),
           const SizedBox(height: 16),

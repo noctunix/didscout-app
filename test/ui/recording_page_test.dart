@@ -218,6 +218,27 @@ void main() {
     );
   }
 
+  Future<void> openTile(WidgetTester tester, String label) async {
+    await tester.ensureVisible(find.text(label));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text(label));
+    await tester.pumpAndSettle();
+  }
+
+  bool labelled(WidgetTester tester, String label) => tester
+      .widgetList<Semantics>(find.byType(Semantics))
+      .any((widget) => widget.properties.label == label);
+
+  Color? valueColor(WidgetTester tester, String text) =>
+      (tester.widget<Text>(find.text(text)).textSpan! as TextSpan)
+          .children!
+          .first
+          .style!
+          .color;
+
+  ColorScheme colorsOf(WidgetTester tester) =>
+      Theme.of(tester.element(find.byType(RecordingPage))).colorScheme;
+
   testWidgets('start recording button is enabled while idle', (tester) async {
     await pumpPage(tester);
 
@@ -408,13 +429,6 @@ void main() {
       );
     });
 
-    Future<void> openTile(WidgetTester tester, String label) async {
-      await tester.ensureVisible(find.text(label));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text(label));
-      await tester.pumpAndSettle();
-    }
-
     FilledButton sheetButton(WidgetTester tester, String label) =>
         tester.widget<FilledButton>(find.widgetWithText(FilledButton, label));
 
@@ -429,6 +443,50 @@ void main() {
         source: ReadingSource.typed,
       );
     }
+
+    testWidgets('a tile shows the last entry with its age', (tester) async {
+      final controller = _fakeController();
+      addSoc(controller, 63);
+      controller
+        ..addReading(
+          quantity: ReadingQuantity.batteryTemp,
+          value: 13,
+          readAt: DateTime.now().subtract(const Duration(minutes: 12)),
+          source: ReadingSource.typed,
+        )
+        ..addReading(
+          quantity: ReadingQuantity.odometer,
+          value: 12345.6,
+          readAt: DateTime.now().subtract(const Duration(hours: 2)),
+          source: ReadingSource.typed,
+        );
+      await pumpPage(tester, controller: controller);
+
+      expect(find.text('63 %'), findsOneWidget);
+      expect(find.text('Just now'), findsOneWidget);
+      expect(
+        labelled(tester, 'State of charge, 63 percent, entered just now'),
+        isTrue,
+      );
+      expect(find.text('13 °C'), findsOneWidget);
+      expect(find.text('12 min ago'), findsOneWidget);
+      expect(valueColor(tester, '13 °C'), colorsOf(tester).onSurface);
+      expect(find.text('12345 km'), findsOneWidget);
+      expect(find.text('2 h ago'), findsOneWidget);
+
+      await openTile(tester, 'State of charge');
+      expect(find.text('Your last entry, just now'), findsOneWidget);
+    });
+
+    testWidgets('a tile without a value says it was not read', (tester) async {
+      await pumpPage(tester);
+
+      expect(find.text('Not read'), findsNWidgets(8));
+      expect(labelled(tester, 'Odometer, not read'), isTrue);
+
+      await openTile(tester, 'Inside temp.');
+      expect(find.text("Read the value off the car's display"), findsOneWidget);
+    });
 
     testWidgets('the last entry prefills the sheet and, saved unchanged, '
         'is recorded as confirmed', (tester) async {
@@ -554,21 +612,12 @@ void main() {
     });
   });
 
-  group('live info confirmation', () {
-    testWidgets('confirming a live value stores source confirmed with it', (
-      tester,
+  group('live values', () {
+    Future<void> startAndPoll(
+      WidgetTester tester,
+      RecordingController controller,
     ) async {
-      final fakeNative = _FakeNativeObdApi()
-        // Single-frame ISO-TP: 04 (SF, 4 bytes) 62 (positive 22) F446 (DID)
-        // 3C (60 decimal, minus the 40 degC UDS offset -> 20 degC).
-        ..outsideTempResponse = '${_module7ResponseHeader}0462F4463C'
-            .toUpperCase();
-      final controller = _fakeController(
-        fakeNative: fakeNative,
-        tickInterval: const Duration(milliseconds: 1),
-      );
       await pumpPage(tester, controller: controller);
-
       await _startRecording(tester, controller);
       // The tick timer was armed inside `runAsync` (see `_startRecording`),
       // so it runs on the real clock now, not the fake one `tester.pump`
@@ -577,49 +626,41 @@ void main() {
         () => Future<void>.delayed(const Duration(milliseconds: 20)),
       );
       await tester.pumpAndSettle();
+    }
 
-      expect(find.textContaining('outside temp.: 20'), findsOneWidget);
-      await tester.tap(find.widgetWithText(TextButton, 'Matches display'));
-      await tester.pumpAndSettle();
+    /// A controller whose vehicle reports [rawTemp] for outside temp.:
+    /// single-frame ISO-TP 04 (SF, 4 bytes) 62 (positive 22) F446 (DID),
+    /// then the raw byte, minus the 40 degC UDS offset.
+    RecordingController outsideTempController(String rawTemp) =>
+        _fakeController(
+          fakeNative: _FakeNativeObdApi()
+            ..outsideTempResponse = '${_module7ResponseHeader}0462F446$rawTemp',
+          tickInterval: const Duration(milliseconds: 1),
+        );
 
-      final marker = controller.markers.markers.single as ReadingMarker;
-      expect(marker.quantity, ReadingQuantity.outsideTemp);
-      expect(marker.source, ReadingSource.confirmed);
-      expect(marker.value, 20);
-      expect(marker.liveValue, 20);
-
-      await controller.stop();
-    });
-
-    testWidgets('the live value prefills the sheet ahead of the last '
-        'entry; changed, it is recorded as typed', (tester) async {
-      final fakeNative = _FakeNativeObdApi()
-        ..outsideTempResponse = '${_module7ResponseHeader}0462F4463C';
-      final controller = _fakeController(
-        fakeNative: fakeNative,
-        tickInterval: const Duration(milliseconds: 1),
-      );
+    testWidgets('the live value shows on its tile and prefills the sheet '
+        'ahead of the last entry; changed, it is recorded as typed', (
+      tester,
+    ) async {
+      // 0x3C = 60 -> 20 degC.
+      final controller = outsideTempController('3C');
       controller.addReading(
         quantity: ReadingQuantity.outsideTemp,
         value: 18,
         readAt: DateTime.now(),
         source: ReadingSource.typed,
       );
-      await pumpPage(tester, controller: controller);
-      await _startRecording(tester, controller);
-      await tester.runAsync(
-        () => Future<void>.delayed(const Duration(milliseconds: 20)),
+      await startAndPoll(tester, controller);
+
+      expect(find.text('20 °C'), findsOneWidget);
+      expect(find.text('Vehicle'), findsOneWidget);
+      expect(
+        labelled(tester, 'Outside temp., 20 degrees Celsius, from the vehicle'),
+        isTrue,
       );
-      await tester.pumpAndSettle();
 
-      Future<void> openOutsideTemp() async {
-        await tester.ensureVisible(find.text('Outside temp.'));
-        await tester.pumpAndSettle();
-        await tester.tap(find.text('Outside temp.'));
-        await tester.pumpAndSettle();
-      }
-
-      await openOutsideTemp();
+      await openTile(tester, 'Outside temp.');
+      expect(find.text('Vehicle reads 20 °C'), findsOneWidget);
       expect(
         tester.widget<TextField>(find.byType(TextField)).controller!.text,
         '20',
@@ -634,7 +675,7 @@ void main() {
       expect(confirmed.prefillOrigin, PrefillOrigin.live);
       expect(confirmed.liveValue, 20);
 
-      await openOutsideTemp();
+      await openTile(tester, 'Outside temp.');
       await tester.enterText(find.byType(TextField), '21');
       await tester.pump();
       await tester.tap(find.widgetWithText(FilledButton, 'Save'));
@@ -650,6 +691,23 @@ void main() {
       await controller.stop();
     });
 
+    testWidgets('a negative temperature is spoken with minus', (tester) async {
+      // 0x25 = 37 -> -3 degC.
+      final controller = outsideTempController('25');
+      await startAndPoll(tester, controller);
+
+      expect(find.text('-3 °C'), findsOneWidget);
+      expect(
+        labelled(
+          tester,
+          'Outside temp., minus 3 degrees Celsius, from the vehicle',
+        ),
+        isTrue,
+      );
+
+      await controller.stop();
+    });
+
     RecordingController storedEnergyController() => _fakeController(
       fakeNative: _FakeNativeObdApi()
         // Single-frame ISO-TP: 07 (SF, 7 bytes) 62 2AB8, then stored energy
@@ -657,18 +715,6 @@ void main() {
         ..storedEnergyResponse = '77A07622AB80000098B',
       tickInterval: const Duration(milliseconds: 1),
     );
-
-    Future<void> startAndPoll(
-      WidgetTester tester,
-      RecordingController controller,
-    ) async {
-      await pumpPage(tester, controller: controller);
-      await _startRecording(tester, controller);
-      await tester.runAsync(
-        () => Future<void>.delayed(const Duration(milliseconds: 20)),
-      );
-      await tester.pumpAndSettle();
-    }
 
     void addBatteryTemp(RecordingController controller, Duration age) {
       controller.addReading(
@@ -679,24 +725,40 @@ void main() {
       );
     }
 
-    testWidgets('the SoC estimate from stored energy can be confirmed', (
-      tester,
-    ) async {
+    testWidgets('the SoC tile shows the estimate from stored energy, which '
+        'the sheet explains and records as confirmed', (tester) async {
       final controller = storedEnergyController();
       await startAndPoll(tester, controller);
 
       // 61075 * 0.0010689 + 7.8526 = 73.136
+      expect(find.text('≈ 73 %'), findsOneWidget);
+      expect(find.text('Estimate'), findsOneWidget);
       expect(
-        find.text('Estimated SoC from stored energy: 73 %'),
+        labelled(
+          tester,
+          'State of charge, approximately 73 percent, '
+          'estimated from the vehicle',
+        ),
+        isTrue,
+      );
+
+      await openTile(tester, 'State of charge');
+      expect(
+        find.text(
+          'Vehicle estimate ≈ 73 % '
+          '(61\u202F075 Wh, no battery temp., up to ±3 pp)',
+        ),
         findsOneWidget,
       );
-      await tester.tap(find.widgetWithText(TextButton, 'Matches display'));
+      await tester.tap(find.widgetWithText(FilledButton, 'Matches display'));
       await tester.pumpAndSettle();
 
       final marker = controller.markers.markers.single as ReadingMarker;
       expect(marker.quantity, ReadingQuantity.soc);
       expect(marker.source, ReadingSource.confirmed);
       expect(marker.value, 73);
+      expect(marker.prefill, 73);
+      expect(marker.prefillOrigin, PrefillOrigin.live);
       expect(marker.liveValue, 73);
 
       await controller.stop();
@@ -710,45 +772,39 @@ void main() {
       await startAndPoll(tester, controller);
 
       // 61075 * 0.00108695 - 13 * 0.233182 + 10.9764 = 74.331
+      expect(find.text('≈ 74 %'), findsOneWidget);
+
+      await openTile(tester, 'State of charge');
       expect(
-        find.text('Estimated SoC from stored energy at 13 °C battery: 74 %'),
+        find.text(
+          'Vehicle estimate ≈ 74 % (61\u202F075 Wh, battery 13 °C, ±1 pp)',
+        ),
         findsOneWidget,
       );
-      await tester.tap(find.widgetWithText(TextButton, 'Matches display'));
-      await tester.pumpAndSettle();
-
-      final confirmed = controller.markers.markers.last as ReadingMarker;
-      expect(confirmed.quantity, ReadingQuantity.soc);
-      expect(confirmed.value, 74);
-      expect(confirmed.liveValue, 74);
-
-      await tester.tap(find.text('State of charge'));
-      await tester.pumpAndSettle();
       await tester.tap(find.widgetWithText(FilledButton, 'Matches display'));
       await tester.pumpAndSettle();
 
       final entered = controller.markers.markers.last as ReadingMarker;
-      expect(entered.source, ReadingSource.confirmed);
-      expect(entered.prefill, 74);
-      expect(entered.prefillOrigin, PrefillOrigin.live);
+      expect(entered.quantity, ReadingQuantity.soc);
+      expect(entered.value, 74);
       expect(entered.liveValue, 74);
 
       await controller.stop();
     });
 
-    testWidgets('a battery temp. reading older than 20 min is ignored', (
-      tester,
-    ) async {
+    testWidgets('a battery temp. reading older than 20 min is ignored and '
+        'shown as stale', (tester) async {
       final controller = storedEnergyController();
       addBatteryTemp(controller, const Duration(minutes: 21));
       await startAndPoll(tester, controller);
 
       // 61075 * 0.0010689 + 7.8526 = 73.136 -- the energy-only fit.
-      expect(
-        find.text('Estimated SoC from stored energy: 73 %'),
-        findsOneWidget,
-      );
-      expect(find.textContaining('°C battery'), findsNothing);
+      expect(find.text('≈ 73 %'), findsOneWidget);
+      expect(find.text('21 min ago'), findsOneWidget);
+      expect(valueColor(tester, '13 °C'), colorsOf(tester).onSurfaceVariant);
+
+      await openTile(tester, 'State of charge');
+      expect(find.textContaining('no battery temp.'), findsOneWidget);
 
       await controller.stop();
     });
@@ -909,18 +965,11 @@ void main() {
   });
 
   group('reading prompts', () {
-    bool tileLabelled(WidgetTester tester, String label) => tester
-        .widgetList<Semantics>(find.byType(Semantics))
-        .any((widget) => widget.properties.label == label);
-
     testWidgets('none while not recording', (tester) async {
       await pumpPage(tester);
 
       expect(find.text('Read off the display'), findsNothing);
-      expect(
-        tileLabelled(tester, 'Battery temp., reading due, enter reading'),
-        isFalse,
-      );
+      expect(labelled(tester, 'Battery temp., not read'), isTrue);
     });
 
     testWidgets('list what to read off and highlight those tiles until '
@@ -935,11 +984,8 @@ void main() {
       expect(find.text('Battery temp.: Not read yet'), findsOneWidget);
       expect(find.text('Charging power (now): Not read yet'), findsOneWidget);
       expect(find.text('State of charge: Not read yet'), findsOneWidget);
-      expect(
-        tileLabelled(tester, 'Battery temp., reading due, enter reading'),
-        isTrue,
-      );
-      expect(tileLabelled(tester, 'Odometer, enter reading'), isTrue);
+      expect(labelled(tester, 'Battery temp., not read, reading due'), isTrue);
+      expect(labelled(tester, 'Odometer, not read'), isTrue);
 
       await tester.ensureVisible(find.text('Battery temp.'));
       await tester.pumpAndSettle();
@@ -951,7 +997,10 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.text('Battery temp.: Not read yet'), findsNothing);
-      expect(tileLabelled(tester, 'Battery temp., enter reading'), isTrue);
+      expect(
+        labelled(tester, 'Battery temp., 20 degrees Celsius, entered just now'),
+        isTrue,
+      );
       expect(find.text('State of charge: Not read yet'), findsOneWidget);
 
       await controller.stop();

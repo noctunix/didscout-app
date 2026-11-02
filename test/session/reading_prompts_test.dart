@@ -210,4 +210,48 @@ void main() {
       ReadingQuantity.chargePowerMax,
     ]);
   });
+
+  group('readingStaleAfter', () {
+    test('charging power and SoC go stale after 5 min while charging', () {
+      for (final quantity in [
+        ReadingQuantity.chargePower,
+        ReadingQuantity.soc,
+      ]) {
+        expect(
+          readingStaleAfter(quantity, MarkerPhase.charge),
+          const Duration(minutes: 5),
+        );
+        expect(
+          readingStaleAfter(quantity, MarkerPhase.drive),
+          const Duration(minutes: 15),
+        );
+      }
+    });
+
+    test('max. charging power goes stale after 60 min in any phase', () {
+      for (final phase in [null, ...MarkerPhase.values]) {
+        expect(
+          readingStaleAfter(ReadingQuantity.chargePowerMax, phase),
+          const Duration(minutes: 60),
+        );
+      }
+    });
+
+    test('everything else goes stale after 15 min in any phase', () {
+      for (final quantity in [
+        ReadingQuantity.batteryTemp,
+        ReadingQuantity.outsideTemp,
+        ReadingQuantity.insideTemp,
+        ReadingQuantity.range,
+        ReadingQuantity.odometer,
+      ]) {
+        for (final phase in [null, ...MarkerPhase.values]) {
+          expect(
+            readingStaleAfter(quantity, phase),
+            const Duration(minutes: 15),
+          );
+        }
+      }
+    });
+  });
 }

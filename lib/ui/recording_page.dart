@@ -15,6 +15,7 @@ import '../session/reading_prompts.dart';
 import '../session/session_markers.dart';
 import 'experiment_card.dart';
 import 'reading_entry_sheet.dart';
+import 'reading_tiles.dart';
 import 'recordings_page.dart';
 import 'settings_page.dart';
 
@@ -29,29 +30,17 @@ Future<void> _shareFiles(List<String> paths) async {
 /// The default [RecordingPage.onReminderVibration]: a short haptic buzz.
 Future<void> _vibrate() => HapticFeedback.vibrate();
 
-/// Every reading tile shown on the page, in display order.
-const List<ReadingQuantity> _tileQuantities = [
-  ReadingQuantity.soc,
-  ReadingQuantity.batteryTemp,
-  ReadingQuantity.outsideTemp,
-  ReadingQuantity.insideTemp,
-  ReadingQuantity.range,
-  ReadingQuantity.chargePower,
-  ReadingQuantity.chargePowerMax,
-  ReadingQuantity.odometer,
-];
-
 /// How old the owner's last battery temp. reading may be to still feed the
 /// SoC estimate: battery temperature moves by over 15 K within an hour of
 /// driving plus fast charging.
 const Duration _batteryTempMaxAge = Duration(minutes: 20);
 
 /// The main (and currently only) screen: adapter connection/recording
-/// status, phase buttons, guided experiments, the reading tile grid (with
-/// a bottom-sheet entry per tile, and the readings due now highlighted),
-/// live vehicle info with one-tap confirmation, a free-text note and event
-/// quick entry, the session's marker log, and start/stop/share controls
-/// for the recording itself.
+/// status, phase buttons, guided experiments, the reading tiles (each
+/// showing the vehicle's live value or the last entry, with a bottom-sheet
+/// entry per tile, and the readings due now highlighted), a free-text note
+/// and event quick entry, the session's marker log, and start/stop/share
+/// controls for the recording itself.
 class RecordingPage extends StatefulWidget {
   RecordingPage({
     super.key,
@@ -88,9 +77,16 @@ class _RecordingPageState extends State<RecordingPage> {
   bool _lastReminderVisible = false;
   PowerRecordingCoordinator? _powerCoordinator;
 
+  // Keeps the tiles' entry ages current; while recording, every live poll
+  // rebuilds the page anyway.
+  late final Timer _ageTicker;
+
   @override
   void initState() {
     super.initState();
+    _ageTicker = Timer.periodic(const Duration(seconds: 30), (_) {
+      if (_controller.phase != RecordingPhase.recording) setState(() {});
+    });
     final powerMonitor = widget.powerMonitor;
     if (powerMonitor != null) {
       _powerCoordinator = PowerRecordingCoordinator(
@@ -102,6 +98,7 @@ class _RecordingPageState extends State<RecordingPage> {
 
   @override
   void dispose() {
+    _ageTicker.cancel();
     _powerCoordinator?.dispose();
     _controller.dispose();
     super.dispose();
@@ -145,23 +142,64 @@ class _RecordingPageState extends State<RecordingPage> {
     maxAge: _batteryTempMaxAge,
   );
 
+  /// Each quantity's most recent reading.
+  Map<ReadingQuantity, ReadingMarker> get _lastReadings => {
+    for (final marker in _controller.markers.markers)
+      if (marker is ReadingMarker) marker.quantity: marker,
+  };
+
+  /// The sheet's line explaining what its field was prefilled with.
+  String _prefillContext({
+    required ReadingQuantity quantity,
+    required num? liveValue,
+    required num? batteryTempC,
+    required ReadingMarker? lastEntry,
+    required DateTime now,
+  }) {
+    final storedEnergyWh = _controller.liveInfo.storedEnergyWh;
+    if (liveValue != null &&
+        quantity == ReadingQuantity.soc &&
+        storedEnergyWh != null) {
+      final accuracy = batteryTempC == null
+          ? 'no battery temp., up to ±3 pp'
+          : 'battery ${formatReadingValue(batteryTempC)} °C, ±1 pp';
+      return 'Vehicle estimate ≈ ${formatReadingValue(liveValue)} % '
+          '(${_groupThousands(storedEnergyWh)} Wh, $accuracy)';
+    }
+    if (liveValue != null) {
+      return 'Vehicle reads ${formatReadingValue(liveValue)} ${quantity.unit}';
+    }
+    if (lastEntry != null) {
+      return 'Your last entry, ${describeAge(now.difference(lastEntry.readAt))}';
+    }
+    return "Read the value off the car's display";
+  }
+
   Future<void> _openTileSheet(ReadingQuantity quantity) async {
     final readAt = DateTime.now();
+    final batteryTempC = _recentBatteryTempC;
     final liveValue = _liveValueFor(
       quantity,
       _controller.liveInfo,
-      _recentBatteryTempC,
+      batteryTempC,
     );
-    final lastEntry = _controller.markers.lastValueFor(quantity);
+    final lastEntry = _lastReadings[quantity];
     final (num? prefill, PrefillOrigin? prefillOrigin) = liveValue != null
         ? (liveValue, PrefillOrigin.live)
         : lastEntry != null
-        ? (lastEntry, PrefillOrigin.entry)
+        ? (lastEntry.value, PrefillOrigin.entry)
         : (null, null);
     final result = await showReadingEntrySheet(
       context,
       quantity: quantity,
       prefill: prefill,
+      contextLine: _prefillContext(
+        quantity: quantity,
+        liveValue: liveValue,
+        batteryTempC: batteryTempC,
+        lastEntry: lastEntry,
+        now: readAt,
+      ),
     );
     if (result == null) return;
     final (value, source) = result;
@@ -176,27 +214,19 @@ class _RecordingPageState extends State<RecordingPage> {
     );
   }
 
-  Future<void> _confirmLive(ReadingQuantity quantity, num liveValue) async {
-    _controller.addReading(
-      quantity: quantity,
-      value: liveValue,
-      readAt: DateTime.now(),
-      source: ReadingSource.confirmed,
-      liveValue: liveValue,
-    );
-  }
-
   /// The display values to read off now; none while not recording.
-  List<ReadingPrompt> get _readingPrompts {
+  List<ReadingPrompt> _readingPrompts(
+    Map<ReadingQuantity, ReadingMarker> lastReadings,
+    DateTime now,
+  ) {
     if (_controller.phase != RecordingPhase.recording) return const [];
     return readingPrompts(
       phase: _controller.markers.currentPhase,
       stationary: _controller.isStationary,
-      now: DateTime.now(),
-      lastReadAt: {
-        for (final marker in _controller.markers.markers)
-          if (marker is ReadingMarker) marker.quantity: marker.readAt,
-      },
+      now: now,
+      lastReadAt: lastReadings.map(
+        (quantity, marker) => MapEntry(quantity, marker.readAt),
+      ),
     );
   }
 
@@ -258,7 +288,10 @@ class _RecordingPageState extends State<RecordingPage> {
             });
           }
           _lastReminderVisible = reminderVisible;
-          final prompts = _readingPrompts;
+          final now = DateTime.now();
+          final lastReadings = _lastReadings;
+          final batteryTempC = _recentBatteryTempC;
+          final prompts = _readingPrompts(lastReadings, now);
           return SafeArea(
             child: ListView(
               padding: const EdgeInsets.all(16),
@@ -295,19 +328,24 @@ class _RecordingPageState extends State<RecordingPage> {
                     onEnterReading: _openTileSheet,
                   ),
                 ],
-                const SizedBox(height: 16),
-                _LiveInfoCard(
-                  liveInfo: _controller.liveInfo,
-                  batteryTempC: _recentBatteryTempC,
-                  onConfirm: _confirmLive,
-                ),
                 if (prompts.isNotEmpty) ...[
                   const SizedBox(height: 16),
                   _ReadingPromptHint(prompts: prompts),
                 ],
                 const SizedBox(height: 16),
-                _ReadingTileGrid(
+                ReadingTiles(
+                  liveValues: {
+                    for (final quantity in ReadingQuantity.values)
+                      quantity: ?_liveValueFor(
+                        quantity,
+                        _controller.liveInfo,
+                        batteryTempC,
+                      ),
+                  },
+                  lastEntries: lastReadings,
+                  phase: _controller.markers.currentPhase,
                   due: {for (final prompt in prompts) prompt.quantity},
+                  now: now,
                   onTap: _openTileSheet,
                 ),
                 const SizedBox(height: 16),
@@ -351,6 +389,11 @@ class _RecordingPageState extends State<RecordingPage> {
     );
   }
 }
+
+/// [value] with its thousands separated by narrow no-break spaces, e.g.
+/// `52 375`.
+String _groupThousands(int value) =>
+    '$value'.replaceAllMapped(RegExp(r'\B(?=(\d{3})+$)'), (_) => '\u202F');
 
 num? _liveValueFor(
   ReadingQuantity quantity,
@@ -845,110 +888,6 @@ class _ScoutEventRow extends StatelessWidget {
   }
 }
 
-class _LiveInfoCard extends StatelessWidget {
-  const _LiveInfoCard({
-    required this.liveInfo,
-    required this.batteryTempC,
-    required this.onConfirm,
-  });
-
-  final LiveVehicleInfo liveInfo;
-
-  /// The owner's own recent battery temp. reading, if any, for the SoC
-  /// estimate.
-  final num? batteryTempC;
-
-  final Future<void> Function(ReadingQuantity quantity, num liveValue)
-  onConfirm;
-
-  @override
-  Widget build(BuildContext context) {
-    if (!liveInfo.hasAnyValue) {
-      return const SizedBox.shrink();
-    }
-    final rows = <Widget>[];
-    if (liveInfo.storedEnergyWh != null) {
-      rows.add(
-        _LiveInfoRow(
-          text: 'Vehicle shows stored energy: ${liveInfo.storedEnergyWh} Wh',
-        ),
-      );
-    }
-    final socEstimate = liveInfo.socEstimatePercent(batteryTempC: batteryTempC);
-    if (socEstimate != null) {
-      final atTemp = batteryTempC == null ? '' : ' at $batteryTempC °C battery';
-      rows.add(
-        _LiveInfoRow(
-          text: 'Estimated SoC from stored energy$atTemp: $socEstimate %',
-          onConfirm: () => onConfirm(ReadingQuantity.soc, socEstimate),
-        ),
-      );
-    }
-    if (liveInfo.outsideTempC != null) {
-      rows.add(
-        _LiveInfoRow(
-          text: 'Vehicle shows outside temp.: ${liveInfo.outsideTempC} °C',
-          onConfirm: () =>
-              onConfirm(ReadingQuantity.outsideTemp, liveInfo.outsideTempC!),
-        ),
-      );
-    }
-    if (liveInfo.rangeKm != null) {
-      rows.add(
-        _LiveInfoRow(
-          text: 'Vehicle shows range: ${liveInfo.rangeKm} km',
-          onConfirm: () => onConfirm(ReadingQuantity.range, liveInfo.rangeKm!),
-        ),
-      );
-    }
-    if (liveInfo.odometerKm != null) {
-      rows.add(
-        _LiveInfoRow(
-          text: 'Vehicle shows odometer: ${liveInfo.odometerKm} km',
-          onConfirm: () =>
-              onConfirm(ReadingQuantity.odometer, liveInfo.odometerKm!),
-        ),
-      );
-    }
-    if (rows.isEmpty) {
-      return const SizedBox.shrink();
-    }
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: rows,
-        ),
-      ),
-    );
-  }
-}
-
-class _LiveInfoRow extends StatelessWidget {
-  const _LiveInfoRow({required this.text, this.onConfirm});
-
-  final String text;
-  final VoidCallback? onConfirm;
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 6),
-      child: Row(
-        children: [
-          Expanded(child: Text(text)),
-          if (onConfirm != null)
-            TextButton(
-              onPressed: onConfirm,
-              child: const Text('Matches display'),
-            ),
-        ],
-      ),
-    );
-  }
-}
-
 /// Lists the display values to read off now, each with why; the
 /// matching tiles are highlighted.
 class _ReadingPromptHint extends StatelessWidget {
@@ -983,79 +922,6 @@ class _ReadingPromptHint extends StatelessWidget {
               ),
             ),
           ],
-        ),
-      ),
-    );
-  }
-}
-
-class _ReadingTileGrid extends StatelessWidget {
-  const _ReadingTileGrid({required this.due, required this.onTap});
-
-  /// The quantities a [ReadingPrompt] asks for now.
-  final Set<ReadingQuantity> due;
-
-  final void Function(ReadingQuantity quantity) onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return GridView.count(
-      crossAxisCount: 2,
-      shrinkWrap: true,
-      physics: const NeverScrollableScrollPhysics(),
-      mainAxisSpacing: 12,
-      crossAxisSpacing: 12,
-      childAspectRatio: 1.6,
-      children: [
-        for (final quantity in _tileQuantities)
-          _ReadingTile(
-            quantity: quantity,
-            due: due.contains(quantity),
-            onTap: () => onTap(quantity),
-          ),
-      ],
-    );
-  }
-}
-
-class _ReadingTile extends StatelessWidget {
-  const _ReadingTile({
-    required this.quantity,
-    required this.due,
-    required this.onTap,
-  });
-
-  final ReadingQuantity quantity;
-  final bool due;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return Semantics(
-      label: due
-          ? '${quantity.label}, reading due, enter reading'
-          : '${quantity.label}, enter reading',
-      button: true,
-      child: SizedBox(
-        height: 72,
-        child: FilledButton.tonal(
-          onPressed: onTap,
-          style: due
-              ? FilledButton.styleFrom(
-                  side: BorderSide(
-                    color: Theme.of(context).colorScheme.primary,
-                    width: 2,
-                  ),
-                )
-              : null,
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Text(quantity.label, textAlign: TextAlign.center),
-              const SizedBox(height: 4),
-              Text(quantity.unit, style: Theme.of(context).textTheme.bodySmall),
-            ],
-          ),
         ),
       ),
     );
