@@ -1233,6 +1233,60 @@ void main() {
 
       engine.dispose();
     });
+
+    test('a focus ECU gets a batch every round; without a focus it waits its '
+        'turn in the rotation', () async {
+      Future<Map<String, int>> positionsAfterThreeRounds(
+        Set<String> focus,
+      ) async {
+        final executor = FakeExecutor();
+        final state = DiscoveryState(
+          inventoryStagesDone: {'ecus11', 'ecus29', 'vag29'},
+        );
+        final ids = [for (var i = 0; i < 6; i++) 'ecu$i'];
+        for (var i = 0; i < ids.length; i++) {
+          state.ecus[ids[i]] = EcuInfo(requestHeader: 'H$i', protocol: 6);
+        }
+        // Last in key order and without discover ranges, so plain
+        // rotation would reach it only in the fourth round.
+        state.ecus['focus'] = EcuInfo(requestHeader: '7A1', protocol: 6);
+        final engine = DiscoveryEngine(
+          executor: executor,
+          state: state,
+          onHit: (_, _, _) {},
+          // 2 ECUs' worth (16 DIDs each) per round.
+          maxQueueDepth: 32,
+        )..focusRequestHeaders = focus;
+        state.ecus.removeWhere((id, _) => id != 'focus' && !ids.contains(id));
+        executor.respond = (step) => ProbeResult(
+          signalId: step.signalId,
+          status: const ProbeOk(),
+          at: now,
+        );
+        for (var round = 0; round < 3; round++) {
+          await engine.pump(stationary: true, now: now);
+        }
+        engine.dispose();
+        return {
+          for (final entry in state.ecus.entries)
+            entry.key: entry.value.scanPosition,
+        };
+      }
+
+      expect(await positionsAfterThreeRounds({'7A1'}), {
+        'ecu0': 16,
+        'ecu1': 16,
+        'ecu2': 16,
+        'ecu3': 0,
+        'ecu4': 0,
+        'ecu5': 0,
+        'focus': 48,
+      });
+      expect(await positionsAfterThreeRounds(const {}), {
+        for (var i = 0; i < 6; i++) 'ecu$i': 16,
+        'focus': 0,
+      });
+    });
   });
 
   group('scanProgress', () {

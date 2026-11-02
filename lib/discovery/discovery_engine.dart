@@ -206,6 +206,11 @@ class DiscoveryEngine {
   /// instance (see [_suspended]).
   bool get suspended => _suspended;
 
+  /// Request headers of the ECUs [pump] gives a batch every round, after
+  /// those with targeted discover ranges left -- the current vehicle
+  /// phase's focus ECUs; empty while no phase is set.
+  Set<String> focusRequestHeaders = const {};
+
   String? _lastResultSummary;
   final List<DateTime> _recentReads = [];
   final List<ScoutEvent> _events = [];
@@ -951,7 +956,8 @@ class DiscoveryEngine {
   /// [EcuInfo.discoverRanges] gets a batch in every round, ahead of the
   /// rest: those ranges are where its useful DIDs are expected, and a
   /// plain rotation over a few dozen ECUs would reach each of them only
-  /// once every few rounds.
+  /// once every few rounds. Every eligible ECU in [focusRequestHeaders]
+  /// follows next, also every round, as far as the round has room.
   ///
   /// The remaining room is filled starting from just after wherever the
   /// previous round left off ([_roundRobinCursor]) rather than always from
@@ -985,15 +991,21 @@ class DiscoveryEngine {
     final round = <String>[];
     bool roundFull() => round.length * batchSize >= maxQueueDepth;
 
-    for (final ecuId in keys) {
-      if (roundFull()) {
-        break;
-      }
-      if (_hasProfileRangeWork(ecuId, state.ecus[ecuId]!) &&
-          _scannable(ecuId, stationary: stationary, now: now)) {
-        round.add(ecuId);
+    void addPreferred(bool Function(String ecuId, EcuInfo ecu) preferred) {
+      for (final ecuId in keys) {
+        if (roundFull()) {
+          return;
+        }
+        if (!round.contains(ecuId) &&
+            preferred(ecuId, state.ecus[ecuId]!) &&
+            _scannable(ecuId, stationary: stationary, now: now)) {
+          round.add(ecuId);
+        }
       }
     }
+
+    addPreferred(_hasProfileRangeWork);
+    addPreferred((_, ecu) => focusRequestHeaders.contains(ecu.requestHeader));
     var considered = 0;
     while (considered < keys.length && !roundFull()) {
       final ecuId = keys[(_roundRobinCursor + considered) % keys.length];
