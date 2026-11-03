@@ -20,7 +20,7 @@ void main() {
 
   test('save then load round trips the full settings', () async {
     const settings = AppSettings(
-      readTimeoutMs: 2500,
+      readTimeoutMs: 7500,
       reconnectBackoffMinS: 3,
       reconnectBackoffMaxS: 45,
       neverGiveUpReconnecting: false,

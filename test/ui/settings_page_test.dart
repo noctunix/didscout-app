@@ -31,7 +31,7 @@ void main() {
   testWidgets('shows the persisted defaults once loaded', (tester) async {
     await pumpPage(tester);
 
-    expect(find.text('2000 ms'), findsOneWidget);
+    expect(find.text('6000 ms'), findsOneWidget);
     expect(find.text('8'), findsOneWidget);
     expect(find.text('3 min'), findsOneWidget);
   });
@@ -151,8 +151,8 @@ void main() {
     await tester.tap(find.byTooltip('Reset to defaults'));
     await tester.pumpAndSettle();
 
-    expect(find.text('2000 ms'), findsOneWidget);
+    expect(find.text('6000 ms'), findsOneWidget);
     final saved = await const SettingsRepository().load();
-    expect(saved.readTimeoutMs, 2000);
+    expect(saved.readTimeoutMs, 6000);
   });
 }

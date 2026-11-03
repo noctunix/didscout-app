@@ -712,7 +712,7 @@ void main() {
 
   group('settings applied at start', () {
     const customSettings = AppSettings(
-      readTimeoutMs: 3000,
+      readTimeoutMs: 7000,
       reconnectBackoffMinS: 5,
       reconnectBackoffMaxS: 90,
       neverGiveUpReconnecting: false,
@@ -747,8 +747,8 @@ void main() {
       await controller.start();
 
       final limits = fakeNative.lastStartRecordingRequest!.plan.limits;
-      expect(limits.adapterStepDeadlineMs, 3000);
-      expect(limits.vehicleReadDeadlineMs, 3000);
+      expect(limits.adapterStepDeadlineMs, 7000);
+      expect(limits.vehicleReadDeadlineMs, 7000);
       expect(limits.reconnectBackoffMinMs, 5000);
       expect(limits.reconnectBackoffMaxMs, 90000);
       expect(limits.maxReconnectAttemptsPerGap, 7);

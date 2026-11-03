@@ -1,3 +1,5 @@
+import 'dart:math';
+
 /// [AppSettings.maxReadsPerSecond] value meaning "no throttling" — the
 /// native poller clamps its per-read spacing to
 /// `1000 ~/ maxReadsPerSecond` ms (see `CxPoller.minGlobalIntervalMs`),
@@ -6,6 +8,12 @@
 /// rather than just "very fast". `0` is not usable for this: the poller
 /// clamps it to a floor of 1 read/s, the opposite of unlimited.
 const int unlimitedMaxReadsPerSecond = 1000;
+
+/// Lowest [AppSettings.readTimeoutMs]. An ECU that answers NRC `0x78`
+/// (responsePending) may take up to 5 s for its real answer (ISO 14229-2
+/// P2*server_max); a shorter deadline turns that into a timeout, which
+/// ends the whole session. The extra second covers the BLE round trip.
+const int minReadTimeoutMs = 6000;
 
 /// What a recurring recording plan reads beyond the speed, energy, range,
 /// odometer, outside temperature and candidate signals every plan carries.
@@ -49,7 +57,7 @@ class AppSettings {
   });
 
   const AppSettings.defaultValues()
-    : readTimeoutMs = 2000,
+    : readTimeoutMs = minReadTimeoutMs,
       reconnectBackoffMinS = 2,
       reconnectBackoffMaxS = 60,
       neverGiveUpReconnecting = true,
@@ -69,7 +77,8 @@ class AppSettings {
       adapterResponseTimeoutMs = null;
 
   /// Timeout per request, applied to both
-  /// `ObdLimitsMessage.adapterStepDeadlineMs` and `.vehicleReadDeadlineMs`.
+  /// `ObdLimitsMessage.adapterStepDeadlineMs` and `.vehicleReadDeadlineMs`;
+  /// a persisted value below [minReadTimeoutMs] loads as that minimum.
   final int readTimeoutMs;
   final int reconnectBackoffMinS;
   final int reconnectBackoffMaxS;
@@ -235,7 +244,10 @@ class AppSettings {
   factory AppSettings.fromJson(Map<String, dynamic> json) {
     const d = AppSettings.defaultValues();
     return AppSettings(
-      readTimeoutMs: json['readTimeoutMs'] as int? ?? d.readTimeoutMs,
+      readTimeoutMs: max(
+        json['readTimeoutMs'] as int? ?? d.readTimeoutMs,
+        minReadTimeoutMs,
+      ),
       reconnectBackoffMinS:
           json['reconnectBackoffMinS'] as int? ?? d.reconnectBackoffMinS,
       reconnectBackoffMaxS:

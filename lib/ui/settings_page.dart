@@ -98,9 +98,9 @@ class _SettingsPageState extends State<SettingsPage> {
                 _IntSliderSetting(
                   label: 'Read timeout per request',
                   value: settings.readTimeoutMs,
-                  min: 500,
-                  max: 10000,
-                  divisions: 19,
+                  min: minReadTimeoutMs,
+                  max: 15000,
+                  divisions: 18,
                   formatValue: (v) => '$v ms',
                   onChanged: (v) =>
                       _update((s) => s.copyWith(readTimeoutMs: v)),

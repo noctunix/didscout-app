@@ -7,7 +7,7 @@ void main() {
     const defaults = AppSettings.defaultValues();
 
     test('matches the documented defaults', () {
-      expect(defaults.readTimeoutMs, 2000);
+      expect(defaults.readTimeoutMs, 6000);
       expect(defaults.reconnectBackoffMinS, 2);
       expect(defaults.reconnectBackoffMaxS, 60);
       expect(defaults.neverGiveUpReconnecting, isTrue);
@@ -67,7 +67,7 @@ void main() {
 
   test('toJson/fromJson round trip preserves every field', () {
     const settings = AppSettings(
-      readTimeoutMs: 1500,
+      readTimeoutMs: 8500,
       reconnectBackoffMinS: 4,
       reconnectBackoffMaxS: 90,
       neverGiveUpReconnecting: false,
@@ -104,9 +104,9 @@ void main() {
   );
 
   test('fromJson falls back to defaults for missing keys', () {
-    final settings = AppSettings.fromJson(const {'readTimeoutMs': 3333});
+    final settings = AppSettings.fromJson(const {'readTimeoutMs': 7777});
 
-    expect(settings.readTimeoutMs, 3333);
+    expect(settings.readTimeoutMs, 7777);
     expect(
       settings.reconnectBackoffMinS,
       const AppSettings.defaultValues().reconnectBackoffMinS,
@@ -116,6 +116,12 @@ void main() {
     expect(settings.scoutWhileDriving, isTrue);
     expect(settings.recordingMode, RecordingMode.scoutOnly);
     expect(settings.keepSamplingFoundDids, isTrue);
+  });
+
+  test('fromJson raises a persisted read timeout below the minimum', () {
+    final settings = AppSettings.fromJson(const {'readTimeoutMs': 2000});
+
+    expect(settings.readTimeoutMs, minReadTimeoutMs);
   });
 
   test(
