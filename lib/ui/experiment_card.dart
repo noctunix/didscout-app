@@ -77,9 +77,17 @@ class ExperimentCard extends StatelessWidget {
             ...switch (controller.experimentRun) {
               null => _suggestion(context, controller.experimentSuggestions),
               final ExperimentCapturing run => _capturing(run),
-              final ExperimentAwaitingAction run => _awaitingAction(
+              final ExperimentAwaitingAction run => _awaitingOwner(
                 context,
                 run,
+                run.experiment.instruction,
+                controller.confirmExperimentAction,
+              ),
+              final ExperimentAwaitingUndo run => _awaitingOwner(
+                context,
+                run,
+                run.experiment.undoInstruction,
+                controller.confirmExperimentUndo,
               ),
               final ExperimentDone run => _done(context, run),
               final ExperimentFailed run => _failed(run),
@@ -128,13 +136,17 @@ class ExperimentCard extends StatelessWidget {
   }
 
   List<Widget> _capturing(ExperimentCapturing run) => [
-    Text(run.after ? 'Reading after…' : 'Reading before…'),
+    Text(switch (run.stage) {
+      ExperimentCaptureStage.before => 'Reading before…',
+      ExperimentCaptureStage.after => 'Reading after…',
+      ExperimentCaptureStage.undone => 'Reading after undo…',
+    }),
     const SizedBox(height: 8),
     LinearProgressIndicator(value: run.answered / run.total),
     const SizedBox(height: 4),
     Text('${run.answered} of ${run.total} reads'),
     // End-aligned while Done sits at the start, so a double tap on Done
-    // cannot cancel the after reads.
+    // cannot cancel the reads it started.
     Align(
       alignment: AlignmentDirectional.centerEnd,
       child: TextButton(
@@ -144,26 +156,24 @@ class ExperimentCard extends StatelessWidget {
     ),
   ];
 
-  List<Widget> _awaitingAction(
+  /// The [instruction] the owner is asked to carry out for [run], and
+  /// [onDone] once they did.
+  List<Widget> _awaitingOwner(
     BuildContext context,
-    ExperimentAwaitingAction run,
+    ExperimentRun run,
+    String instruction,
+    VoidCallback onDone,
   ) => [
     Text(run.experiment.title, style: Theme.of(context).textTheme.titleSmall),
     const SizedBox(height: 4),
     Semantics(
       liveRegion: true,
-      child: Text(
-        run.experiment.instruction,
-        style: Theme.of(context).textTheme.bodyLarge,
-      ),
+      child: Text(instruction, style: Theme.of(context).textTheme.bodyLarge),
     ),
     const SizedBox(height: 8),
     Row(
       children: [
-        FilledButton(
-          onPressed: controller.confirmExperimentAction,
-          child: const Text('Done'),
-        ),
+        FilledButton(onPressed: onDone, child: const Text('Done')),
         const SizedBox(width: 8),
         TextButton(
           onPressed: controller.cancelExperiment,
@@ -173,28 +183,43 @@ class ExperimentCard extends StatelessWidget {
     ),
   ];
 
-  /// The first [limit] changed DIDs of [run], grouped per ECU, each
-  /// ECU's DIDs that also change on their own last.
+  /// The [limit] most telling changed DIDs of [run], grouped per ECU, the
+  /// ECU with the most telling DID first: first those that returned once
+  /// the action was undone, then those that did not, each of these with
+  /// the DIDs that also change on their own last.
   List<Widget> _changeRows(
     BuildContext context,
     ExperimentDone run,
     int limit,
   ) {
+    bool returned(DidDiff diff) =>
+        !run.notReturned.contains((header: diff.module!, did: diff.did));
     bool moving(DidDiff diff) =>
         run.movingOnTheirOwn.contains((header: diff.module!, did: diff.did));
+    int rank(DidDiff diff) => (returned(diff) ? 0 : 2) + (moving(diff) ? 1 : 0);
+    final ranked = [
+      for (final diffs in run.changes.values) ...diffs,
+    ].indexed.toList();
+    ranked.sort((a, b) {
+      final byRank = rank(a.$2).compareTo(rank(b.$2));
+      return byRank != 0 ? byRank : a.$1.compareTo(b.$1);
+    });
+    final shown = [for (final (_, diff) in ranked.take(limit)) diff];
     final style = Theme.of(
       context,
     ).textTheme.bodySmall?.copyWith(fontFamily: 'monospace');
-    final rows = <Widget>[];
-    var left = limit;
-    for (final MapEntry(key: header, value: diffs) in run.changes.entries) {
-      if (left == 0) break;
-      final shown = [
-        ...diffs.where((diff) => !moving(diff)),
-        ...diffs.where(moving),
-      ].take(left).toList();
-      left -= shown.length;
-      rows.add(
+    String describe(DidDiff diff) {
+      final notes = [
+        if (!returned(diff)) 'did not return',
+        if (moving(diff)) 'moves on its own',
+      ];
+      return notes.isEmpty
+          ? _describeDiff(diff)
+          : '${_describeDiff(diff)}  (${notes.join(', ')})';
+    }
+
+    return [
+      for (final header in {for (final diff in shown) diff.module!})
         Padding(
           padding: const EdgeInsets.only(bottom: 8),
           child: Column(
@@ -202,18 +227,11 @@ class ExperimentCard extends StatelessWidget {
             children: [
               Text(controller.ecuName(header) ?? header),
               for (final diff in shown)
-                Text(
-                  moving(diff)
-                      ? '${_describeDiff(diff)}  (moves on its own)'
-                      : _describeDiff(diff),
-                  style: style,
-                ),
+                if (diff.module == header) Text(describe(diff), style: style),
             ],
           ),
         ),
-      );
-    }
-    return rows;
+    ];
   }
 
   Future<void> _showAllChanges(

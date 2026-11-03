@@ -286,6 +286,93 @@ void main() {
     });
   });
 
+  group('unreturnedChanges', () {
+    test('names the changes whose undone payload is not the before one, '
+        'or missing', () {
+      final changes = experimentChanges(
+        before: {
+          '74A': {
+            '2A00': _bytes([0x00]),
+            '2A01': _bytes([0x10, 0x20]),
+            '2A02': _bytes([0x05]),
+            '2A03': _bytes([0x07]),
+          },
+          '767': {
+            '1234': _bytes([0x01]),
+          },
+        },
+        after: {
+          '74A': {
+            '2A00': _bytes([0x01]),
+            '2A01': _bytes([0x10, 0x21]),
+            '2A02': _bytes([0x06]),
+            '2A03': _bytes([0x08]),
+          },
+          '767': {
+            '1234': _bytes([0x02]),
+          },
+        },
+      );
+
+      expect(
+        unreturnedChanges(
+          changes: changes,
+          undone: {
+            '74A': {
+              '2A00': _bytes([0x00]),
+              '2A01': _bytes([0x10, 0x21]),
+              '2A02': _bytes([0x09]),
+            },
+          },
+        ),
+        {
+          (header: '74A', did: '2A01'),
+          (header: '74A', did: '2A02'),
+          (header: '74A', did: '2A03'),
+          (header: '767', did: '1234'),
+        },
+      );
+    });
+
+    test('a payload back at its before length and bytes has returned', () {
+      final changes = experimentChanges(
+        before: {
+          '74A': {
+            '2A00': _bytes([0x00, 0x11]),
+          },
+        },
+        after: {
+          '74A': {
+            '2A00': _bytes([0x00, 0x11, 0x22]),
+          },
+        },
+      );
+
+      expect(
+        unreturnedChanges(
+          changes: changes,
+          undone: {
+            '74A': {
+              '2A00': _bytes([0x00, 0x11]),
+            },
+          },
+        ),
+        isEmpty,
+      );
+      expect(
+        unreturnedChanges(
+          changes: changes,
+          undone: {
+            '74A': {
+              '2A00': _bytes([0x00]),
+            },
+          },
+        ),
+        {(header: '74A', did: '2A00')},
+      );
+    });
+  });
+
   group('experimentReads', () {
     final now = DateTime.utc(2026, 11, 2, 12);
     final doorDriver = experimentCatalog.firstWhere(

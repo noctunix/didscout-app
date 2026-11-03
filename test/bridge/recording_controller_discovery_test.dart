@@ -928,9 +928,15 @@ void main() {
       await controller.stop();
     });
 
-    test('a run reads all found DIDs before and after the action and '
-        'reports what changed', () async {
+    test('a run reads all found DIDs before the action, after it and after '
+        'its undo, and reports what changed and what returned', () async {
       final controller = await startStationary();
+      var latchByte = 0x00;
+      fakeNative.respondToOneShot = (step) => switch (step.signalId) {
+        'door-front-left_222a02' =>
+          '7B4 04 62 2A 02 ${latchByte.toRadixString(16).padLeft(2, '0')}',
+        _ => respondAsDoor(step),
+      };
       expect(
         [
           for (final experiment in controller.experimentSuggestions)
@@ -947,37 +953,67 @@ void main() {
         ExperimentStep.before,
         ExperimentStep.action,
       ]);
+      controller.confirmExperimentUndo();
+      expect(controller.experimentRun, isA<ExperimentAwaitingAction>());
+      expect(experimentSteps(controller), hasLength(2));
 
       doorByte = 0x01;
+      latchByte = 0x05;
       controller.confirmExperimentAction();
       expect(
         controller.experimentRun,
-        isA<ExperimentCapturing>().having((run) => run.after, 'after', true),
+        isA<ExperimentCapturing>().having(
+          (run) => run.stage,
+          'stage',
+          ExperimentCaptureStage.after,
+        ),
+      );
+      await waitFor(() => controller.experimentRun is ExperimentAwaitingUndo);
+      expect(experimentSteps(controller), [
+        ExperimentStep.before,
+        ExperimentStep.action,
+        ExperimentStep.after,
+        ExperimentStep.undo,
+      ]);
+      expect(persistedState!.experimentCompletions, isEmpty);
+
+      doorByte = 0x00;
+      controller.confirmExperimentUndo();
+      expect(
+        controller.experimentRun,
+        isA<ExperimentCapturing>().having(
+          (run) => run.stage,
+          'stage',
+          ExperimentCaptureStage.undone,
+        ),
       );
       await waitFor(() => controller.experimentRun is ExperimentDone);
       expect(experimentSteps(controller), [
         ExperimentStep.before,
         ExperimentStep.action,
         ExperimentStep.after,
+        ExperimentStep.undo,
+        ExperimentStep.undone,
       ]);
 
       final done = controller.experimentRun! as ExperimentDone;
       expect(done.experiment.id, 'door-driver');
       expect(done.changes.keys, ['74A']);
-      final diff = done.changes['74A']!.single;
-      expect(diff.did, '2A00');
+      final diffs = done.changes['74A']!;
+      expect([for (final diff in diffs) diff.did], ['2A00', '2A02']);
       expect(
         [
-          for (final change in diff.changes)
+          for (final change in diffs.first.changes)
             (change.position, change.before, change.after),
         ],
         [(0, 0x00, 0x01)],
       );
+      expect(done.notReturned, {(header: '74A', did: '2A02')});
       expect(controller.ecuName('74A'), 'Door FL');
 
       // The stable 2A01 is read as well, which focus sampling leaves out.
       expect(experimentBatches(), [
-        for (var i = 0; i < 2; i++)
+        for (var i = 0; i < 3; i++)
           ['${doorSignal}2a00', '${doorSignal}2a01', '${doorSignal}2a02'],
       ]);
 
@@ -1023,6 +1059,8 @@ void main() {
       doorByte = 0x01;
       await Future<void>.delayed(const Duration(milliseconds: 100));
       controller.confirmExperimentAction();
+      await waitFor(() => controller.experimentRun is ExperimentAwaitingUndo);
+      controller.confirmExperimentUndo();
       await waitFor(() => controller.experimentRun is ExperimentDone);
       final first = controller.experimentRun! as ExperimentDone;
       expect(
@@ -1040,9 +1078,40 @@ void main() {
       await waitFor(() => controller.experimentRun is ExperimentAwaitingAction);
       doorByte = 0x00;
       controller.confirmExperimentAction();
+      await waitFor(() => controller.experimentRun is ExperimentAwaitingUndo);
+      controller.confirmExperimentUndo();
       await waitFor(() => controller.experimentRun is ExperimentDone);
       final second = controller.experimentRun! as ExperimentDone;
       expect(second.movingOnTheirOwn, {(header: '74A', did: '2A02')});
+
+      await controller.stop();
+    });
+
+    test('focus sampling leaves the target ECU out until the run ends, '
+        'also while the owner undoes the action', () async {
+      final controller = await startStationary();
+      int focusReadsOfDoor() => fakeNative.enqueuedBatches
+          .where(
+            (batch) =>
+                batch.any((step) => step.signalId == '${doorSignal}2a00') &&
+                !batch.any((step) => step.signalId == '${doorSignal}2a01'),
+          )
+          .length;
+      final atStart = focusReadsOfDoor();
+      await waitFor(() => focusReadsOfDoor() > atStart);
+
+      controller.startExperiment('door-driver');
+      await waitFor(() => controller.experimentRun is ExperimentAwaitingAction);
+      controller.confirmExperimentAction();
+      await waitFor(() => controller.experimentRun is ExperimentAwaitingUndo);
+      final whileUndoing = focusReadsOfDoor();
+      // Five focus intervals.
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      expect(focusReadsOfDoor(), whileUndoing);
+
+      controller.confirmExperimentUndo();
+      await waitFor(() => controller.experimentRun is ExperimentDone);
+      await waitFor(() => focusReadsOfDoor() > whileUndoing);
 
       await controller.stop();
     });
@@ -1109,7 +1178,9 @@ void main() {
         ExperimentStep.cancelled,
       ]);
       expect(lastReason(controller), ExperimentFailure.cancelled);
-      controller.confirmExperimentAction();
+      controller
+        ..confirmExperimentAction()
+        ..confirmExperimentUndo();
       expect(experimentSteps(controller), hasLength(3));
       expect(persistedState!.experimentCompletions, isEmpty);
 
@@ -1165,6 +1236,33 @@ void main() {
       expect(experimentSteps(controller).last, ExperimentStep.cancelled);
       expect(lastReason(controller), ExperimentFailure.moving);
       expect(controller.experimentSuggestions, isEmpty);
+
+      await controller.stop();
+    });
+
+    test('the run is cancelled once the vehicle moves while the owner '
+        'undoes the action', () async {
+      final controller = await startStationary();
+      controller.startExperiment('door-driver');
+      await waitFor(() => controller.experimentRun is ExperimentAwaitingAction);
+      controller.confirmExperimentAction();
+      await waitFor(() => controller.experimentRun is ExperimentAwaitingUndo);
+
+      fakeNative.liveStateResult = _liveStateWithSpeed(30);
+      await waitFor(() => controller.experimentRun is ExperimentFailed);
+
+      expect(
+        (controller.experimentRun! as ExperimentFailed).failure,
+        ExperimentFailure.moving,
+      );
+      expect(experimentSteps(controller), [
+        ExperimentStep.before,
+        ExperimentStep.action,
+        ExperimentStep.after,
+        ExperimentStep.undo,
+        ExperimentStep.cancelled,
+      ]);
+      expect(persistedState!.experimentCompletions, isEmpty);
 
       await controller.stop();
     });

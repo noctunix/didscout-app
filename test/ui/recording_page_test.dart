@@ -216,6 +216,9 @@ class _ExperimentCardController extends _RecordingStubController {
   void confirmExperimentAction() => calls.add('confirm');
 
   @override
+  void confirmExperimentUndo() => calls.add('confirm undo');
+
+  @override
   void cancelExperiment() => calls.add('cancel');
 
   @override
@@ -973,7 +976,7 @@ void main() {
       controller.show(
         ExperimentCapturing(
           _experiment('door-driver'),
-          after: false,
+          stage: ExperimentCaptureStage.before,
           answered: 0,
           total: 3,
         ),
@@ -1019,7 +1022,12 @@ void main() {
 
       final doorDriver = _experiment('door-driver');
       controller.show(
-        ExperimentCapturing(doorDriver, after: false, answered: 1, total: 3),
+        ExperimentCapturing(
+          doorDriver,
+          stage: ExperimentCaptureStage.before,
+          answered: 1,
+          total: 3,
+        ),
       );
       await tester.pump();
       expect(find.text('Reading before…'), findsOneWidget);
@@ -1029,15 +1037,43 @@ void main() {
 
       controller.show(ExperimentAwaitingAction(doorDriver));
       await tester.pump();
-      expect(find.text(doorDriver.instruction), findsOneWidget);
+      expect(
+        find.text('Open the driver door and leave it open.'),
+        findsOneWidget,
+      );
       await tap(find.widgetWithText(FilledButton, 'Done'));
       expect(controller.calls.last, 'confirm');
 
       controller.show(
-        ExperimentCapturing(doorDriver, after: true, answered: 0, total: 3),
+        ExperimentCapturing(
+          doorDriver,
+          stage: ExperimentCaptureStage.after,
+          answered: 0,
+          total: 3,
+        ),
       );
       await tester.pump();
       expect(find.text('Reading after…'), findsOneWidget);
+
+      controller.show(ExperimentAwaitingUndo(doorDriver));
+      await tester.pump();
+      expect(find.text('Close the driver door.'), findsOneWidget);
+      await tap(find.widgetWithText(FilledButton, 'Done'));
+      expect(controller.calls.last, 'confirm undo');
+      await tap(find.widgetWithText(TextButton, 'Cancel'));
+      expect(controller.calls.last, 'cancel');
+
+      controller.show(
+        ExperimentCapturing(
+          doorDriver,
+          stage: ExperimentCaptureStage.undone,
+          answered: 2,
+          total: 3,
+        ),
+      );
+      await tester.pump();
+      expect(find.text('Reading after undo…'), findsOneWidget);
+      expect(find.text('2 of 3 reads'), findsOneWidget);
 
       controller.show(ExperimentDone(doorDriver, changes: const {}));
       await tester.pump();
@@ -1160,6 +1196,86 @@ void main() {
         tester.getTopLeft(quiet).dy,
         lessThan(tester.getTopLeft(moving).dy),
       );
+    });
+
+    DidDiff flip(String header, String did) => DidDiff(
+      module: header,
+      did: did,
+      before: Uint8List.fromList([0x00]),
+      after: Uint8List.fromList([0x01]),
+      changes: const [ByteDiff(position: 0, before: 0x00, after: 0x01)],
+    );
+
+    testWidgets('lists the changes that returned after the undo first and '
+        'marks the others, the ECU with a returned change first', (
+      tester,
+    ) async {
+      final controller = _ExperimentCardController();
+      await pumpPage(tester, controller: controller);
+      controller.show(
+        ExperimentDone(
+          _experiment('lock'),
+          changes: {
+            '74A': [flip('74A', '2A00')],
+            '767': [
+              flip('767', '3000'),
+              flip('767', '3001'),
+              flip('767', '3002'),
+            ],
+          },
+          notReturned: const {
+            (header: '74A', did: '2A00'),
+            (header: '767', did: '3000'),
+          },
+          movingOnTheirOwn: const {
+            (header: '767', did: '3000'),
+            (header: '767', did: '3001'),
+          },
+        ),
+      );
+      await tester.pump();
+
+      final rows = [
+        find.text('Climate'),
+        find.text('3002  byte 0: 00 → 01'),
+        find.text('3001  byte 0: 00 → 01  (moves on its own)'),
+        find.text('3000  byte 0: 00 → 01  (did not return, moves on its own)'),
+        find.text('Door FL'),
+        find.text('2A00  byte 0: 00 → 01  (did not return)'),
+      ];
+      for (final row in rows) {
+        expect(row, findsOneWidget);
+      }
+      final tops = [for (final row in rows) tester.getTopLeft(row).dy];
+      expect(tops, [...tops]..sort());
+    });
+
+    testWidgets('a change that returned is listed even behind more that did '
+        'not than fit', (tester) async {
+      final controller = _ExperimentCardController();
+      await pumpPage(tester, controller: controller);
+      final door = [for (var i = 0; i < 6; i++) flip('74A', '2A0$i')];
+      controller.show(
+        ExperimentDone(
+          _experiment('lock'),
+          changes: {
+            '74A': door,
+            '767': [flip('767', '3000')],
+          },
+          notReturned: {
+            for (final diff in door) (header: '74A', did: diff.did),
+          },
+        ),
+      );
+      await tester.pump();
+
+      expect(find.text('3000  byte 0: 00 → 01'), findsOneWidget);
+      expect(
+        find.text('2A04  byte 0: 00 → 01  (did not return)'),
+        findsOneWidget,
+      );
+      expect(find.textContaining('2A05'), findsNothing);
+      expect(find.widgetWithText(TextButton, 'Show all (7)'), findsOneWidget);
     });
   });
 

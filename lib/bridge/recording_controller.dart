@@ -54,17 +54,17 @@ class _DiscoveryEventsBridge implements ObdEventsApi {
   void onLinkState(ObdLinkStateMessage state) {}
 }
 
-/// One before or after capture of a guided experiment run.
+/// One capture of a guided experiment run.
 class _ExperimentCapture {
   _ExperimentCapture({
     required this.experiment,
-    required this.after,
+    required this.stage,
     required this.pending,
     required this.deadline,
   }) : total = pending.length;
 
   final Experiment experiment;
-  final bool after;
+  final ExperimentCaptureStage stage;
 
   /// Request header and DID of each read not answered yet, by signal id.
   final Map<String, ({String header, String did})> pending;
@@ -78,7 +78,7 @@ class _ExperimentCapture {
 
   ExperimentCapturing get progress => ExperimentCapturing(
     experiment,
-    after: after,
+    stage: stage,
     answered: total - pending.length,
     total: total,
   );
@@ -362,20 +362,23 @@ class RecordingController extends ChangeNotifier {
 
   ExperimentRun? _experimentRun;
 
-  /// The reads both captures of the current experiment run queue, fixed
-  /// when it starts so the two snapshots cover the same DIDs.
+  /// The reads each capture of the current experiment run queues, fixed
+  /// when it starts so the snapshots cover the same DIDs.
   List<EcuDidRead> _experimentReads = const [];
 
   _ExperimentCapture? _experimentCapture;
   DidSnapshot _experimentBefore = const {};
+  DidSnapshot _experimentAfter = const {};
 
   /// The guided experiment run of this recording, in progress or last
   /// finished; null before one was started or once dismissed.
   ExperimentRun? get experimentRun => _experimentRun;
 
   bool get _experimentActive => switch (_experimentRun) {
-    ExperimentCapturing() || ExperimentAwaitingAction() => true,
-    _ => false,
+    ExperimentCapturing() ||
+    ExperimentAwaitingAction() ||
+    ExperimentAwaitingUndo() => true,
+    ExperimentDone() || ExperimentFailed() || null => false,
   };
 
   /// Snapshot for the recording page's "Scouting" card -- null whenever
@@ -700,23 +703,40 @@ class RecordingController extends ChangeNotifier {
       now: now,
     );
     _forgetFocusPayloads(_experimentReads);
-    _addExperimentStep(experiment.id, ExperimentStep.before);
-    unawaited(_beginExperimentCapture(experiment, after: false));
+    unawaited(
+      _beginExperimentCapture(experiment, ExperimentCaptureStage.before),
+    );
   }
 
   /// The owner took the action: records the `after` marker and reads the
-  /// same DIDs again; [experimentRun] then reports the changes. Fails the
-  /// run instead when the vehicle is no longer stationary. A no-op unless
-  /// [experimentRun] is waiting for the action.
+  /// same DIDs again; once those reads are in, [experimentRun] asks the
+  /// owner to undo the action and the `undo` marker is recorded. Fails
+  /// the run instead when the vehicle is no longer stationary. A no-op
+  /// unless [experimentRun] is waiting for the action.
   void confirmExperimentAction() {
-    final run = _experimentRun;
-    if (run is! ExperimentAwaitingAction) return;
+    if (_experimentRun case ExperimentAwaitingAction(:final experiment)) {
+      _resumeExperiment(experiment, ExperimentCaptureStage.after);
+    }
+  }
+
+  /// The owner undid the action: records the `undone` marker and reads
+  /// the same DIDs a third time; [experimentRun] then reports the
+  /// changes. Fails the run instead when the vehicle is no longer
+  /// stationary. A no-op unless [experimentRun] is waiting for the undo.
+  void confirmExperimentUndo() {
+    if (_experimentRun case ExperimentAwaitingUndo(:final experiment)) {
+      _resumeExperiment(experiment, ExperimentCaptureStage.undone);
+    }
+  }
+
+  /// Starts the [stage] capture of [experiment] after the owner's step,
+  /// or fails the run when the vehicle is no longer stationary.
+  void _resumeExperiment(Experiment experiment, ExperimentCaptureStage stage) {
     if (!_isStationary(_now())) {
       _failExperiment(ExperimentFailure.moving);
       return;
     }
-    _addExperimentStep(run.experiment.id, ExperimentStep.after);
-    unawaited(_beginExperimentCapture(run.experiment, after: true));
+    unawaited(_beginExperimentCapture(experiment, stage));
   }
 
   /// Abandons the experiment run in progress, recording its `cancelled`
@@ -742,19 +762,25 @@ class RecordingController extends ChangeNotifier {
     unawaited(_appendLatestMarker());
   }
 
-  /// Queues [_experimentReads] for the before or [after] capture of
-  /// [experiment]. The capture completes once every read has returned
+  /// Records the marker that starts the [stage] capture of [experiment]
+  /// (`before`, `after` or `undone`) and queues [_experimentReads] for it.
+  /// The capture completes once every read has returned
   /// ([_claimExperimentResult]) or at the deadline a discovery batch that
   /// size would get ([_superviseExperiment]).
   Future<void> _beginExperimentCapture(
-    Experiment experiment, {
-    required bool after,
-  }) async {
+    Experiment experiment,
+    ExperimentCaptureStage stage,
+  ) async {
+    _addExperimentStep(experiment.id, switch (stage) {
+      ExperimentCaptureStage.before => ExperimentStep.before,
+      ExperimentCaptureStage.after => ExperimentStep.after,
+      ExperimentCaptureStage.undone => ExperimentStep.undone,
+    });
     final executor = _discoveryExecutor!;
     final (modules, steps) = _probeBatch(_experimentReads);
     final capture = _ExperimentCapture(
       experiment: experiment,
-      after: after,
+      stage: stage,
       pending: {
         for (final read in _experimentReads)
           _readSignalId(read): (header: read.requestHeader, did: read.did),
@@ -824,9 +850,10 @@ class RecordingController extends ChangeNotifier {
   }
 
   /// Ends the current capture with whatever returned: after the before
-  /// capture, asks for the action; after the after capture, reports the
-  /// changes and counts the experiment as completed. A capture in which
-  /// no read returned a value fails the run.
+  /// capture, asks for the action; after the after capture, asks to undo
+  /// it; after the undone capture, reports the changes and counts the
+  /// experiment as completed. A capture in which no read returned a value
+  /// fails the run.
   void _finishExperimentCapture() {
     final capture = _experimentCapture!;
     final experiment = capture.experiment;
@@ -835,36 +862,44 @@ class RecordingController extends ChangeNotifier {
       return;
     }
     _experimentCapture = null;
-    if (!capture.after) {
-      _experimentBefore = capture.snapshot;
-      _experimentRun = ExperimentAwaitingAction(experiment);
-      _addExperimentStep(experiment.id, ExperimentStep.action);
-      notifyListeners();
-      return;
+    switch (capture.stage) {
+      case ExperimentCaptureStage.before:
+        _experimentBefore = capture.snapshot;
+        _experimentRun = ExperimentAwaitingAction(experiment);
+        _addExperimentStep(experiment.id, ExperimentStep.action);
+      case ExperimentCaptureStage.after:
+        _experimentAfter = capture.snapshot;
+        _experimentRun = ExperimentAwaitingUndo(experiment);
+        _addExperimentStep(experiment.id, ExperimentStep.undo);
+      case ExperimentCaptureStage.undone:
+        // Persisted by the next discovery tick: saving here could overlap
+        // a save already in flight and corrupt the file.
+        _discoveryState!.experimentCompletions.update(
+          experiment.id,
+          (count) => count + 1,
+          ifAbsent: () => 1,
+        );
+        final changes = experimentChanges(
+          before: _experimentBefore,
+          after: _experimentAfter,
+        );
+        _experimentRun = ExperimentDone(
+          experiment,
+          changes: changes,
+          notReturned: unreturnedChanges(
+            changes: changes,
+            undone: capture.snapshot,
+          ),
+          movingOnTheirOwn: {
+            for (final read in _experimentReads)
+              if (_focusMovedAt.containsKey(_readSignalId(read)))
+                (header: read.requestHeader, did: read.did),
+          },
+        );
+        _forgetFocusPayloads(_experimentReads);
+        _experimentBefore = const {};
+        _experimentAfter = const {};
     }
-    final state = _discoveryState!;
-    // Persisted by the next discovery tick: saving here could overlap a
-    // save already in flight and corrupt the file.
-    state.experimentCompletions.update(
-      experiment.id,
-      (count) => count + 1,
-      ifAbsent: () => 1,
-    );
-    final changes = experimentChanges(
-      before: _experimentBefore,
-      after: capture.snapshot,
-    );
-    _experimentRun = ExperimentDone(
-      experiment,
-      changes: changes,
-      movingOnTheirOwn: {
-        for (final read in _experimentReads)
-          if (_focusMovedAt.containsKey(_readSignalId(read)))
-            (header: read.requestHeader, did: read.did),
-      },
-    );
-    _forgetFocusPayloads(_experimentReads);
-    _experimentBefore = const {};
     notifyListeners();
   }
 
@@ -876,6 +911,7 @@ class RecordingController extends ChangeNotifier {
     if (run == null || !_experimentActive) return;
     _experimentCapture = null;
     _experimentBefore = const {};
+    _experimentAfter = const {};
     _forgetFocusPayloads(_experimentReads);
     _experimentRun = ExperimentFailed(run.experiment, failure);
     _addExperimentStep(

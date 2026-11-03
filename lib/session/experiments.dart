@@ -8,15 +8,16 @@ import '../discovery/discovery_state.dart';
 import '../discovery/phase_focus.dart';
 import 'session_markers.dart';
 
-/// One guided before/after experiment: a single action the owner takes
-/// while the vehicle is stationary, bracketed by reads of the
-/// [targetHeaders] ECUs' discovered DIDs.
+/// One guided experiment: a single action the owner takes while the
+/// vehicle is stationary and then undoes, with the [targetHeaders] ECUs'
+/// discovered DIDs read before the action, after it, and after the undo.
 @immutable
 class Experiment {
   const Experiment({
     required this.id,
     required this.title,
     required this.instruction,
+    required this.undoInstruction,
     required this.phases,
     required this.targetHeaders,
     this.followUp,
@@ -28,8 +29,13 @@ class Experiment {
 
   final String title;
 
-  /// What the owner is asked to do between the before and after reads.
+  /// What the owner is asked to do between the before and after reads;
+  /// the changed state stays in place for the after reads.
   final String instruction;
+
+  /// What the owner is asked to do between the after and undone reads to
+  /// bring the vehicle back to its state before [instruction].
+  final String undoInstruction;
 
   /// The phases in which this experiment may be suggested.
   final Set<MarkerPhase> phases;
@@ -37,8 +43,8 @@ class Experiment {
   /// Request headers of the ECUs expected to reflect the action.
   final List<String> targetHeaders;
 
-  /// The display value to ask the owner for once the after reads are in,
-  /// if the action changes one.
+  /// The display value to ask the owner for once the run is done, if the
+  /// action changes one.
   final ReadingQuantity? followUp;
 }
 
@@ -55,42 +61,48 @@ const List<Experiment> experimentCatalog = [
   Experiment(
     id: 'charge-flap-left',
     title: 'Left charge flap',
-    instruction: 'Open the left charge flap, wait 5 s, then close it.',
+    instruction: 'Open the left charge flap and leave it open.',
+    undoInstruction: 'Close the left charge flap.',
     phases: _stationaryOrCharging,
     targetHeaders: ['17FC0082'],
   ),
   Experiment(
     id: 'charge-flap-right',
     title: 'Right charge flap',
-    instruction: 'Open the right charge flap, wait 5 s, then close it.',
+    instruction: 'Open the right charge flap and leave it open.',
+    undoInstruction: 'Close the right charge flap.',
     phases: _stationaryOrCharging,
     targetHeaders: ['17FC0083'],
   ),
   Experiment(
     id: 'door-driver',
     title: 'Driver door',
-    instruction: 'Open the driver door, then close it.',
+    instruction: 'Open the driver door and leave it open.',
+    undoInstruction: 'Close the driver door.',
     phases: _stationaryOrCharging,
     targetHeaders: ['74A'],
   ),
   Experiment(
     id: 'door-passenger',
     title: 'Passenger door',
-    instruction: 'Open the front passenger door, then close it.',
+    instruction: 'Open the front passenger door and leave it open.',
+    undoInstruction: 'Close the front passenger door.',
     phases: _stationaryOrCharging,
     targetHeaders: ['74B'],
   ),
   Experiment(
     id: 'door-rear-left',
     title: 'Rear left door',
-    instruction: 'Open the rear left door, then close it.',
+    instruction: 'Open the rear left door and leave it open.',
+    undoInstruction: 'Close the rear left door.',
     phases: _stationaryOrCharging,
     targetHeaders: ['73E'],
   ),
   Experiment(
     id: 'door-rear-right',
     title: 'Rear right door',
-    instruction: 'Open the rear right door, then close it.',
+    instruction: 'Open the rear right door and leave it open.',
+    undoInstruction: 'Close the rear right door.',
     phases: _stationaryOrCharging,
     targetHeaders: ['73F'],
   ),
@@ -98,6 +110,7 @@ const List<Experiment> experimentCatalog = [
     id: 'window-driver',
     title: 'Driver window',
     instruction: 'Lower the driver window a little.',
+    undoInstruction: 'Raise the driver window again.',
     phases: _stationary,
     targetHeaders: ['74A'],
   ),
@@ -105,6 +118,7 @@ const List<Experiment> experimentCatalog = [
     id: 'climate-setpoint',
     title: 'Cabin temperature',
     instruction: 'Raise the cabin temperature setpoint by 3 °C.',
+    undoInstruction: 'Lower the cabin temperature setpoint by 3 °C again.',
     phases: _stationaryOrCharging,
     targetHeaders: ['767'],
     followUp: ReadingQuantity.insideTemp,
@@ -113,6 +127,7 @@ const List<Experiment> experimentCatalog = [
     id: 'climate-ac',
     title: 'A/C',
     instruction: 'Switch the A/C off, or on if it is off.',
+    undoInstruction: 'Switch the A/C back the way it was.',
     phases: _stationaryOrCharging,
     targetHeaders: ['767'],
   ),
@@ -120,6 +135,7 @@ const List<Experiment> experimentCatalog = [
     id: 'climate-fan',
     title: 'Fan',
     instruction: 'Set the fan to maximum.',
+    undoInstruction: 'Set the fan back to where it was.',
     phases: _stationaryOrCharging,
     targetHeaders: ['767'],
   ),
@@ -127,6 +143,7 @@ const List<Experiment> experimentCatalog = [
     id: 'seat-heating',
     title: 'Seat heating',
     instruction: 'Switch the driver seat heating to the highest level.',
+    undoInstruction: 'Switch the driver seat heating off.',
     phases: _stationaryOrCharging,
     targetHeaders: ['74C'],
   ),
@@ -134,20 +151,23 @@ const List<Experiment> experimentCatalog = [
     id: 'lights',
     title: 'Low beam',
     instruction: 'Switch the low beam on.',
+    undoInstruction: 'Switch the low beam off.',
     phases: _stationaryOrCharging,
     targetHeaders: ['70E'],
   ),
   Experiment(
     id: 'lock',
     title: 'Lock and unlock',
-    instruction: 'Lock the car with the key or the app, then unlock it.',
+    instruction: 'Lock the car with the key or the app.',
+    undoInstruction: 'Unlock the car.',
     phases: _stationary,
     targetHeaders: ['70E', '74A', '74B'],
   ),
   Experiment(
     id: 'tailgate',
     title: 'Tailgate',
-    instruction: 'Open the tailgate, then close it.',
+    instruction: 'Open the tailgate and leave it open.',
+    undoInstruction: 'Close the tailgate.',
     phases: _stationary,
     targetHeaders: ['17FC008B', '70E'],
   ),
@@ -155,6 +175,7 @@ const List<Experiment> experimentCatalog = [
     id: 'phone-charger',
     title: 'Wireless phone charger',
     instruction: 'Place a phone on the wireless charging pad.',
+    undoInstruction: 'Take the phone off the pad.',
     phases: _stationary,
     targetHeaders: ['17FC00A5'],
   ),
@@ -164,6 +185,7 @@ const List<Experiment> experimentCatalog = [
     instruction:
         'Change the charge limit in the vehicle or the app by 10 '
         'percentage points.',
+    undoInstruction: 'Set the charge limit back to where it was.',
     phases: {MarkerPhase.charge},
     targetHeaders: ['17FC007B', '18DA0FF1', '710'],
     followUp: ReadingQuantity.soc,
@@ -257,10 +279,23 @@ Map<String, List<DidDiff>> experimentChanges({
   return changes;
 }
 
-/// Most reads one before or after capture of an experiment queues.
+/// The DIDs of [changes], by request header, that did not return to
+/// their before payload once the owner undid the action: [undone], the
+/// reads after the undo, has another payload for them, or none.
+Set<({String header, String did})> unreturnedChanges({
+  required Map<String, List<DidDiff>> changes,
+  required DidSnapshot undone,
+}) => {
+  for (final MapEntry(key: header, value: diffs) in changes.entries)
+    for (final diff in diffs)
+      if (!listEquals(undone[header]?[diff.did], diff.before))
+        (header: header, did: diff.did),
+};
+
+/// Most reads one capture of an experiment queues.
 const int maxExperimentReads = 150;
 
-/// The reads both captures of [experiment] queue: every found DID of the
+/// The reads each capture of [experiment] queues: every found DID of the
 /// ECUs in [state] addressed by one of [Experiment.targetHeaders], stable
 /// ones included -- an action can change a value that never changed
 /// before -- plus, with [includeProfileDids], the vag-ppe profile DIDs of
@@ -311,9 +346,14 @@ List<EcuDidRead> experimentReads(
   return reads;
 }
 
+/// Which reads of an experiment run a capture collects: before the
+/// action, after it, or after the owner undid it.
+enum ExperimentCaptureStage { before, after, undone }
+
 /// Where a guided experiment run stands: capturing the before reads,
-/// waiting for the owner's action, capturing the after reads, then done
-/// or failed.
+/// waiting for the owner's action, capturing the after reads, waiting for
+/// the owner to undo the action, capturing the undone reads, then done or
+/// failed.
 @immutable
 sealed class ExperimentRun {
   const ExperimentRun(this.experiment);
@@ -321,17 +361,17 @@ sealed class ExperimentRun {
   final Experiment experiment;
 }
 
-/// The before ([after] false) or after reads are being collected;
-/// [answered] of [total] reads have returned so far.
+/// The reads of [stage] are being collected; [answered] of [total] reads
+/// have returned so far.
 class ExperimentCapturing extends ExperimentRun {
   const ExperimentCapturing(
     super.experiment, {
-    required this.after,
+    required this.stage,
     required this.answered,
     required this.total,
   });
 
-  final bool after;
+  final ExperimentCaptureStage stage;
   final int answered;
   final int total;
 }
@@ -341,15 +381,27 @@ class ExperimentAwaitingAction extends ExperimentRun {
   const ExperimentAwaitingAction(super.experiment);
 }
 
-/// Both captures are in; [changes] as [experimentChanges] reports them.
+/// The after reads are in; the owner is asked to undo the action.
+class ExperimentAwaitingUndo extends ExperimentRun {
+  const ExperimentAwaitingUndo(super.experiment);
+}
+
+/// All three captures are in; [changes] as [experimentChanges] reports
+/// them between the before and after reads.
 class ExperimentDone extends ExperimentRun {
   const ExperimentDone(
     super.experiment, {
     required this.changes,
+    this.notReturned = const {},
     this.movingOnTheirOwn = const {},
   });
 
   final Map<String, List<DidDiff>> changes;
+
+  /// The changed DIDs, by request header, that [unreturnedChanges] finds
+  /// did not return once the action was undone: a change that outlasts
+  /// the undo need not come from the action.
+  final Set<({String header, String did})> notReturned;
 
   /// The read DIDs, by request header, whose value also changed between
   /// two focus samples of this recording, outside any experiment: a

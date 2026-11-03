@@ -232,6 +232,8 @@ void main() {
         (ExperimentStep.before, 'before'),
         (ExperimentStep.action, 'action'),
         (ExperimentStep.after, 'after'),
+        (ExperimentStep.undo, 'undo'),
+        (ExperimentStep.undone, 'undone'),
       ]) {
         final marker = ExperimentMarker(
           at: DateTime.utc(2026, 1, 1, 10, 0),

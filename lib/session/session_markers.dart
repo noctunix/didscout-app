@@ -5,11 +5,12 @@ import '../capture/readings.dart';
 /// The driving/charging phase a [PhaseMarker] records.
 enum MarkerPhase { drive, charge, stand, park }
 
-/// The step of a guided before/after experiment an [ExperimentMarker]
-/// records: the "before" reads start, the owner is shown the action, the
-/// owner tapped "Done" and the "after" reads start, or the experiment was
-/// abandoned without its "after" reads.
-enum ExperimentStep { before, action, after, cancelled }
+/// The step of a guided experiment an [ExperimentMarker] records: the
+/// "before" reads start, the owner is shown the action, the owner tapped
+/// "Done" and the "after" reads start, the owner is shown how to undo the
+/// action, the owner tapped "Done" and the "undone" reads start, or the
+/// run failed before its result.
+enum ExperimentStep { before, action, after, undo, undone, cancelled }
 
 /// Why an experiment run ended without a result; the name is what an
 /// [ExperimentMarker] records as its `reason`.
