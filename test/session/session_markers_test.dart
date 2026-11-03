@@ -94,7 +94,21 @@ void main() {
       final marker = log.markers.single as ExperimentMarker;
       expect(marker.id, 'door-driver');
       expect(marker.step, ExperimentStep.after);
+      expect(marker.reason, isNull);
       expect(marker.timestamp, at);
+    });
+
+    test('addExperimentStep records the reason of a failed run', () {
+      final log = SessionMarkerLog(clock: () => DateTime.utc(2026, 1, 1));
+      log.addExperimentStep(
+        'door-driver',
+        ExperimentStep.cancelled,
+        reason: ExperimentFailure.noAnswer,
+      );
+
+      final marker = log.markers.single as ExperimentMarker;
+      expect(marker.step, ExperimentStep.cancelled);
+      expect(marker.reason, ExperimentFailure.noAnswer);
     });
 
     test('addReading records read_at separately from saved_at', () {
@@ -218,7 +232,6 @@ void main() {
         (ExperimentStep.before, 'before'),
         (ExperimentStep.action, 'action'),
         (ExperimentStep.after, 'after'),
-        (ExperimentStep.cancelled, 'cancelled'),
       ]) {
         final marker = ExperimentMarker(
           at: DateTime.utc(2026, 1, 1, 10, 0),
@@ -229,6 +242,30 @@ void main() {
           'type': 'experiment',
           'id': 'charge-flap-left',
           'step': wire,
+          'at': '2026-01-01T10:00:00.000Z',
+        });
+      }
+    });
+
+    test('experiment marker of a failed run names the reason', () {
+      for (final (reason, wire) in [
+        (ExperimentFailure.cancelled, 'cancelled'),
+        (ExperimentFailure.moving, 'moving'),
+        (ExperimentFailure.recordingStopped, 'recordingStopped'),
+        (ExperimentFailure.rejected, 'rejected'),
+        (ExperimentFailure.noAnswer, 'noAnswer'),
+      ]) {
+        final marker = ExperimentMarker(
+          at: DateTime.utc(2026, 1, 1, 10, 0),
+          id: 'charge-flap-left',
+          step: ExperimentStep.cancelled,
+          reason: reason,
+        );
+        expect(marker.toJson(), {
+          'type': 'experiment',
+          'id': 'charge-flap-left',
+          'step': 'cancelled',
+          'reason': wire,
           'at': '2026-01-01T10:00:00.000Z',
         });
       }

@@ -311,24 +311,6 @@ List<EcuDidRead> experimentReads(
   return reads;
 }
 
-/// Why an experiment run ended without a result.
-enum ExperimentFailure {
-  /// The owner cancelled it.
-  cancelled,
-
-  /// The vehicle started moving, or its speed became unknown or stale.
-  moving,
-
-  /// The recording ended.
-  recordingStopped,
-
-  /// The adapter did not accept the reads.
-  rejected,
-
-  /// No target ECU returned a value.
-  noAnswer,
-}
-
 /// Where a guided experiment run stands: capturing the before reads,
 /// waiting for the owner's action, capturing the after reads, then done
 /// or failed.

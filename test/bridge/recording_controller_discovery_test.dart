@@ -888,6 +888,9 @@ void main() {
         marker.step,
     ];
 
+    ExperimentFailure? lastReason(RecordingController controller) =>
+        controller.markers.markers.whereType<ExperimentMarker>().last.reason;
+
     List<List<String>> experimentBatches() => [
       for (final batch in fakeNative.enqueuedBatches)
         if (batch.any((step) => step.signalId == '${doorSignal}2a01'))
@@ -1105,9 +1108,44 @@ void main() {
         ExperimentStep.action,
         ExperimentStep.cancelled,
       ]);
+      expect(lastReason(controller), ExperimentFailure.cancelled);
       controller.confirmExperimentAction();
       expect(experimentSteps(controller), hasLength(3));
       expect(persistedState!.experimentCompletions, isEmpty);
+
+      await controller.stop();
+    });
+
+    test('a run no target ECU answers fails, with the reason in the '
+        'sidecar', () async {
+      final controller = await startStationary();
+      final sidecar = controller.markersFilePath!;
+      fakeNative.respondToOneShot = (step) =>
+          step.signalId.startsWith(doorSignal) ? '7B4 03 7F 22 31' : null;
+
+      controller.startExperiment('door-driver');
+      await waitFor(() => controller.experimentRun is ExperimentFailed);
+
+      expect(
+        (controller.experimentRun! as ExperimentFailed).failure,
+        ExperimentFailure.noAnswer,
+      );
+      List<Map<String, dynamic>> experimentLines() => [
+        for (final line in File(sidecar).readAsLinesSync())
+          if (jsonDecode(line) case final Map<String, dynamic> json
+              when json['type'] == 'experiment')
+            json..remove('at'),
+      ];
+      await waitFor(() => experimentLines().length == 2);
+      expect(experimentLines(), [
+        {'type': 'experiment', 'id': 'door-driver', 'step': 'before'},
+        {
+          'type': 'experiment',
+          'id': 'door-driver',
+          'step': 'cancelled',
+          'reason': 'noAnswer',
+        },
+      ]);
 
       await controller.stop();
     });
@@ -1125,6 +1163,7 @@ void main() {
         ExperimentFailure.moving,
       );
       expect(experimentSteps(controller).last, ExperimentStep.cancelled);
+      expect(lastReason(controller), ExperimentFailure.moving);
       expect(controller.experimentSuggestions, isEmpty);
 
       await controller.stop();
@@ -1145,6 +1184,7 @@ void main() {
         ExperimentStep.before,
         ExperimentStep.cancelled,
       ]);
+      expect(lastReason(controller), ExperimentFailure.recordingStopped);
       expect(controller.experimentSuggestions, isEmpty);
     });
   });

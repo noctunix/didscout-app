@@ -720,7 +720,8 @@ class RecordingController extends ChangeNotifier {
   }
 
   /// Abandons the experiment run in progress, recording its `cancelled`
-  /// marker; reads already queued still run, their results are dropped.
+  /// marker with reason [ExperimentFailure.cancelled]; reads already
+  /// queued still run, their results are dropped.
   /// A no-op unless a run is in progress.
   void cancelExperiment() => _failExperiment(ExperimentFailure.cancelled);
 
@@ -732,8 +733,12 @@ class RecordingController extends ChangeNotifier {
     notifyListeners();
   }
 
-  void _addExperimentStep(String id, ExperimentStep step) {
-    markers.addExperimentStep(id, step);
+  void _addExperimentStep(
+    String id,
+    ExperimentStep step, {
+    ExperimentFailure? reason,
+  }) {
+    markers.addExperimentStep(id, step, reason: reason);
     unawaited(_appendLatestMarker());
   }
 
@@ -864,7 +869,8 @@ class RecordingController extends ChangeNotifier {
   }
 
   /// Ends the run in progress as failed for [failure], recording its
-  /// `cancelled` marker; a no-op unless a run is in progress.
+  /// `cancelled` marker with [failure] as the reason; a no-op unless a
+  /// run is in progress.
   void _failExperiment(ExperimentFailure failure) {
     final run = _experimentRun;
     if (run == null || !_experimentActive) return;
@@ -872,7 +878,11 @@ class RecordingController extends ChangeNotifier {
     _experimentBefore = const {};
     _forgetFocusPayloads(_experimentReads);
     _experimentRun = ExperimentFailed(run.experiment, failure);
-    _addExperimentStep(run.experiment.id, ExperimentStep.cancelled);
+    _addExperimentStep(
+      run.experiment.id,
+      ExperimentStep.cancelled,
+      reason: failure,
+    );
     notifyListeners();
   }
 

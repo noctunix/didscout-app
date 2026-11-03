@@ -11,6 +11,25 @@ enum MarkerPhase { drive, charge, stand, park }
 /// abandoned without its "after" reads.
 enum ExperimentStep { before, action, after, cancelled }
 
+/// Why an experiment run ended without a result; the name is what an
+/// [ExperimentMarker] records as its `reason`.
+enum ExperimentFailure {
+  /// The owner cancelled it.
+  cancelled,
+
+  /// The vehicle started moving, or its speed became unknown or stale.
+  moving,
+
+  /// The recording ended.
+  recordingStopped,
+
+  /// The adapter did not accept the reads.
+  rejected,
+
+  /// No target ECU returned a value.
+  noAnswer,
+}
+
 /// A single, immutable entry in a session's marker log, and the exact JSON
 /// shape ([toJson]) the marker sidecar file (`<buffer>.markers.jsonl`)
 /// records it as — one object per line, parsed by another component, so
@@ -83,7 +102,8 @@ class ExperimentMarker extends SessionMarker {
     required this.at,
     required this.id,
     required this.step,
-  });
+    this.reason,
+  }) : assert((step == ExperimentStep.cancelled) == (reason != null));
 
   final DateTime at;
 
@@ -91,6 +111,10 @@ class ExperimentMarker extends SessionMarker {
   final String id;
 
   final ExperimentStep step;
+
+  /// Why the run failed; set exactly on an [ExperimentStep.cancelled]
+  /// step, and written only then.
+  final ExperimentFailure? reason;
 
   @override
   DateTime get timestamp => at;
@@ -100,6 +124,7 @@ class ExperimentMarker extends SessionMarker {
     'type': 'experiment',
     'id': id,
     'step': step.name,
+    'reason': ?reason?.name,
     'at': at.toIso8601String(),
   };
 }
@@ -214,8 +239,21 @@ class SessionMarkerLog extends ChangeNotifier {
     notifyListeners();
   }
 
-  void addExperimentStep(String id, ExperimentStep step) {
-    _markers.add(ExperimentMarker(at: _clock().toUtc(), id: id, step: step));
+  /// Records [step] of the experiment [id]; [reason] is required on, and
+  /// only allowed on, an [ExperimentStep.cancelled] step.
+  void addExperimentStep(
+    String id,
+    ExperimentStep step, {
+    ExperimentFailure? reason,
+  }) {
+    _markers.add(
+      ExperimentMarker(
+        at: _clock().toUtc(),
+        id: id,
+        step: step,
+        reason: reason,
+      ),
+    );
     notifyListeners();
   }
 
