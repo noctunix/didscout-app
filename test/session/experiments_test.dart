@@ -27,14 +27,20 @@ void main() {
         'climate-setpoint',
         'climate-ac',
         'climate-fan',
+        'preconditioning',
         'seat-heating',
+        'steering-wheel-heating',
+        'rear-window-heating',
         'lights',
+        'hazard-lights',
         'lock',
         'tailgate',
         'phone-charger',
+        'drive-select',
+        'recuperation-level',
         'charge-limit',
       ]);
-      expect(_ids(experimentCatalog).toSet(), hasLength(16));
+      expect(_ids(experimentCatalog).toSet(), hasLength(22));
     });
 
     test('follow-up readings are asked only where the action moves one', () {
@@ -61,11 +67,15 @@ void main() {
       '73F',
       '767',
       '74C',
+      '70C',
       '70E',
+      '742',
       '17FC008B',
       '17FC00A5',
       '17FC007B',
       '18DA0FF1',
+      '18DA07F1',
+      '18DA06F1',
       '710',
     };
 
@@ -128,11 +138,17 @@ void main() {
         'climate-setpoint',
         'climate-ac',
         'climate-fan',
+        'preconditioning',
         'seat-heating',
+        'steering-wheel-heating',
+        'rear-window-heating',
         'lights',
+        'hazard-lights',
         'lock',
         'tailgate',
         'phone-charger',
+        'drive-select',
+        'recuperation-level',
       ];
       expect(idsIn(MarkerPhase.stand), standOrPark);
       expect(idsIn(MarkerPhase.park), standOrPark);
@@ -146,24 +162,45 @@ void main() {
         'climate-setpoint',
         'climate-ac',
         'climate-fan',
+        'preconditioning',
         'seat-heating',
+        'steering-wheel-heating',
+        'rear-window-heating',
         'lights',
+        'hazard-lights',
         'charge-limit',
       ]);
     });
 
     test('needs at least one answering target ECU', () {
-      expect(
-        _ids(
-          suggestedExperiments(
-            phase: MarkerPhase.park,
-            stationary: true,
-            answeringRequestHeaders: const {'70E'},
-            completedCounts: const {},
-          ),
+      List<String> idsFor(MarkerPhase phase, Set<String> headers) => _ids(
+        suggestedExperiments(
+          phase: phase,
+          stationary: true,
+          answeringRequestHeaders: headers,
+          completedCounts: const {},
         ),
-        ['lights', 'lock', 'tailgate'],
       );
+
+      expect(idsFor(MarkerPhase.park, const {'70E'}), [
+        'rear-window-heating',
+        'lights',
+        'hazard-lights',
+        'lock',
+        'tailgate',
+      ]);
+      expect(idsFor(MarkerPhase.stand, const {'70C'}), [
+        'steering-wheel-heating',
+      ]);
+      expect(idsFor(MarkerPhase.charge, const {'742'}), ['preconditioning']);
+      expect(idsFor(MarkerPhase.park, const {'18DA06F1'}), [
+        'recuperation-level',
+      ]);
+      expect(idsFor(MarkerPhase.stand, const {'18DA0FF1'}), [
+        'drive-select',
+        'recuperation-level',
+      ]);
+      expect(idsFor(MarkerPhase.charge, const {'18DA07F1'}), isEmpty);
       expect(
         suggestedExperiments(
           phase: MarkerPhase.park,
@@ -190,7 +227,15 @@ void main() {
             },
           ),
         ),
-        ['climate-fan', 'climate-ac', 'seat-heating', 'climate-setpoint'],
+        [
+          'climate-fan',
+          'preconditioning',
+          'steering-wheel-heating',
+          'rear-window-heating',
+          'climate-ac',
+          'seat-heating',
+          'climate-setpoint',
+        ],
       );
     });
   });
