@@ -171,8 +171,8 @@ def _parser() -> argparse.ArgumentParser:
         parents=[common, module_filter],
         help="DIDs whose payload changed across each experiment run",
         description="Compare each DID's last payload between the before and action "
-        "steps with its first payload after the after step (and after an undo step, "
-        "if recorded). The markers do not name the target ECUs, so every module read in "
+        "steps with its first payload after the after step (and after the undone "
+        "step, if recorded). The markers do not name the target ECUs, so every module read in "
         "both windows is compared; narrow it with --module. A DID marked ~ also changed "
         "within the before window on its own.",
     )

@@ -11,6 +11,7 @@ from didscout_logs.sessions import ExperimentStep, Read, Session
 STEP_BEFORE: Final = "before"
 STEP_AFTER: Final = "after"
 STEP_UNDO: Final = "undo"
+STEP_UNDONE: Final = "undone"
 STEP_CANCELLED: Final = "cancelled"
 
 
@@ -146,8 +147,9 @@ def run_changes(
 
     The before window runs from the `before` step to the next step; its
     last payload of each DID counts. The after window runs from the
-    `after` step to the `undo` step or the run's end, the undo window
-    from `undo` to the run's end; their first payload counts.
+    `after` step to the `undo` step (the owner is asked to undo the
+    action) or the run's end, the undo window from `undone` (the owner
+    did) to the run's end; their first payload counts.
 
     Args:
         session: The session holding the reads.
@@ -164,13 +166,10 @@ def run_changes(
     before_ms = run.steps[0].at_ms
     before_end = run.steps[1].at_ms if len(run.steps) > 1 else run.end_ms
     undo_ms = run.at(STEP_UNDO)
+    undone_ms = run.at(STEP_UNDONE)
     before = _window(session.reads, before_ms, before_end, modules)
-    if undo_ms is None:
-        after = _window(session.reads, after_ms, run.end_ms, modules)
-        undo = {}
-    else:
-        after = _window(session.reads, after_ms, undo_ms, modules)
-        undo = _window(session.reads, undo_ms, run.end_ms, modules)
+    after = _window(session.reads, after_ms, run.end_ms if undo_ms is None else undo_ms, modules)
+    undo = {} if undone_ms is None else _window(session.reads, undone_ms, run.end_ms, modules)
     changes = [
         DidChange(
             module=key[0],

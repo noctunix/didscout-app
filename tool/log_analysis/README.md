@@ -61,7 +61,8 @@ uv run didscout-logs series bms 1E10 --decode 'u16@0*0.125-40' \
   time until the next positive read.
 - **experiments**: compares each DID's last payload between the `before`
   and the following step with its first payload after `after` (and after
-  `undo`, if recorded). The markers do not name the target ECUs, so every
+  `undone`, if recorded; the window between `undo` and `undone` is when
+  the owner takes the action back and is left out). The markers do not name the target ECUs, so every
   module read in both windows is listed; `~` marks a DID that changed
   within the before window on its own.
 - **series** `--decode` takes `<u|s><bits>@<offset>[*<scale>][<+|-><add>]`,

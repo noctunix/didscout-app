@@ -82,6 +82,9 @@ def test_run_changes_reads_the_undo_window(tmp_path: Path) -> None:
     log.positive("climate", "0100", BASE_MS + 4 * S, bytes([1]))
     log.positive("climate", "0101", BASE_MS + 4 * S, bytes([1]))
     log.experiment("ac", "undo", BASE_MS + 5 * S)
+    # Read while the owner is still undoing: not the undo value.
+    log.positive("climate", "0100", BASE_MS + 5.2 * S, bytes([7]))
+    log.experiment("ac", "undone", BASE_MS + 5.5 * S)
     log.positive("climate", "0100", BASE_MS + 6 * S, bytes([0]))
     log.experiment("next", "before", BASE_MS + 7 * S)
     log.positive("climate", "0101", BASE_MS + 8 * S, bytes([0]))
