@@ -16,13 +16,14 @@ const int unlimitedMaxReadsPerSecond = 1000;
 const int minReadTimeoutMs = 6000;
 
 /// What a recurring recording plan reads beyond the speed, energy, range,
-/// odometer, outside temperature and candidate signals every plan carries.
+/// odometer, outside and battery temperature, charging power and
+/// candidate signals every plan carries.
 enum RecordingMode {
   /// Only the speed (needed for motion-aware scouting), energy, range,
-  /// odometer, outside temperature and candidate signals plus, optionally,
-  /// discovered DIDs ([AppSettings.keepSamplingFoundDids]). The other
-  /// generated vag-ppe DIDs and the fixed 12V/accelerator steps are
-  /// omitted.
+  /// odometer, outside and battery temperature, charging power and
+  /// candidate signals plus, optionally, discovered DIDs
+  /// ([AppSettings.keepSamplingFoundDids]). The other generated vag-ppe
+  /// DIDs and the fixed 12V/accelerator steps are omitted.
   scoutOnly,
 
   /// Today's full plan: every fixed base signal plus every generated

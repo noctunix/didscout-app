@@ -60,36 +60,69 @@ void main() {
     });
   });
 
+  group('decodeBatteryTempC', () {
+    test('uint16 big-endian, 1/8 degC, minus 40 degC', () {
+      // 0x0204 = 516 -> 516 / 8 - 40 = 24.5 degC.
+      expect(decodeBatteryTempC(Uint8List.fromList([0x02, 0x04])), 24.5);
+      // 0x0140 = 320 -> 0 degC; 0x00A0 = 160 -> -20 degC.
+      expect(decodeBatteryTempC(Uint8List.fromList([0x01, 0x40])), 0);
+      expect(decodeBatteryTempC(Uint8List.fromList([0x00, 0xA0])), -20);
+    });
+
+    test('too short is null', () {
+      expect(decodeBatteryTempC(Uint8List.fromList([0x02])), isNull);
+    });
+  });
+
+  group('decodeChargePowerKw', () {
+    test('first uint16 big-endian, 0.1 kW, minus 50 kW', () {
+      // 0x0CCB = 3275 -> (3275 - 500) / 10 = 277.5 kW.
+      expect(
+        decodeChargePowerKw(Uint8List.fromList([0x0C, 0xCB, 0x03, 0x8B])),
+        277.5,
+      );
+      // 0x01F4 = 500 is what it reads while not charging.
+      expect(decodeChargePowerKw(Uint8List.fromList([0x01, 0xF4])), 0);
+    });
+
+    test('too short is null', () {
+      expect(decodeChargePowerKw(Uint8List.fromList([0x0C])), isNull);
+    });
+  });
+
   group('estimateSocPercent', () {
+    // Energy, battery temperature and the display value of real readings.
+    test('with battery temp., matches the display', () {
+      // 59322 Wh at 50.1 degC, display 67 %.
+      expect(estimateSocPercent(59322, batteryTempC: 50.1), 67);
+      // 37310 Wh at 9 degC, display 50 %.
+      expect(estimateSocPercent(37310, batteryTempC: 9), 50);
+      // 82635 Wh at 30.2 degC, display 93 %.
+      expect(estimateSocPercent(82635, batteryTempC: 30.2), 93);
+    });
+
+    test('the same energy reads higher with a cold battery only', () {
+      // 37310 * 0.00109775 + 1.4812 = 42.438; below 33 degC plus
+      // 0.301022 per K: 24 K -> 49.663.
+      expect(estimateSocPercent(37310, batteryTempC: 40), 42);
+      expect(estimateSocPercent(37310, batteryTempC: 33), 42);
+      expect(estimateSocPercent(37310, batteryTempC: 9), 50);
+    });
+
     test('without battery temp., uses the energy-only fit', () {
-      // 61075 * 0.0010689 + 7.8526 = 73.136
-      expect(estimateSocPercent(61075), 73);
-      // 1230 * 25 Wh, read while the display showed 39 %, within the
-      // energy-only fit's error:
-      // 30750 * 0.0010689 + 7.8526 = 40.721
-      expect(estimateSocPercent(30750), 41);
+      // 61075 * 0.00107967 + 4.7633 = 70.704
+      expect(estimateSocPercent(61075), 71);
     });
 
-    test('with battery temp., the same energy reads higher when cold', () {
-      // 61075 * 0.00108695 - 13 * 0.233182 + 10.9764 = 74.331
-      expect(estimateSocPercent(61075, batteryTempC: 13), 74);
-      // 61075 * 0.00108695 - 31 * 0.233182 + 10.9764 = 70.133
-      expect(estimateSocPercent(61075, batteryTempC: 31), 70);
-      // 58175 * 0.00108695 - 31 * 0.233182 + 10.9764 = 66.981
-      expect(estimateSocPercent(58175, batteryTempC: 31.0), 67);
-    });
-
-    test('is clamped to 0-100 %', () {
+    test('is clamped to 100 %', () {
       expect(estimateSocPercent(200000), 100);
       expect(estimateSocPercent(200000, batteryTempC: 20), 100);
-      // 0 * 0.00108695 - 60 * 0.233182 + 10.9764 = -3.015
-      expect(estimateSocPercent(0, batteryTempC: 60), 0);
     });
 
     test('is what LiveVehicleInfo reports, and null without energy', () {
-      const info = LiveVehicleInfo(storedEnergyWh: 61075);
-      expect(info.socEstimatePercent(), 73);
-      expect(info.socEstimatePercent(batteryTempC: 13), 74);
+      const info = LiveVehicleInfo(storedEnergyWh: 37310);
+      expect(info.socEstimatePercent(), 45);
+      expect(info.socEstimatePercent(batteryTempC: 9), 50);
       expect(LiveVehicleInfo.empty.socEstimatePercent(), isNull);
       expect(
         LiveVehicleInfo.empty.socEstimatePercent(batteryTempC: 13),

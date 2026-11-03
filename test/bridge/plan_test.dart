@@ -18,9 +18,9 @@ void main() {
 
   test('every known profile DID is read, plus the base signals', () {
     final known = vagPpeModules.fold<int>(0, (n, m) => n + m.dids.length);
-    // Speed, energy, range, odometer, outside temp. and 22F449/22F442;
-    // none of them is also a profile DID.
-    expect(plan.steps.length, known + 7);
+    // Speed, energy, range, odometer, outside temp., charging power,
+    // battery temp. and 22F449/22F442; none of them is also a profile DID.
+    expect(plan.steps.length, known + 9);
   });
 
   test('signal ids are unique and name a planned module', () {
@@ -110,9 +110,12 @@ void main() {
       'module6_222ab6',
       'module8_22f4a6',
       'module7_22f446',
+      'module6_220311',
+      'vag29-7B_221e10',
     ];
 
-    test('reads only speed, energy, range, odometer and outside temp.', () {
+    test('reads only speed, energy, range, odometer, outside temp., '
+        'charging power and battery temp.', () {
       expect(scoutOnlyPlan.steps.map((s) => s.signalId), baseSignalIds);
       final intervals = {
         for (final s in scoutOnlyPlan.steps) s.signalId: s.intervalMs,
@@ -121,6 +124,8 @@ void main() {
       expect(intervals['module6_222ab6'], 60000);
       expect(intervals['module8_22f4a6'], 60000);
       expect(intervals['module7_22f446'], 60000);
+      expect(intervals['module6_220311'], 10000);
+      expect(intervals['vag29-7B_221e10'], 30000);
     });
 
     test('every command passes the hard guard and the app policy', () {
@@ -181,9 +186,29 @@ void main() {
       expect(ids.toSet().length, ids.length);
     });
 
+    test('a discovered battery management DID matching the battery temp. '
+        'is planned once, on the fixed module', () {
+      final state = DiscoveryState();
+      state.ecus['vag29-7B'] = EcuInfo(
+        requestHeader: '17FC007B',
+        responseHeader: '17FE007B',
+        protocol: 7,
+      )..discovered.addAll({'1E10', '1E0E'});
+
+      final withDiscovery = RecordingController.buildPlanForTesting(
+        discoveryState: state,
+      );
+
+      final ids = withDiscovery.steps.map((s) => s.signalId).toList();
+      expect(ids.where((id) => id == 'vag29-7B_221e10'), hasLength(1));
+      expect(ids, contains('vag29-7B_221e0e'));
+      final moduleIds = withDiscovery.modules.map((m) => m.moduleId).toList();
+      expect(moduleIds.where((id) => id == 'vag29-7B'), hasLength(1));
+    });
+
     test('plans only the fixed modules', () {
       final moduleIds = scoutOnlyPlan.modules.map((m) => m.moduleId).toSet();
-      expect(moduleIds, {'module7', 'module8', 'module6'});
+      expect(moduleIds, {'module7', 'module8', 'module6', 'vag29-7B'});
     });
 
     test('adds discovered DIDs when keepSamplingFoundDids is on', () {
@@ -385,7 +410,7 @@ void main() {
       );
 
       final known = vagPpeModules.fold<int>(0, (n, m) => n + m.dids.length);
-      expect(withoutDiscovery.steps, hasLength(known + 7));
+      expect(withoutDiscovery.steps, hasLength(known + 9));
       expect(
         withoutDiscovery.steps.map((s) => s.signalId),
         isNot(contains('ecus11-7B0_222a00')),

@@ -31,8 +31,9 @@ Future<void> _shareFiles(List<String> paths) async {
 Future<void> _vibrate() => HapticFeedback.vibrate();
 
 /// How old the owner's last battery temp. reading may be to still feed the
-/// SoC estimate: battery temperature moves by over 15 K within an hour of
-/// driving plus fast charging.
+/// SoC estimate while the vehicle's own value is missing: battery
+/// temperature moves by over 15 K within an hour of driving plus fast
+/// charging.
 const Duration _batteryTempMaxAge = Duration(minutes: 20);
 
 /// The main (and currently only) screen: adapter connection/recording
@@ -130,10 +131,14 @@ class _RecordingPageState extends State<RecordingPage> {
     );
   }
 
-  num? get _recentBatteryTempC => _controller.markers.lastValueFor(
-    ReadingQuantity.batteryTemp,
-    maxAge: _batteryTempMaxAge,
-  );
+  /// The battery temperature the SoC estimate uses: the vehicle's own
+  /// value, else the owner's last reading of it.
+  num? get _recentBatteryTempC =>
+      _controller.liveInfo.batteryTempC ??
+      _controller.markers.lastValueFor(
+        ReadingQuantity.batteryTemp,
+        maxAge: _batteryTempMaxAge,
+      );
 
   Map<ReadingQuantity, ReadingMarker> get _lastReadings => {
     for (final marker in _controller.markers.markers)
@@ -153,8 +158,9 @@ class _RecordingPageState extends State<RecordingPage> {
         quantity == ReadingQuantity.soc &&
         storedEnergyWh != null) {
       final accuracy = batteryTempC == null
-          ? 'no battery temp., up to ±3 pp'
-          : 'battery ${formatReadingValue(batteryTempC)} °C, ±1 pp';
+          ? 'no battery temp., up to ±5 pp'
+          : 'battery ${formatReadingValue(batteryTempC.round())} °C, '
+                '±1.5 pp';
       return 'Vehicle estimate ≈ ${formatReadingValue(liveValue)} % '
           '(${_groupThousands(storedEnergyWh)} Wh, $accuracy)';
     }
@@ -384,10 +390,10 @@ num? _liveValueFor(
   ReadingQuantity.range => info.rangeKm,
   ReadingQuantity.odometer => info.odometerKm,
   ReadingQuantity.soc => info.socEstimatePercent(batteryTempC: batteryTempC),
-  ReadingQuantity.batteryTemp ||
-  ReadingQuantity.insideTemp ||
-  ReadingQuantity.chargePower ||
-  ReadingQuantity.chargePowerMax => null,
+  // Rounded to whole units, as the vehicle's displays show them.
+  ReadingQuantity.batteryTemp => info.batteryTempC?.round(),
+  ReadingQuantity.chargePower => info.chargePowerKw?.round(),
+  ReadingQuantity.insideTemp || ReadingQuantity.chargePowerMax => null,
 };
 
 /// Human-readable status line and icon for [RecordingPhase].

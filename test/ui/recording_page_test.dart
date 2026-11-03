@@ -37,6 +37,12 @@ class _FakeNativeObdApi extends NativeObdApi {
   /// Same as [outsideTempResponse], for the `22F40D` (speed) step.
   String? speedResponse;
 
+  /// Same as [outsideTempResponse], for the `221E10` (battery temp.) step.
+  String? batteryTempResponse;
+
+  /// Same as [outsideTempResponse], for the `220311` (charging power) step.
+  String? chargePowerResponse;
+
   @override
   Future<void> configure(ObdBridgeConfigMessage config) async {}
 
@@ -94,6 +100,20 @@ class _FakeNativeObdApi extends NativeObdApi {
               signalId: 'module7_22f40d',
               transport: ObdTransportStatusMessage.ok,
               rawResponseText: speedResponse,
+              receivedAtEpochMs: DateTime.now().millisecondsSinceEpoch,
+            ),
+          if (batteryTempResponse != null)
+            ObdSignalExchangeMessage(
+              signalId: 'vag29-7B_221e10',
+              transport: ObdTransportStatusMessage.ok,
+              rawResponseText: batteryTempResponse,
+              receivedAtEpochMs: DateTime.now().millisecondsSinceEpoch,
+            ),
+          if (chargePowerResponse != null)
+            ObdSignalExchangeMessage(
+              signalId: 'module6_220311',
+              transport: ObdTransportStatusMessage.ok,
+              rawResponseText: chargePowerResponse,
               receivedAtEpochMs: DateTime.now().millisecondsSinceEpoch,
             ),
         ],
@@ -749,13 +769,13 @@ void main() {
       final controller = storedEnergyController();
       await startAndPoll(tester, controller);
 
-      // 61075 * 0.0010689 + 7.8526 = 73.136
-      expect(find.text('≈ 73 %'), findsOneWidget);
+      // 61075 * 0.00107967 + 4.7633 = 70.704
+      expect(find.text('≈ 71 %'), findsOneWidget);
       expect(find.text('Estimate'), findsOneWidget);
       expect(
         labelled(
           tester,
-          'State of charge, approximately 73 percent, '
+          'State of charge, approximately 71 percent, '
           'estimated from the vehicle',
         ),
         isTrue,
@@ -764,8 +784,8 @@ void main() {
       await openTile(tester, 'State of charge');
       expect(
         find.text(
-          'Vehicle estimate ≈ 73 % '
-          '(61\u202F075 Wh, no battery temp., up to ±3 pp)',
+          'Vehicle estimate ≈ 71 % '
+          '(61\u202F075 Wh, no battery temp., up to ±5 pp)',
         ),
         findsOneWidget,
       );
@@ -775,10 +795,10 @@ void main() {
       final marker = controller.markers.markers.single as ReadingMarker;
       expect(marker.quantity, ReadingQuantity.soc);
       expect(marker.source, ReadingSource.confirmed);
-      expect(marker.value, 73);
-      expect(marker.prefill, 73);
+      expect(marker.value, 71);
+      expect(marker.prefill, 71);
       expect(marker.prefillOrigin, PrefillOrigin.live);
-      expect(marker.liveValue, 73);
+      expect(marker.liveValue, 71);
 
       await controller.stop();
     });
@@ -790,13 +810,13 @@ void main() {
       addBatteryTemp(controller, const Duration(minutes: 5));
       await startAndPoll(tester, controller);
 
-      // 61075 * 0.00108695 - 13 * 0.233182 + 10.9764 = 74.331
-      expect(find.text('≈ 74 %'), findsOneWidget);
+      // 61075 * 0.00109775 + 1.4812 + (33 - 13) * 0.301022 = 74.546
+      expect(find.text('≈ 75 %'), findsOneWidget);
 
       await openTile(tester, 'State of charge');
       expect(
         find.text(
-          'Vehicle estimate ≈ 74 % (61\u202F075 Wh, battery 13 °C, ±1 pp)',
+          'Vehicle estimate ≈ 75 % (61\u202F075 Wh, battery 13 °C, ±1.5 pp)',
         ),
         findsOneWidget,
       );
@@ -805,8 +825,8 @@ void main() {
 
       final entered = controller.markers.markers.last as ReadingMarker;
       expect(entered.quantity, ReadingQuantity.soc);
-      expect(entered.value, 74);
-      expect(entered.liveValue, 74);
+      expect(entered.value, 75);
+      expect(entered.liveValue, 75);
 
       await controller.stop();
     });
@@ -817,13 +837,38 @@ void main() {
       addBatteryTemp(controller, const Duration(minutes: 21));
       await startAndPoll(tester, controller);
 
-      // 61075 * 0.0010689 + 7.8526 = 73.136 -- the energy-only fit.
-      expect(find.text('≈ 73 %'), findsOneWidget);
+      // 61075 * 0.00107967 + 4.7633 = 70.704 -- the energy-only fit.
+      expect(find.text('≈ 71 %'), findsOneWidget);
       expect(find.text('21 min ago'), findsOneWidget);
       expect(valueColor(tester, '13 °C'), colorsOf(tester).onSurfaceVariant);
 
       await openTile(tester, 'State of charge');
       expect(find.textContaining('no battery temp.'), findsOneWidget);
+
+      await controller.stop();
+    });
+
+    testWidgets("the vehicle's battery temp. shows on its tile and feeds the "
+        'SoC estimate ahead of an entry', (tester) async {
+      final controller = _fakeController(
+        fakeNative: _FakeNativeObdApi()
+          ..storedEnergyResponse = '77A07622AB80000098B'
+          // 62 1E10, then 0x01A4 = 420 / 8 - 40 = 12.5 degC.
+          ..batteryTempResponse = '17FE007B05621E1001A4',
+        tickInterval: const Duration(milliseconds: 1),
+      );
+      controller.addReading(
+        quantity: ReadingQuantity.batteryTemp,
+        value: 30,
+        readAt: DateTime.now().subtract(const Duration(minutes: 5)),
+        source: ReadingSource.typed,
+      );
+      await startAndPoll(tester, controller);
+
+      expect(find.text('13 °C'), findsOneWidget);
+      // 61075 * 0.00109775 + 1.4812 + (33 - 12.5) * 0.301022 = 74.697;
+      // the 30 degC entry would give 69.
+      expect(find.text('≈ 75 %'), findsOneWidget);
 
       await controller.stop();
     });

@@ -1,3 +1,4 @@
+import 'dart:math';
 import 'dart:typed_data';
 
 /// One of the tile quantities the recording page lets the owner enter or
@@ -86,6 +87,8 @@ class LiveVehicleInfo {
     this.outsideTempC,
     this.rangeKm,
     this.storedEnergyWh,
+    this.batteryTempC,
+    this.chargePowerKw,
   });
 
   static const empty = LiveVehicleInfo();
@@ -95,6 +98,8 @@ class LiveVehicleInfo {
   final int? outsideTempC;
   final int? rangeKm;
   final int? storedEnergyWh;
+  final double? batteryTempC;
+  final double? chargePowerKw;
 
   /// [estimateSocPercent] of [storedEnergyWh] at [batteryTempC] (°C, if
   /// known), or null while [storedEnergyWh] is unknown.
@@ -139,17 +144,32 @@ int? decodeStoredEnergyWh(Uint8List payload) {
   return raw * 25;
 }
 
+/// Decodes a `221E10` (HV battery temperature, battery management
+/// `17FC007B`) positive payload: uint16 big-endian, 1/8 °C, offset -40 °C.
+double? decodeBatteryTempC(Uint8List payload) {
+  if (payload.length < 2) return null;
+  return ((payload[0] << 8) | payload[1]) / 8 - 40;
+}
+
+/// Decodes a `220311` (charging power, gateway) positive payload: uint16
+/// big-endian, 0.1 kW, offset -50 kW; reads 0 while not charging.
+double? decodeChargePowerKw(Uint8List payload) {
+  if (payload.length < 2) return null;
+  return (((payload[0] << 8) | payload[1]) - 500) / 10;
+}
+
 /// Estimates the state of charge the vehicle displays from
 /// [storedEnergyWh] (`222AB8`) and returns it in percent, clamped to 0-100.
-/// Not a decoded DID: a linear fit of the owner's typed SoC readings on
-/// this one vehicle (35 readings, battery 9-31 °C). Stored energy reads
-/// lower with a cold battery while the display does not, so
-/// [batteryTempC] (°C), when given, is part of the fit and keeps the
-/// estimate within 1 percentage point of the display; without it, the
-/// error reaches 3.
+/// Not a decoded DID: a fit of the owner's typed SoC readings on this one
+/// vehicle (74 readings, 9-96 %, battery 9-50 °C). Below 33 °C the stored
+/// energy reads lower than the display suggests, so [batteryTempC] (°C),
+/// when given, keeps the estimate within 1.5 percentage points of the
+/// display; without it, the error reaches 5.
 int estimateSocPercent(int storedEnergyWh, {num? batteryTempC}) {
   final soc = batteryTempC == null
-      ? storedEnergyWh * 0.0010689 + 7.8526
-      : storedEnergyWh * 0.00108695 - batteryTempC * 0.233182 + 10.9764;
+      ? storedEnergyWh * 0.00107967 + 4.7633
+      : storedEnergyWh * 0.00109775 +
+            1.4812 -
+            0.301022 * min(batteryTempC - 33, 0);
   return soc.round().clamp(0, 100);
 }

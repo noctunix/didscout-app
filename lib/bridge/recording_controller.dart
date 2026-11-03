@@ -96,6 +96,12 @@ const String _module8ResponseHeader = '18DAF106';
 const String _module6RequestHeader = '710';
 const String _module6ResponseHeader = '77A';
 
+/// The HV battery management ECU, under the module id discovery's vag29
+/// inventory gives it, so its discovered DIDs dedupe onto the fixed steps.
+const String _bmsModuleId = 'vag29-7B';
+const String _bmsRequestHeader = '17FC007B';
+const String _bmsResponseHeader = '17FE007B';
+
 /// A live value counts for this many of its step's planned intervals after
 /// it was received, the same rule as [AppSettings.speedFreshnessWindow]:
 /// one missed or slow read is tolerated, a stalled one is not shown.
@@ -130,9 +136,10 @@ class _LiveSignalSpec {
 }
 
 /// Planned in every mode: the speed because discovery is motion-aware and
-/// needs it even in [RecordingMode.scoutOnly]; energy, range, odometer and
-/// outside temperature because they are what readings typed off the
-/// vehicle's displays are checked against.
+/// needs it even in [RecordingMode.scoutOnly]; energy, range, odometer,
+/// outside temperature, battery temperature and charging power because
+/// they are what readings typed off the vehicle's displays are checked
+/// against.
 const Map<String, _LiveSignalSpec> _liveSignalSpecs = {
   'module7_22f40d': _LiveSignalSpec(
     'module7',
@@ -162,6 +169,18 @@ const Map<String, _LiveSignalSpec> _liveSignalSpecs = {
     '22F446',
     _module7ResponseHeader,
     60000,
+  ),
+  'module6_220311': _LiveSignalSpec(
+    'module6',
+    '220311',
+    _module6ResponseHeader,
+    10000,
+  ),
+  'vag29-7B_221e10': _LiveSignalSpec(
+    _bmsModuleId,
+    '221E10',
+    _bmsResponseHeader,
+    30000,
   ),
 };
 
@@ -1359,6 +1378,8 @@ class RecordingController extends ChangeNotifier {
       int? outsideTempC;
       int? rangeKm;
       int? storedEnergyWh;
+      double? batteryTempC;
+      double? chargePowerKw;
       for (final exchange in state.exchanges) {
         if (exchange.transport != ObdTransportStatusMessage.ok ||
             exchange.rawResponseText == null) {
@@ -1391,6 +1412,10 @@ class RecordingController extends ChangeNotifier {
             rangeKm = decodeRangeKm(payload);
           case 'module6_222ab8':
             storedEnergyWh = decodeStoredEnergyWh(payload);
+          case 'module6_220311':
+            chargePowerKw = decodeChargePowerKw(payload);
+          case 'vag29-7B_221e10':
+            batteryTempC = decodeBatteryTempC(payload);
         }
       }
       _liveInfo = LiveVehicleInfo(
@@ -1399,6 +1424,8 @@ class RecordingController extends ChangeNotifier {
         outsideTempC: outsideTempC,
         rangeKm: rangeKm,
         storedEnergyWh: storedEnergyWh,
+        batteryTempC: batteryTempC,
+        chargePowerKw: chargePowerKw,
       );
     } catch (_) {
       _liveInfo = LiveVehicleInfo.empty;
@@ -1638,9 +1665,19 @@ class RecordingController extends ChangeNotifier {
       ),
     );
 
+    final bms = ObdModuleMessage(
+      moduleId: _bmsModuleId,
+      protocol: ObdProtocol.twentyNineBitCan.wireValue,
+      setup: buildModuleSetupCommands(
+        protocol: ObdProtocol.twentyNineBitCan,
+        requestHeader: _bmsRequestHeader,
+        responseHeader: _bmsResponseHeader,
+      ),
+    );
+
     final recordKnown =
         settings.recordingMode == RecordingMode.scoutAndRecordKnown;
-    final fixedModules = [module7, module8, module6];
+    final fixedModules = [module7, module8, module6, bms];
     final fixedModuleIds = {for (final module in fixedModules) module.moduleId};
     final knownModules = [
       ...fixedModules,
