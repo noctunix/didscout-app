@@ -5,13 +5,17 @@ import '../session/reading_prompts.dart';
 import '../session/session_markers.dart';
 import 'reading_entry_sheet.dart';
 
-/// Every reading tile, in display order, two per row. The order is fixed
-/// so a tile never moves under the owner's finger.
-const List<ReadingQuantity> _tileQuantities = [
+/// The reading tiles shown in [phase], in display order, two per row. The
+/// order is fixed so a tile never moves under the owner's finger; the
+/// third slot holds whichever charging power the vehicle displays in
+/// [phase]: the power flowing while charging, the predicted maximum
+/// otherwise.
+List<ReadingQuantity> _tileQuantities(MarkerPhase? phase) => [
   ReadingQuantity.soc,
   ReadingQuantity.batteryTemp,
-  ReadingQuantity.chargePower,
-  ReadingQuantity.chargePowerMax,
+  phase == MarkerPhase.charge
+      ? ReadingQuantity.chargePower
+      : ReadingQuantity.chargePowerMax,
   ReadingQuantity.range,
   ReadingQuantity.outsideTemp,
   ReadingQuantity.insideTemp,
@@ -46,7 +50,8 @@ class ReadingTiles extends StatelessWidget {
   /// Each quantity's most recent reading.
   final Map<ReadingQuantity, ReadingMarker> lastEntries;
 
-  /// The session's current phase, which decides when an entry is stale.
+  /// The session's current phase, which decides when an entry is stale
+  /// and which charging power tile is shown.
   final MarkerPhase? phase;
 
   /// The quantities a [ReadingPrompt] asks for now.
@@ -69,17 +74,22 @@ class ReadingTiles extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final quantities = _tileQuantities(phase);
     return Column(
       children: [
-        for (var i = 0; i < _tileQuantities.length; i += 2) ...[
+        for (var i = 0; i < quantities.length; i += 2) ...[
           if (i > 0) const SizedBox(height: 12),
           IntrinsicHeight(
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                Expanded(child: _tile(_tileQuantities[i])),
+                Expanded(child: _tile(quantities[i])),
                 const SizedBox(width: 12),
-                Expanded(child: _tile(_tileQuantities[i + 1])),
+                Expanded(
+                  child: i + 1 < quantities.length
+                      ? _tile(quantities[i + 1])
+                      : const SizedBox.shrink(),
+                ),
               ],
             ),
           ),

@@ -440,6 +440,34 @@ void main() {
       expect(marker.quantity, ReadingQuantity.chargePowerMax);
     });
 
+    testWidgets('while charging, the charging power tile takes the max. '
+        "tile's place and shows the vehicle's value", (tester) async {
+      final controller = _fakeController(
+        fakeNative: _FakeNativeObdApi()
+          // 62 0311, then 0x0CCB = (3275 - 500) / 10 = 277.5 kW.
+          ..chargePowerResponse = '77A066203110CCB038B',
+        tickInterval: const Duration(milliseconds: 1),
+      );
+      await pumpPage(tester, controller: controller);
+      await _startRecording(tester, controller);
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 20)),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Max. charging power'), findsOneWidget);
+      expect(find.text('Charging power (now)'), findsNothing);
+
+      await tester.tap(find.widgetWithText(FilledButton, 'Charge'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Max. charging power'), findsNothing);
+      expect(find.text('Charging power (now)'), findsOneWidget);
+      expect(find.text('278 kW'), findsOneWidget);
+
+      await controller.stop();
+    });
+
     testWidgets('tile entry stores read_at as the moment the tile was tapped', (
       tester,
     ) async {
@@ -520,7 +548,8 @@ void main() {
     testWidgets('a tile without a value says it was not read', (tester) async {
       await pumpPage(tester);
 
-      expect(find.text('Not read'), findsNWidgets(8));
+      // Seven tiles: only one of the two charging power tiles at a time.
+      expect(find.text('Not read'), findsNWidgets(7));
       expect(labelled(tester, 'Odometer, not read'), isTrue);
 
       await openTile(tester, 'Inside temp.');
