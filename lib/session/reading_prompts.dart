@@ -38,8 +38,8 @@ class ReadingPrompt {
 ///    [chargePowerMaxPromptInterval] ago.
 ///
 /// Values the vehicle reports itself (odometer, range, outside
-/// temperature) are never prompted for, and the inside temperature only
-/// as an experiment's follow-up. Apart from rule 3, motion is not
+/// temperature, and whatever is in [reportedByVehicle]) are never prompted
+/// for, and the inside temperature only as an experiment's follow-up. Apart from rule 3, motion is not
 /// considered: the caller decides how to show prompts while driving.
 ///
 /// - [phase]: the session's current phase, or null if none was chosen.
@@ -47,6 +47,8 @@ class ReadingPrompt {
 /// - [now]: the current time, compared against [lastReadAt].
 /// - [lastReadAt]: when each quantity was last read; a missing quantity
 ///   was never read.
+/// - [reportedByVehicle]: the quantities the vehicle currently reports a
+///   decoded value for; an estimate does not count.
 ///
 /// Returns the due prompts, or an empty list.
 List<ReadingPrompt> readingPrompts({
@@ -54,8 +56,10 @@ List<ReadingPrompt> readingPrompts({
   required bool stationary,
   required DateTime now,
   required Map<ReadingQuantity, DateTime> lastReadAt,
+  Set<ReadingQuantity> reportedByVehicle = const {},
 }) {
   ReadingPrompt? due(ReadingQuantity quantity, Duration interval) {
+    if (reportedByVehicle.contains(quantity)) return null;
     final last = lastReadAt[quantity];
     if (last == null) {
       return ReadingPrompt(quantity: quantity, reason: 'Not read yet');

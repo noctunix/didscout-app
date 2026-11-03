@@ -12,12 +12,14 @@ List<ReadingQuantity> _prompted({
   MarkerPhase? phase,
   bool stationary = false,
   Map<ReadingQuantity, DateTime> lastReadAt = const {},
+  Set<ReadingQuantity> reportedByVehicle = const {},
 }) => [
   for (final prompt in readingPrompts(
     phase: phase,
     stationary: stationary,
     now: _now,
     lastReadAt: lastReadAt,
+    reportedByVehicle: reportedByVehicle,
   ))
     prompt.quantity,
 ];
@@ -253,5 +255,26 @@ void main() {
         }
       }
     });
+  });
+
+  test('a quantity the vehicle reports itself is never prompted for', () {
+    expect(
+      _prompted(
+        phase: MarkerPhase.charge,
+        reportedByVehicle: {
+          ReadingQuantity.batteryTemp,
+          ReadingQuantity.chargePower,
+        },
+      ),
+      [ReadingQuantity.soc],
+    );
+    expect(
+      _prompted(
+        phase: MarkerPhase.stand,
+        stationary: true,
+        reportedByVehicle: {ReadingQuantity.batteryTemp},
+      ),
+      [ReadingQuantity.chargePowerMax],
+    );
   });
 }

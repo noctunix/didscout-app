@@ -1211,6 +1211,28 @@ void main() {
       await controller.stop();
     });
 
+    testWidgets('never ask for what the vehicle reports itself', (
+      tester,
+    ) async {
+      final controller = _fakeController(
+        fakeNative: _FakeNativeObdApi()
+          ..batteryTempResponse = '17FE007B05621E1001A4'
+          ..chargePowerResponse = '77A066203110CCB038B',
+        tickInterval: const Duration(milliseconds: 1),
+      );
+      await pumpPage(tester, controller: controller);
+      await _startRecording(tester, controller);
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 20)),
+      );
+      controller.addPhase(MarkerPhase.charge);
+      await tester.pumpAndSettle();
+
+      expect(find.text('Read now: State of charge'), findsOneWidget);
+
+      await controller.stop();
+    });
+
     testWidgets('say so when nothing is due', (tester) async {
       final controller = _RecordingStubController()
         ..addReading(

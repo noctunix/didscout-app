@@ -225,6 +225,12 @@ class _RecordingPageState extends State<RecordingPage> {
       lastReadAt: lastReadings.map(
         (quantity, marker) => MapEntry(quantity, marker.readAt),
       ),
+      reportedByVehicle: {
+        if (_controller.liveInfo.batteryTempC != null)
+          ReadingQuantity.batteryTemp,
+        if (_controller.liveInfo.chargePowerKw != null)
+          ReadingQuantity.chargePower,
+      },
     );
   }
 
