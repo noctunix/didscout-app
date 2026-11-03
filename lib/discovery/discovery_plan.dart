@@ -33,8 +33,28 @@ class DiscoveredEcuPlan {
   final Set<String> stableDids;
 }
 
+/// Discovered DIDs, by request header, whose meaning is settled and that
+/// therefore never join the survey or focus sampling: read by a fixed plan
+/// step already, a copy of one, or a candidate that was ruled out.
+const Map<String, Set<String>> settledDids = {
+  // Fixed steps: speed, outside temperature.
+  '18DA04F1': {'F40D', 'F446'},
+  // Fixed step: odometer.
+  '18DA06F1': {'F4A6'},
+  // Fixed steps: range, stored energy, charging power; 0430 is a ring
+  // buffer of past charging events, not a live value.
+  '710': {'2AB6', '2AB8', '0311', '0430'},
+  // Fixed step: battery temperature.
+  '17FC007B': {'1E10'},
+  // The odometer again, as the cluster shows it.
+  '714': {'2203'},
+  // Ruled out as the battery temperature.
+  '18DA0FF1': {'2A26', '2A2D'},
+};
+
 /// Every ECU in [state] with at least one discovered DID not already
-/// polled by the generated vag-ppe plan, in module-id order. An ECU vag-ppe
+/// polled by the generated vag-ppe plan nor [settledDids], in module-id
+/// order. An ECU vag-ppe
 /// already seeds (see `DiscoveryEngine._seedVagPpeEcus`, which keys it by
 /// the vag-ppe module's own id) is matched by that same id -- only its new
 /// DIDs are added; an ECU discovery found on its own (ids like
@@ -50,9 +70,11 @@ List<DiscoveredEcuPlan> discoveredPlanAdditions(DiscoveryState state) {
     final responseHeader = ecu.responseHeader;
     if (responseHeader == null) continue;
     final seed = vagPpeById[ecuId];
-    final knownDids = seed == null
-        ? const <String>{}
-        : {for (final did in seed.dids) did.did.toUpperCase()};
+    final knownDids = {
+      if (seed != null)
+        for (final did in seed.dids) did.did.toUpperCase(),
+      ...?settledDids[ecu.requestHeader],
+    };
     final newDids =
         ecu.discovered
             .map((did) => did.toUpperCase())

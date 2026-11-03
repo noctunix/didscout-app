@@ -95,4 +95,24 @@ void main() {
       '2A02',
     ]);
   });
+
+  test('settled DIDs never join the plan, whichever ECU id found them', () {
+    final state = DiscoveryState();
+    state.ecus['cluster'] = EcuInfo(
+      requestHeader: '714',
+      responseHeader: '77E',
+      protocol: 6,
+    )..discovered.addAll(['2203', '2204']);
+    state.ecus['motor-rear'] = EcuInfo(
+      requestHeader: '18DA06F1',
+      responseHeader: '18DAF106',
+      protocol: 7,
+    )..discovered.add('F4A6');
+
+    final additions = discoveredPlanAdditions(state);
+
+    expect(additions, hasLength(1));
+    expect(additions.single.moduleId, 'cluster');
+    expect(additions.single.dids, ['2204']);
+  });
 }

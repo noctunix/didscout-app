@@ -206,6 +206,30 @@ void main() {
       expect(moduleIds.where((id) => id == 'vag29-7B'), hasLength(1));
     });
 
+    test("a fixed step's DID found under another ECU id is not read twice", () {
+      EcuInfo ecu(
+        String request,
+        String response,
+        int protocol,
+        Set<String> dids,
+      ) => EcuInfo(
+        requestHeader: request,
+        responseHeader: response,
+        protocol: protocol,
+      )..discovered.addAll(dids);
+      final state = DiscoveryState()
+        ..ecus['ecus29-04'] = ecu('18DA04F1', '18DAF104', 7, {'F40D', 'F446'})
+        ..ecus['motor-rear'] = ecu('18DA06F1', '18DAF106', 7, {'F4A6'})
+        ..ecus['ecus11-710'] = ecu('710', '77A', 6, {'2AB6', '2AB8', '0311'})
+        ..ecus['ecus29-7B'] = ecu('17FC007B', '17FE007B', 7, {'1E10'});
+
+      final withDiscovery = RecordingController.buildPlanForTesting(
+        discoveryState: state,
+      );
+
+      expect(withDiscovery.steps.map((s) => s.signalId), baseSignalIds);
+    });
+
     test('plans only the fixed modules', () {
       final moduleIds = scoutOnlyPlan.modules.map((m) => m.moduleId).toSet();
       expect(moduleIds, {'module7', 'module8', 'module6', 'vag29-7B'});
