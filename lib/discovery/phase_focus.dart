@@ -2,6 +2,8 @@
 /// DIDs a focus sample reads.
 library;
 
+import 'dart:math';
+
 import '../session/session_markers.dart';
 import 'did_order.dart';
 import 'discovery_plan.dart';
@@ -14,6 +16,14 @@ const Duration phaseFocusSampleInterval = Duration(seconds: 30);
 /// Most focus reads queued per [phaseFocusSampleInterval]: they share the
 /// poller's idle time with discovery, which must keep a part of it.
 const int maxPhaseFocusReads = 60;
+
+/// Most of a focus sample's [maxPhaseFocusReads] the reads of moving
+/// values may take, so the others still come round.
+const int maxMoverFocusReads = maxPhaseFocusReads ~/ 2;
+
+/// How long a DID counts as moving after its focus reads last returned a
+/// changed value.
+const Duration focusMoverWindow = Duration(minutes: 10);
 
 const Set<String> _standFocus = {
   '74A', '74B', '73E', '73F', // doors
@@ -99,3 +109,34 @@ bool ecuReadable(
 }) =>
     (stationary || !movingDiscoveryBlocked(ecu.f197Name)) &&
     !(ecu.asleepUntil?.isAfter(now) ?? false);
+
+/// The next focus sample out of [reads], movers first: up to
+/// [maxMoverFocusReads] of the reads [isMover] accepts, rotating from
+/// [moverCursor], then the others, rotating from [restCursor], up to
+/// [maxPhaseFocusReads] in total.
+///
+/// Returns the sample and the cursors the next sample continues from.
+({List<EcuDidRead> sample, int moverCursor, int restCursor}) nextFocusSample(
+  List<EcuDidRead> reads, {
+  required bool Function(EcuDidRead read) isMover,
+  required int moverCursor,
+  required int restCursor,
+}) {
+  final movers = reads.where(isMover).toList();
+  final rest = reads.where((read) => !isMover(read)).toList();
+  final moverCount = min(movers.length, maxMoverFocusReads);
+  final restCount = min(rest.length, maxPhaseFocusReads - moverCount);
+  List<EcuDidRead> rotated(List<EcuDidRead> from, int cursor, int count) => [
+    for (var i = 0; i < count; i++) from[(cursor + i) % from.length],
+  ];
+  int advanced(List<EcuDidRead> from, int cursor, int count) =>
+      from.isEmpty ? 0 : (cursor + count) % from.length;
+  return (
+    sample: [
+      ...rotated(movers, moverCursor, moverCount),
+      ...rotated(rest, restCursor, restCount),
+    ],
+    moverCursor: advanced(movers, moverCursor, moverCount),
+    restCursor: advanced(rest, restCursor, restCount),
+  );
+}

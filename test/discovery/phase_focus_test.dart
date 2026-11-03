@@ -69,4 +69,86 @@ void main() {
       'unnamed/2A00',
     ]);
   });
+
+  group('nextFocusSample', () {
+    List<EcuDidRead> readsFor(int count) => [
+      for (var i = 0; i < count; i++)
+        (
+          ecuId: 'a',
+          requestHeader: '74A',
+          responseHeader: '7B4',
+          protocol: 6,
+          did: (0x2A00 + i).toRadixString(16).toUpperCase(),
+        ),
+    ];
+
+    test('movers take at most maxMoverFocusReads, rotating, and the others '
+        'fill the rest of the sample', () {
+      final reads = readsFor(maxPhaseFocusReads * 2);
+      // Every even read moves: maxPhaseFocusReads movers in all.
+      bool isMover(EcuDidRead read) => reads.indexOf(read).isEven;
+
+      final first = nextFocusSample(
+        reads,
+        isMover: isMover,
+        moverCursor: 0,
+        restCursor: 0,
+      );
+      final second = nextFocusSample(
+        reads,
+        isMover: isMover,
+        moverCursor: first.moverCursor,
+        restCursor: first.restCursor,
+      );
+
+      expect(first.sample, hasLength(maxPhaseFocusReads));
+      expect(first.sample.take(maxMoverFocusReads).map(reads.indexOf), [
+        for (var i = 0; i < maxMoverFocusReads; i++) 2 * i,
+      ]);
+      expect(first.sample.skip(maxMoverFocusReads).map(reads.indexOf), [
+        for (var i = 0; i < maxPhaseFocusReads - maxMoverFocusReads; i++)
+          2 * i + 1,
+      ]);
+      expect(
+        second.sample.first,
+        reads[2 * maxMoverFocusReads],
+        reason: 'the movers left out last time come first',
+      );
+    });
+
+    test('without movers, rotates through all reads', () {
+      final reads = readsFor(maxPhaseFocusReads + 10);
+
+      final first = nextFocusSample(
+        reads,
+        isMover: (_) => false,
+        moverCursor: 0,
+        restCursor: 0,
+      );
+      final second = nextFocusSample(
+        reads,
+        isMover: (_) => false,
+        moverCursor: first.moverCursor,
+        restCursor: first.restCursor,
+      );
+
+      expect(first.sample, reads.take(maxPhaseFocusReads));
+      expect(second.sample, [
+        ...reads.skip(maxPhaseFocusReads),
+        ...reads.take(maxPhaseFocusReads - 10),
+      ]);
+    });
+
+    test('no reads, no sample', () {
+      final next = nextFocusSample(
+        const [],
+        isMover: (_) => true,
+        moverCursor: 3,
+        restCursor: 5,
+      );
+
+      expect(next.sample, isEmpty);
+      expect((next.moverCursor, next.restCursor), (0, 0));
+    });
+  });
 }

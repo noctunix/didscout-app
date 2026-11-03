@@ -722,6 +722,45 @@ void main() {
       ]);
     });
 
+    test('reads a DID whose value moved in every sample, ahead of the '
+        'rotation', () async {
+      final dids = [
+        for (var i = 0; i < maxPhaseFocusReads + 10; i++)
+          (0x2A00 + i).toRadixString(16).toUpperCase(),
+      ];
+      final moving = dids.last;
+      var counter = 0;
+      fakeNative.respondToOneShot = (step) {
+        final did = step.command.substring(2);
+        final value = did == moving ? (counter++ & 0xFF) : 0;
+        return '7B4 04 62 $did ${value.toRadixString(16).padLeft(2, '0')}';
+      };
+      persistedState = DiscoveryState(
+        ecus: {'ecus11-74A': _namedEcu('74A', '7B4', 'Door FL', dids.toSet())},
+      );
+      final controller = makeController(settings: _focusOnlySettings);
+      controller.addPhase(MarkerPhase.park);
+
+      await controller.start();
+      await waitFor(() => fakeNative.enqueuedBatches.length >= 6);
+      await controller.stop();
+
+      final firsts = [
+        for (final batch in fakeNative.enqueuedBatches.take(6))
+          batch.first.command.substring(2),
+      ];
+      // Read once per rotation until two reads differ, then first in
+      // every sample.
+      expect(firsts.take(3), everyElement(isNot(moving)));
+      expect(firsts.skip(3), everyElement(moving));
+      expect(
+        fakeNative.enqueuedBatches[3].where(
+          (step) => step.command == '22$moving',
+        ),
+        hasLength(1),
+      );
+    });
+
     test('skips a sample while the previous one is unanswered', () async {
       // Never set up: no focus read is ever answered.
       fakeNative.respondToOneShot = null;

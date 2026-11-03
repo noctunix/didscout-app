@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:math' show max, min;
+import 'dart:math' show max;
 
 import 'package:flutter/foundation.dart';
 import 'package:obdbridge/obdbridge.dart';
@@ -346,9 +346,16 @@ class RecordingController extends ChangeNotifier {
   final Set<String> _focusPending = {};
   DateTime? _focusDeadline;
 
-  /// Where in the current phase's [phaseFocusReads] the next focus sample
-  /// starts.
-  int _focusCursor = 0;
+  /// Where among the moving and the other reads of the current phase's
+  /// [phaseFocusReads] the next focus sample ([nextFocusSample])
+  /// continues.
+  int _focusMoverCursor = 0;
+  int _focusRestCursor = 0;
+
+  /// Per focus read's signal id, the hash of its last positive payload and
+  /// when that payload last differed from the one before.
+  final Map<String, int> _focusPayloadHashes = {};
+  final Map<String, DateTime> _focusMovedAt = {};
 
   /// The discovery state as last persisted while discovery runs.
   String? _savedDiscoveryJson;
@@ -597,7 +604,8 @@ class RecordingController extends ChangeNotifier {
     _discoveryEngine
       ?..handlePhaseChange()
       ..focusRequestHeaders = _focusRequestHeaders;
-    _focusCursor = 0;
+    _focusMoverCursor = 0;
+    _focusRestCursor = 0;
     unawaited(_appendLatestMarker());
   }
 
@@ -764,6 +772,21 @@ class RecordingController extends ChangeNotifier {
         _failExperiment(ExperimentFailure.rejected);
       }
     }
+  }
+
+  /// Takes [result] if the current focus sample is waiting for it, noting
+  /// when its payload differs from that DID's previous focus read.
+  bool _claimFocusResult(ProbeResult result) {
+    if (!_focusPending.remove(result.signalId)) return false;
+    if (result.payload case final payload?) {
+      final hash = Object.hashAll(payload);
+      final previous = _focusPayloadHashes[result.signalId];
+      _focusPayloadHashes[result.signalId] = hash;
+      if (previous != null && previous != hash) {
+        _focusMovedAt[result.signalId] = result.at;
+      }
+    }
+    return true;
   }
 
   /// Takes [result] if the current experiment capture is waiting for it,
@@ -1106,8 +1129,7 @@ class RecordingController extends ChangeNotifier {
       // Focus first: a focus read queued before an experiment capture
       // must not stand in for the capture's own read of the same DID.
       claimResult: (result) =>
-          _focusPending.remove(result.signalId) ||
-          _claimExperimentResult(result),
+          _claimFocusResult(result) || _claimExperimentResult(result),
     );
     _discoveryExecutor = executor;
     ObdEventsApi.setUp(_DiscoveryEventsBridge(executor));
@@ -1170,16 +1192,24 @@ class RecordingController extends ChangeNotifier {
       stationary: _isStationary(now),
       now: now,
     );
-    final count = min(reads.length, maxPhaseFocusReads);
-    if (count == 0) return;
-    final (modules, steps) = _probeBatch([
-      for (var i = 0; i < count; i++) reads[(_focusCursor + i) % reads.length],
-    ]);
+    final next = nextFocusSample(
+      reads,
+      isMover: (read) {
+        final movedAt = _focusMovedAt[_readSignalId(read)];
+        return movedAt != null && now.difference(movedAt) < focusMoverWindow;
+      },
+      moverCursor: _focusMoverCursor,
+      restCursor: _focusRestCursor,
+    );
+    if (next.sample.isEmpty) return;
+    final (modules, steps) = _probeBatch(next.sample);
     _focusPending.addAll(steps.map((step) => step.signalId));
     _focusDeadline = now.add(
-      defaultBatchDeadlineBase + defaultBatchDeadlinePerStep * count,
+      defaultBatchDeadlineBase +
+          defaultBatchDeadlinePerStep * next.sample.length,
     );
-    _focusCursor = (_focusCursor + count) % reads.length;
+    _focusMoverCursor = next.moverCursor;
+    _focusRestCursor = next.restCursor;
     try {
       await executor.submit(modules, steps);
     } on ReadExecutorRejection {
@@ -1318,7 +1348,10 @@ class RecordingController extends ChangeNotifier {
     _focusTimer?.cancel();
     _focusTimer = null;
     _focusPending.clear();
-    _focusCursor = 0;
+    _focusMoverCursor = 0;
+    _focusRestCursor = 0;
+    _focusPayloadHashes.clear();
+    _focusMovedAt.clear();
     final engine = _discoveryEngine;
     final discoveryState = _discoveryState;
     _discoveryEngine = null;
