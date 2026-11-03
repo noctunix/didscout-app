@@ -5,6 +5,7 @@
 library;
 
 import 'dart:async';
+import 'dart:math';
 
 import 'did_order.dart';
 import 'discovery_state.dart';
@@ -405,16 +406,24 @@ class DiscoveryEngine {
   }
 
   /// Gives [ecu] the [targetedDiscoverRanges] for its request header. A
-  /// change restarts its scan: the stored position indexes the DID order
-  /// of the old ranges.
+  /// change restarts its scan, since the stored position indexes the DID
+  /// order of the old ranges -- unless ranges were only appended: the old
+  /// ranges' DIDs then keep their place, so a position within them stays
+  /// valid and one past them resumes at the first appended range.
   void _applyTargetedRanges(String ecuId, EcuInfo ecu) {
     final ranges = targetedDiscoverRanges[ecu.requestHeader];
-    if (ranges == null || sameRanges(ecu.discoverRanges, ranges)) {
+    final old = ecu.discoverRanges;
+    if (ranges == null || sameRanges(old, ranges)) {
       return;
     }
+    final appended =
+        ranges.length > old.length &&
+        sameRanges(old, ranges.sublist(0, old.length));
     ecu
-      ..discoverRanges = ranges
-      ..scanPosition = 0;
+      ..scanPosition = appended
+          ? min(ecu.scanPosition, profileDidOrder(old).length)
+          : 0
+      ..discoverRanges = ranges;
     _orderCache.remove(ecuId);
     _priorityOrderCache.remove(ecuId);
     _profileOrderLengthCache.remove(ecuId);

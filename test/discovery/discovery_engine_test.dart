@@ -1801,7 +1801,7 @@ void main() {
   group('targeted discover ranges', () {
     List<String> commandsFrom(int firstDid) => [
       for (var did = firstDid; did < firstDid + 16; did++)
-        '22${did.toRadixString(16).toUpperCase()}',
+        '22${did.toRadixString(16).toUpperCase().padLeft(4, '0')}',
     ];
 
     DiscoveryEngine buildEngine(FakeExecutor executor, DiscoveryState state) =>
@@ -1984,6 +1984,8 @@ void main() {
         (0x1800, 0x18FF),
         (0x2A00, 0x2AFF),
         (0x0600, 0x06FF),
+        (0x0300, 0x05FF),
+        (0x0700, 0x0FFF),
       ]);
       expect(
         executor.submittedSteps.map((s) => s.command).toList(),
@@ -1991,6 +1993,74 @@ void main() {
       );
 
       engine.dispose();
+    });
+
+    group('appended ranges', () {
+      const firstFour = [
+        (0x1E00, 0x1EFF),
+        (0x1800, 0x18FF),
+        (0x2A00, 0x2AFF),
+        (0x0600, 0x06FF),
+      ];
+
+      Future<int> scanAfterUpgrade(
+        List<(int, int)> oldRanges,
+        int oldPosition,
+        FakeExecutor executor,
+      ) async {
+        final state = DiscoveryState();
+        state.ecus['vag29-7B'] = EcuInfo(
+          requestHeader: '17FC007B',
+          responseHeader: '17FE007B',
+          protocol: 7,
+          discoverRanges: oldRanges,
+          scanPosition: oldPosition,
+        );
+        final engine = buildEngine(executor, state);
+        final position = state.ecus['vag29-7B']!.scanPosition;
+        await engine.runDiscoveryBatch('vag29-7B', now);
+        engine.dispose();
+        return position;
+      }
+
+      test('a position within the old ranges stays', () async {
+        final executor = FakeExecutor()..respond = ok;
+
+        // 256 DIDs of 1E00-1EFF, then 0x10 into 1800-18FF.
+        expect(await scanAfterUpgrade(firstFour, 272, executor), 272);
+        expect(
+          executor.submittedSteps.map((s) => s.command).toList(),
+          commandsFrom(0x1810),
+        );
+      });
+
+      test('a position past the old ranges resumes at the first appended '
+          'one', () async {
+        final executor = FakeExecutor()..respond = ok;
+
+        // The four old ranges hold 1024 DIDs.
+        expect(await scanAfterUpgrade(firstFour, 3000, executor), 1024);
+        expect(
+          executor.submittedSteps.map((s) => s.command).toList(),
+          commandsFrom(0x0300),
+        );
+      });
+
+      test(
+        'ranges that changed other than by appending restart the scan',
+        () async {
+          final executor = FakeExecutor()..respond = ok;
+
+          expect(
+            await scanAfterUpgrade(
+              [(0x1E00, 0x1EFF), (0x0600, 0x06FF)],
+              300,
+              executor,
+            ),
+            0,
+          );
+        },
+      );
     });
   });
 

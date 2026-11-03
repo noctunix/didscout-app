@@ -23,7 +23,9 @@ const List<(int, int)> discoveryPriorityRanges = [
 /// battery-management measurements (for `742` and `18DA0FF1` the Taycan's
 /// public signal set, https://github.com/OBDb/Porsche-Taycan), plus, for
 /// the HV battery controller at `17FC007B`, the 06xx DIDs it lists itself
-/// in DID 0250.
+/// in DID 0250 and then the rest of 0300-0FFF, where its predicted maximum
+/// charging power is still to be found. New ranges go at the end of a
+/// list: an ECU keeps its scan position then.
 const Map<String, List<(int, int)>> targetedDiscoverRanges = {
   '742': [(0x2600, 0x27FF), (0x4700, 0x47FF)],
   '18DA0FF1': [(0x1800, 0x18FF)],
@@ -32,6 +34,8 @@ const Map<String, List<(int, int)>> targetedDiscoverRanges = {
     (0x1800, 0x18FF),
     (0x2A00, 0x2AFF),
     (0x0600, 0x06FF),
+    (0x0300, 0x05FF),
+    (0x0700, 0x0FFF),
   ],
 };
 
