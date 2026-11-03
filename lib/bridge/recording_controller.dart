@@ -699,6 +699,7 @@ class RecordingController extends ChangeNotifier {
       stationary: _isStationary(now),
       now: now,
     );
+    _forgetFocusPayloads(_experimentReads);
     _addExperimentStep(experiment.id, ExperimentStep.before);
     unawaited(_beginExperimentCapture(experiment, after: false));
   }
@@ -774,6 +775,14 @@ class RecordingController extends ChangeNotifier {
     }
   }
 
+  /// Drops the last focus payload of each of [reads], so the action an
+  /// experiment asks for never counts as a value moving on its own.
+  void _forgetFocusPayloads(List<EcuDidRead> reads) {
+    for (final read in reads) {
+      _focusPayloadHashes.remove(_readSignalId(read));
+    }
+  }
+
   /// Takes [result] if the current focus sample is waiting for it, noting
   /// when its payload differs from that DID's previous focus read.
   bool _claimFocusResult(ProbeResult result) {
@@ -840,7 +849,16 @@ class RecordingController extends ChangeNotifier {
       before: _experimentBefore,
       after: capture.snapshot,
     );
-    _experimentRun = ExperimentDone(experiment, changes: changes);
+    _experimentRun = ExperimentDone(
+      experiment,
+      changes: changes,
+      movingOnTheirOwn: {
+        for (final read in _experimentReads)
+          if (_focusMovedAt.containsKey(_readSignalId(read)))
+            (header: read.requestHeader, did: read.did),
+      },
+    );
+    _forgetFocusPayloads(_experimentReads);
     _experimentBefore = const {};
     notifyListeners();
   }
@@ -852,6 +870,7 @@ class RecordingController extends ChangeNotifier {
     if (run == null || !_experimentActive) return;
     _experimentCapture = null;
     _experimentBefore = const {};
+    _forgetFocusPayloads(_experimentReads);
     _experimentRun = ExperimentFailed(run.experiment, failure);
     _addExperimentStep(run.experiment.id, ExperimentStep.cancelled);
     notifyListeners();
@@ -1186,8 +1205,10 @@ class RecordingController extends ChangeNotifier {
     _focusPending.clear();
     final reads = phaseFocusReads(
       discoveryState,
+      // An experiment's target ECUs stay out for the whole run: a focus
+      // read between its captures would see the owner's action.
       _focusRequestHeaders.difference({
-        ...?_experimentCapture?.experiment.targetHeaders,
+        if (_experimentActive) ...?_experimentRun?.experiment.targetHeaders,
       }),
       stationary: _isStationary(now),
       now: now,

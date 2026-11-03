@@ -173,20 +173,26 @@ class ExperimentCard extends StatelessWidget {
     ),
   ];
 
-  /// The first [limit] changed DIDs of [changes], grouped per ECU.
+  /// The first [limit] changed DIDs of [run], grouped per ECU, each
+  /// ECU's DIDs that also change on their own last.
   List<Widget> _changeRows(
     BuildContext context,
-    Map<String, List<DidDiff>> changes,
+    ExperimentDone run,
     int limit,
   ) {
+    bool moving(DidDiff diff) =>
+        run.movingOnTheirOwn.contains((header: diff.module!, did: diff.did));
     final style = Theme.of(
       context,
     ).textTheme.bodySmall?.copyWith(fontFamily: 'monospace');
     final rows = <Widget>[];
     var left = limit;
-    for (final MapEntry(key: header, value: diffs) in changes.entries) {
+    for (final MapEntry(key: header, value: diffs) in run.changes.entries) {
       if (left == 0) break;
-      final shown = diffs.take(left).toList();
+      final shown = [
+        ...diffs.where((diff) => !moving(diff)),
+        ...diffs.where(moving),
+      ].take(left).toList();
       left -= shown.length;
       rows.add(
         Padding(
@@ -195,7 +201,13 @@ class ExperimentCard extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(controller.ecuName(header) ?? header),
-              for (final diff in shown) Text(_describeDiff(diff), style: style),
+              for (final diff in shown)
+                Text(
+                  moving(diff)
+                      ? '${_describeDiff(diff)}  (moves on its own)'
+                      : _describeDiff(diff),
+                  style: style,
+                ),
             ],
           ),
         ),
@@ -230,7 +242,7 @@ class ExperimentCard extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 8),
-          ..._changeRows(context, run.changes, changeCount),
+          ..._changeRows(context, run, changeCount),
         ],
       ),
     ),
@@ -248,7 +260,7 @@ class ExperimentCard extends StatelessWidget {
       if (run.changes.isEmpty)
         const Text('No change seen')
       else
-        ..._changeRows(context, run.changes, _maxChangeRows),
+        ..._changeRows(context, run, _maxChangeRows),
       if (changeCount > _maxChangeRows)
         TextButton(
           onPressed: () => _showAllChanges(context, run, changeCount),

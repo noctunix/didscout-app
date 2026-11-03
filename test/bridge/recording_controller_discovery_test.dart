@@ -994,6 +994,56 @@ void main() {
       await controller.stop();
     });
 
+    test('a result names the read DIDs whose value also moved in focus '
+        'samples, and the action itself never counts as such', () async {
+      final controller = await startStationary();
+      var counter = 0;
+      fakeNative.respondToOneShot = (step) => switch (step.signalId) {
+        'door-front-left_222a02' =>
+          '7B4 04 62 2A 02 ${(counter++ & 0xFF).toRadixString(16).padLeft(2, '0')}',
+        _ => respondAsDoor(step),
+      };
+      int focusReadsOf2A02() => fakeNative.enqueuedBatches
+          .where(
+            (batch) =>
+                batch.any((step) => step.signalId == '${doorSignal}2a02') &&
+                !batch.any((step) => step.signalId == '${doorSignal}2a01'),
+          )
+          .length;
+      final focusAtStart = focusReadsOf2A02();
+      await waitFor(() => focusReadsOf2A02() >= focusAtStart + 3);
+
+      controller.startExperiment('door-driver');
+      await waitFor(() => controller.experimentRun is ExperimentAwaitingAction);
+      // Several focus intervals pass before and after the owner's action.
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      doorByte = 0x01;
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      controller.confirmExperimentAction();
+      await waitFor(() => controller.experimentRun is ExperimentDone);
+      final first = controller.experimentRun! as ExperimentDone;
+      expect(
+        {for (final diff in first.changes['74A']!) diff.did},
+        {'2A00', '2A02'},
+      );
+      expect(first.movingOnTheirOwn, {(header: '74A', did: '2A02')});
+      controller.dismissExperiment();
+
+      // Focus samples after the run see 2A00 at its new value; that is
+      // the action, not 2A00 moving on its own.
+      final focusBefore = focusReadsOf2A02();
+      await waitFor(() => focusReadsOf2A02() >= focusBefore + 3);
+      controller.startExperiment('door-driver');
+      await waitFor(() => controller.experimentRun is ExperimentAwaitingAction);
+      doorByte = 0x00;
+      controller.confirmExperimentAction();
+      await waitFor(() => controller.experimentRun is ExperimentDone);
+      final second = controller.experimentRun! as ExperimentDone;
+      expect(second.movingOnTheirOwn, {(header: '74A', did: '2A02')});
+
+      await controller.stop();
+    });
+
     test('a capture reads at most maxExperimentReads DIDs', () async {
       final controller = await startStationary(
         discovered: {

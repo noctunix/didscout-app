@@ -361,9 +361,18 @@ class ExperimentAwaitingAction extends ExperimentRun {
 
 /// Both captures are in; [changes] as [experimentChanges] reports them.
 class ExperimentDone extends ExperimentRun {
-  const ExperimentDone(super.experiment, {required this.changes});
+  const ExperimentDone(
+    super.experiment, {
+    required this.changes,
+    this.movingOnTheirOwn = const {},
+  });
 
   final Map<String, List<DidDiff>> changes;
+
+  /// The read DIDs, by request header, whose value also changed between
+  /// two focus samples of this recording, outside any experiment: a
+  /// change in one of them need not come from the action.
+  final Set<({String header, String did})> movingOnTheirOwn;
 }
 
 /// The run ended before its result, for [failure].

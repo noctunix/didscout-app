@@ -1128,6 +1128,39 @@ void main() {
       expect(find.text('2A06  byte 0: 00 → 01'), findsOneWidget);
       expect(find.text('2A07  byte 0: 00 → 01'), findsOneWidget);
     });
+
+    testWidgets('lists DIDs that also change on their own last, marked', (
+      tester,
+    ) async {
+      final controller = _ExperimentCardController();
+      await pumpPage(tester, controller: controller);
+      DidDiff diff(String did) => DidDiff(
+        module: '767',
+        did: did,
+        before: Uint8List.fromList([0x00]),
+        after: Uint8List.fromList([0x01]),
+        changes: const [ByteDiff(position: 0, before: 0x00, after: 0x01)],
+      );
+      controller.show(
+        ExperimentDone(
+          _experiment('climate-setpoint'),
+          changes: {
+            '767': [diff('2A00'), diff('2A01')],
+          },
+          movingOnTheirOwn: const {(header: '767', did: '2A00')},
+        ),
+      );
+      await tester.pump();
+
+      final moving = find.text('2A00  byte 0: 00 → 01  (moves on its own)');
+      final quiet = find.text('2A01  byte 0: 00 → 01');
+      expect(moving, findsOneWidget);
+      expect(quiet, findsOneWidget);
+      expect(
+        tester.getTopLeft(quiet).dy,
+        lessThan(tester.getTopLeft(moving).dy),
+      );
+    });
   });
 
   group('reading prompts', () {
