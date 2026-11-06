@@ -102,6 +102,13 @@ const String _bmsModuleId = 'vag29-7B';
 const String _bmsRequestHeader = '17FC007B';
 const String _bmsResponseHeader = '17FE007B';
 
+/// Added to [AppSettings.readTimeoutMs] for [_bmsModuleId]'s own read
+/// deadline: recordings show this BMS still answering NRC `0x78`
+/// (responsePending) a second time right at the plan's own deadline,
+/// i.e. extending ISO 14229-2's P2* past what every other module needs.
+/// A starting value, not yet measured against a worse real-world case.
+const int _bmsReadDeadlineExtraMs = 10000;
+
 /// A live value counts for this many of its step's planned intervals after
 /// it was received, the same rule as [AppSettings.speedFreshnessWindow]:
 /// one missed or slow read is tolerated, a stalled one is not shown.
@@ -1773,6 +1780,7 @@ class RecordingController extends ChangeNotifier {
         requestHeader: _bmsRequestHeader,
         responseHeader: _bmsResponseHeader,
       ),
+      readDeadlineMs: settings.readTimeoutMs + _bmsReadDeadlineExtraMs,
     );
 
     final recordKnown =

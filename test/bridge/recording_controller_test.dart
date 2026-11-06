@@ -832,4 +832,20 @@ void main() {
     final spec = gateway.dids.firstWhere((d) => d.did == '2A04');
     expect(spec.intervalMs, 180000);
   });
+
+  test(
+    "the BMS module's read deadline stays ahead of the plan default, "
+    'scaling with it',
+    () {
+      final plan = RecordingController.buildPlanForTesting(
+        settings: const AppSettings.defaultValues().copyWith(
+          readTimeoutMs: 9000,
+        ),
+      );
+
+      final bms = plan.modules.firstWhere((m) => m.moduleId == 'vag29-7B');
+      expect(bms.readDeadlineMs, greaterThan(plan.limits.vehicleReadDeadlineMs));
+      expect(bms.readDeadlineMs, 9000 + 10000);
+    },
+  );
 }
