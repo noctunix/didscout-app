@@ -329,6 +329,12 @@ class RecordingController extends ChangeNotifier {
   final Future<Directory> Function() _recordingsDirectory;
   final String Function() _sessionIdFactory;
   final int _scanDurationMs;
+
+  /// Bound on the fast-reconnect attempt to [_lastAdapter] in [start] --
+  /// shorter than native's own connect timeout (~20s), so a remembered
+  /// adapter that is no longer in range doesn't delay the scan-path
+  /// fallback this optimization exists to avoid slowing down.
+  static const Duration _fastReconnectTimeout = Duration(seconds: 5);
   final Duration _tickInterval;
   final Duration _discoveryPumpInterval;
   final Duration _focusSampleInterval;
@@ -452,6 +458,12 @@ class RecordingController extends ChangeNotifier {
     if (_liveInfo.speedKmh != 0 || readAt == null) return false;
     return now.difference(readAt) <= _settings.speedFreshnessWindow;
   }
+
+  /// The adapter [start] last connected to — kept across a stop→start
+  /// cycle so the next [start] can retry a direct [ObdBridge.connect] to it
+  /// before falling back to a full [ObdBridge.scanAdapters], skipping that
+  /// scan's [_scanDurationMs] wait whenever the same adapter answers.
+  ObdAdapterMessage? _lastAdapter;
 
   /// The most recently observed link state, from [ObdBridge.liveState]'s own
   /// link snapshot — used by [_pollConnectionStatus] to tell a live
@@ -1024,23 +1036,54 @@ class RecordingController extends ChangeNotifier {
         return;
       }
 
-      _setPhase(RecordingPhase.scanning);
-      final adapters = await _bridge.scanAdapters(_scanDurationMs);
-      final adapter = _strongestAdapter(adapters);
+      ObdAdapterMessage? adapter;
+      final remembered = _lastAdapter;
+      if (remembered != null) {
+        _setPhase(
+          RecordingPhase.connecting,
+          remembered.advertisedName ?? remembered.handle,
+        );
+        try {
+          final fastLink = await _bridge
+              .connect(remembered.handle)
+              .timeout(_fastReconnectTimeout);
+          if (fastLink.state == ObdLinkStateValueMessage.connected) {
+            adapter = remembered;
+          }
+        } on TimeoutException {
+          try {
+            // Cancels the stuck native connect attempt so its own
+            // activeHandle doesn't block the scan path's own connect below.
+            await _bridge.disconnect();
+          } catch (_) {
+            // Best-effort -- see the fast path's own catch below.
+          }
+        } catch (_) {
+          // A failed fast reconnect is never fatal -- fall through to the
+          // ordinary scan path exactly as if no adapter had been remembered.
+        }
+      }
       if (adapter == null) {
-        _setPhase(RecordingPhase.noAdapterFound);
-        return;
-      }
+        _setPhase(RecordingPhase.scanning);
+        final adapters = await _bridge.scanAdapters(_scanDurationMs);
+        final found = _strongestAdapter(adapters);
+        if (found == null) {
+          _setPhase(RecordingPhase.noAdapterFound);
+          return;
+        }
+        adapter = found;
 
-      _setPhase(
-        RecordingPhase.connecting,
-        adapter.advertisedName ?? adapter.handle,
-      );
-      final link = await _bridge.connect(adapter.handle);
-      if (link.state != ObdLinkStateValueMessage.connected) {
-        _setPhase(RecordingPhase.error, 'connect failed: ${link.state.name}');
-        return;
+        _setPhase(
+          RecordingPhase.connecting,
+          adapter.advertisedName ?? adapter.handle,
+        );
+        final link = await _bridge.connect(adapter.handle);
+        if (link.state != ObdLinkStateValueMessage.connected) {
+          _setPhase(RecordingPhase.error, 'connect failed: ${link.state.name}');
+          return;
+        }
       }
+      _lastAdapter = adapter;
 
       await _bridge.configure(
         ObdBridgeConfigMessage(
@@ -1141,6 +1184,15 @@ class RecordingController extends ChangeNotifier {
       if (reason != null) {
         _nativeStopAt = DateTime.now().toUtc();
         _nativeStopReason = reason;
+      }
+      try {
+        // Native keeps the GATT link up across a stop for its own, unrelated
+        // reuse case, but the OBDLink CX stops BLE-advertising once a GATT
+        // link to it exists, so the next start's scan would never find it
+        // again without this.
+        await _bridge.disconnect();
+      } catch (_) {
+        // Best-effort -- a disconnect failure must never block stopping.
       }
       _setPhase(RecordingPhase.finished);
     } catch (error) {
@@ -1594,6 +1646,9 @@ class RecordingController extends ChangeNotifier {
     _nativeStopReason = reason;
     _stopTicking();
     unawaited(_teardownDiscovery());
+    // Same best-effort disconnect as `stop()` — see its own comment for why
+    // the BLE link needs an explicit disconnect at all.
+    unawaited(_bridge.disconnect().catchError((_) {}));
     // After `_stopTicking` (which clears `_connectionStatus` along with the
     // rest of the live polling state) so the final status shown is `stopped`,
     // not `null`.

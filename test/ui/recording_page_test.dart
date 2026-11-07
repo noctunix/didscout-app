@@ -67,6 +67,9 @@ class _FakeNativeObdApi extends NativeObdApi {
       );
 
   @override
+  Future<void> disconnect() async {}
+
+  @override
   Future<bool> startRecording(ObdStartRecordingRequest request) async => true;
 
   @override

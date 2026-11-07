@@ -71,6 +71,9 @@ class _FakeNativeObdApi extends NativeObdApi {
       ObdLinkStateMessage(state: connectResult, adapterHandle: handle);
 
   @override
+  Future<void> disconnect() async {}
+
+  @override
   Future<bool> startRecording(ObdStartRecordingRequest request) async {
     lastStartRecordingRequest = request;
     return startRecordingResult;

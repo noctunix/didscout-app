@@ -33,6 +33,21 @@ class _FakeNativeObdApi extends NativeObdApi {
   ObdLinkStateValueMessage connectResult = ObdLinkStateValueMessage.connected;
   bool startRecordingResult = true;
 
+  /// Consumed by the next [connect] call, which then returns
+  /// [ObdLinkStateValueMessage.disconnected] instead of [connectResult] --
+  /// lets a test make one specific connect attempt fail (e.g. a remembered
+  /// adapter that is no longer reachable) without changing every other one.
+  bool failNextConnect = false;
+
+  int scanAdaptersCallCount = 0;
+  int connectCallCount = 0;
+  int disconnectCallCount = 0;
+
+  /// When true, [disconnect] throws instead of succeeding -- lets a test
+  /// prove a disconnect failure during [RecordingController.stop] is
+  /// swallowed as best-effort rather than blocking it.
+  bool disconnectShouldThrow = false;
+
   /// Overridden by tests that exercise [RecordingController]'s connection
   /// status polling; left null makes [liveState] throw, same as a real
   /// channel would with nothing mocked.
@@ -61,13 +76,31 @@ class _FakeNativeObdApi extends NativeObdApi {
       requestPermissionsResult;
 
   @override
-  Future<List<ObdAdapterMessage>> scanAdapters(int durationMs) async =>
-      scanResult;
+  Future<List<ObdAdapterMessage>> scanAdapters(int durationMs) async {
+    scanAdaptersCallCount++;
+    return scanResult;
+  }
 
   @override
   Future<ObdLinkStateMessage> connect(String handle) async {
+    connectCallCount++;
     lastConnectedHandle = handle;
+    if (failNextConnect) {
+      failNextConnect = false;
+      return ObdLinkStateMessage(
+        state: ObdLinkStateValueMessage.disconnected,
+        adapterHandle: handle,
+      );
+    }
     return ObdLinkStateMessage(state: connectResult, adapterHandle: handle);
+  }
+
+  @override
+  Future<void> disconnect() async {
+    disconnectCallCount++;
+    if (disconnectShouldThrow) {
+      throw StateError('disconnect failed');
+    }
   }
 
   @override
@@ -240,6 +273,111 @@ void main() {
     expect(fakeNative.lastStoppedSessionId, isNotNull);
     expect(controller.bufferFilePath, isNotNull);
     expect(controller.shareableFiles, contains(controller.bufferFilePath));
+  });
+
+  test(
+    'stop disconnects the BLE link once stopRecording has succeeded',
+    () async {
+      await controller.start();
+      await controller.stop();
+
+      expect(fakeNative.disconnectCallCount, 1);
+    },
+  );
+
+  test('a disconnect failure during stop still reaches finished', () async {
+    await controller.start();
+    fakeNative.disconnectShouldThrow = true;
+
+    await controller.stop();
+
+    expect(controller.phase, RecordingPhase.finished);
+    expect(controller.canShare, isTrue);
+  });
+
+  group('adapter reuse across stop/start', () {
+    test('a start right after a stop reconnects to the remembered adapter '
+        'without scanning again', () async {
+      await controller.start();
+      final firstScanCount = fakeNative.scanAdaptersCallCount;
+      expect(fakeNative.lastConnectedHandle, 'strong');
+      await controller.stop();
+
+      await controller.start();
+
+      expect(fakeNative.scanAdaptersCallCount, firstScanCount);
+      expect(fakeNative.lastConnectedHandle, 'strong');
+      expect(controller.phase, RecordingPhase.recording);
+    });
+
+    test('a successful fast-path reuse calls connect exactly once, proving '
+        'the scan was really skipped', () async {
+      await controller.start();
+      await controller.stop();
+      final scanCountBefore = fakeNative.scanAdaptersCallCount;
+      final connectCountBefore = fakeNative.connectCallCount;
+
+      await controller.start();
+
+      expect(fakeNative.scanAdaptersCallCount, scanCountBefore);
+      expect(fakeNative.connectCallCount, connectCountBefore + 1);
+      expect(controller.phase, RecordingPhase.recording);
+    });
+
+    test('a remembered adapter that no longer connects falls back to a full '
+        'scan', () async {
+      await controller.start();
+      final firstScanCount = fakeNative.scanAdaptersCallCount;
+      await controller.stop();
+
+      fakeNative.failNextConnect = true;
+      await controller.start();
+
+      expect(fakeNative.scanAdaptersCallCount, greaterThan(firstScanCount));
+      expect(controller.phase, RecordingPhase.recording);
+    });
+
+    test(
+      'a remembered adapter that fails to connect, with no adapter found '
+      'by the following scan, reports noAdapterFound rather than error',
+      () async {
+        await controller.start();
+        await controller.stop();
+
+        fakeNative.failNextConnect = true;
+        fakeNative.scanResult = [];
+        await controller.start();
+
+        expect(controller.phase, RecordingPhase.noAdapterFound);
+        expect(controller.canStart, isTrue);
+      },
+    );
+
+    test('after a fast-path failure, the scan finds a different adapter, and '
+        'the following start reconnects fast to that new handle', () async {
+      await controller.start();
+      expect(fakeNative.lastConnectedHandle, 'strong');
+      await controller.stop();
+
+      fakeNative.failNextConnect = true;
+      fakeNative.scanResult = [
+        ObdAdapterMessage(
+          handle: 'fresh',
+          advertisedName: 'fresh CX',
+          rssi: -30,
+        ),
+      ];
+      await controller.start();
+      expect(fakeNative.lastConnectedHandle, 'fresh');
+      await controller.stop();
+      final scanCountAfterRediscovery = fakeNative.scanAdaptersCallCount;
+
+      await controller.start();
+
+      expect(fakeNative.lastConnectedHandle, 'fresh');
+      expect(fakeNative.scanAdaptersCallCount, scanCountAfterRediscovery);
+      expect(controller.phase, RecordingPhase.recording);
+    });
   });
 
   test('stop is a no-op unless currently recording', () async {
@@ -708,6 +846,37 @@ void main() {
           .firstWhere((m) => m['type'] == 'note');
       expect(noteLine['recording_active'], isFalse);
     });
+
+    test(
+      'also disconnects the BLE link, same as an owner-initiated stop',
+      () async {
+        fakeNative.liveStateResult = _liveStateWithLink(
+          ObdLinkStateValueMessage.connected,
+        );
+        fakeNative.recordingStateResult = ObdRecordingStateMessage(
+          state: ObdRecordingStateValueMessage.interrupted,
+          lastFlushedSequence: 0,
+          bufferBytes: 0,
+          gapCount: 1,
+          writeError: 'reconnect attempts exhausted',
+          resumedAfterRestart: false,
+          oneShotQueueDepth: 0,
+        );
+        controller = RecordingController(
+          requestRuntimePermissions: (_) async {},
+          bridge: ObdBridge(DidscoutPolicy(), nativeApi: fakeNative),
+          recordingsDirectory: () async => tempDir,
+          sessionIdFactory: () => 'fixed-session-id',
+          tickInterval: const Duration(milliseconds: 1),
+        );
+
+        await controller.start();
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+
+        expect(controller.phase, RecordingPhase.finished);
+        expect(fakeNative.disconnectCallCount, 1);
+      },
+    );
   });
 
   group('settings applied at start', () {
@@ -833,19 +1002,14 @@ void main() {
     expect(spec.intervalMs, 180000);
   });
 
-  test(
-    "the BMS module's read deadline stays ahead of the plan default, "
-    'scaling with it',
-    () {
-      final plan = RecordingController.buildPlanForTesting(
-        settings: const AppSettings.defaultValues().copyWith(
-          readTimeoutMs: 9000,
-        ),
-      );
+  test("the BMS module's read deadline stays ahead of the plan default, "
+      'scaling with it', () {
+    final plan = RecordingController.buildPlanForTesting(
+      settings: const AppSettings.defaultValues().copyWith(readTimeoutMs: 9000),
+    );
 
-      final bms = plan.modules.firstWhere((m) => m.moduleId == 'vag29-7B');
-      expect(bms.readDeadlineMs, greaterThan(plan.limits.vehicleReadDeadlineMs));
-      expect(bms.readDeadlineMs, 9000 + 10000);
-    },
-  );
+    final bms = plan.modules.firstWhere((m) => m.moduleId == 'vag29-7B');
+    expect(bms.readDeadlineMs, greaterThan(plan.limits.vehicleReadDeadlineMs));
+    expect(bms.readDeadlineMs, 9000 + 10000);
+  });
 }
