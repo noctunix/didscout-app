@@ -18,6 +18,7 @@ import 'reading_entry_sheet.dart';
 import 'reading_tiles.dart';
 import 'recordings_page.dart';
 import 'settings_page.dart';
+import 'testplan_card.dart';
 
 /// The default [RecordingPage.onShare]: hands [paths] to the platform share
 /// sheet as files.
@@ -317,6 +318,10 @@ class _RecordingPageState extends State<RecordingPage> {
                     status: _controller.scoutStatus!,
                     onTap: _openScoutEventLog,
                   ),
+                if (_controller.testplanCheck != null) ...[
+                  const SizedBox(height: 16),
+                  TestplanCard(check: _controller.testplanCheck!),
+                ],
                 const SizedBox(height: 16),
                 _PhaseButtonGrid(controller: _controller),
                 const SizedBox(height: 24),

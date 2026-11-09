@@ -23,10 +23,12 @@ import '../discovery/probe.dart'
         ProbeModule,
         ProbeResult,
         ProbeStep,
+        ProbeTimeout,
         ReadExecutorRejection,
         signalIdFor;
 import '../discovery/profile_export.dart';
 import '../discovery/scout_status.dart';
+import '../discovery/testplan_check.dart';
 import '../session/charge_reminder.dart';
 import '../session/experiments.dart';
 import '../session/session_markers.dart';
@@ -307,6 +309,7 @@ class RecordingController extends ChangeNotifier {
     Duration tickInterval = const Duration(seconds: 5),
     this._discoveryPumpInterval = const Duration(seconds: 2),
     this._focusSampleInterval = phaseFocusSampleInterval,
+    Duration testplanInitialDelay = const Duration(seconds: 8),
     Future<void> Function(List<ph.Permission>)? requestRuntimePermissions,
     Future<AppSettings> Function()? loadSettings,
     Future<DiscoveryState> Function()? loadDiscoveryState,
@@ -321,6 +324,8 @@ class RecordingController extends ChangeNotifier {
        // constructor parameter name must stay public for tests to pass it.
        // ignore: prefer_initializing_formals
        _tickInterval = tickInterval,
+       // ignore: prefer_initializing_formals
+       _testplanInitialDelay = testplanInitialDelay,
        _loadSettings = loadSettings ?? const SettingsRepository().load,
        _loadDiscoveryState = loadDiscoveryState ?? _defaultLoadDiscoveryState,
        _saveDiscoveryState = saveDiscoveryState ?? _defaultSaveDiscoveryState,
@@ -342,6 +347,7 @@ class RecordingController extends ChangeNotifier {
   final Duration _tickInterval;
   final Duration _discoveryPumpInterval;
   final Duration _focusSampleInterval;
+  final Duration _testplanInitialDelay;
   final Future<AppSettings> Function() _loadSettings;
   final Future<DiscoveryState> Function() _loadDiscoveryState;
   final Future<void> Function(DiscoveryState) _saveDiscoveryState;
@@ -356,6 +362,17 @@ class RecordingController extends ChangeNotifier {
   int _sessionDiscoveryHits = 0;
   DiscoveryUiState? _discoveryUiState;
   Timer? _focusTimer;
+  TestplanCheck? _testplanCheck;
+
+  /// Debounces [_scheduleTestplanRun]: the latest connect or phase-change
+  /// trigger always wins, so flipping through phases quickly schedules
+  /// one run rather than one per flip.
+  Timer? _testplanTimer;
+
+  /// The testplan check's own probe states for the recording currently in
+  /// progress, for the "Testplan check" card -- null under the same
+  /// conditions as [discoveryUiState].
+  TestplanCheck? get testplanCheck => _testplanCheck;
 
   /// Signal ids of the last focus sample's reads still unanswered, until
   /// [_focusDeadline] -- their results are claimed from the discovery
@@ -632,6 +649,7 @@ class RecordingController extends ChangeNotifier {
       ..focusRequestHeaders = _focusRequestHeaders;
     _focusMoverCursor = 0;
     _focusRestCursor = 0;
+    _scheduleTestplanRun();
     unawaited(_appendLatestMarker());
   }
 
@@ -870,6 +888,37 @@ class RecordingController extends ChangeNotifier {
       notifyListeners();
     }
     return true;
+  }
+
+  /// Folds one testplan probe result into discovery state, matching its
+  /// request header against a known ECU: a survey-eligible positive
+  /// reply is booked as discovered and reported through [DiscoveryEngine.
+  /// onHit], the same path a regular discovery hit uses, so it enters the
+  /// recurring survey; a timeout quarantines the DID into [EcuInfo.slow]
+  /// so discovery (and the next run of this check) never requests it
+  /// again. A no-op once no known ECU answers [probe]'s request header.
+  void _handleTestplanResult(TestplanProbe probe, ProbeResult result) {
+    final did = probe.did;
+    final discoveryState = _discoveryState;
+    if (did == null || discoveryState == null) return;
+    final hit = discoveryState.ecus.entries
+        .where((entry) => entry.value.requestHeader == probe.requestHeader)
+        .firstOrNull;
+    if (hit == null) return;
+    final ecu = hit.value;
+    if (probe.countsTowardSurvey) {
+      if (result.payload case final payload?) {
+        ecu.discovered.add(did);
+        ecu.conditional.remove(did);
+        _discoveryEngine?.onHit(hit.key, did, payload);
+        return;
+      }
+    }
+    if (result.status is ProbeTimeout) {
+      ecu.slow.add(did);
+      ecu.discovered.remove(did);
+      ecu.conditional.remove(did);
+    }
   }
 
   /// Ends the current capture with whatever returned: after the before
@@ -1256,6 +1305,9 @@ class RecordingController extends ChangeNotifier {
           _recordOneShotModules(sidecarPath, sidecarModuleIds, modules),
       // Focus first: a focus read queued before an experiment capture
       // must not stand in for the capture's own read of the same DID.
+      // The testplan check needs no claim here -- every signal id in its
+      // catalogue is unique to it, so it subscribes to `executor.results`
+      // directly instead, the same way `DiscoveryEngine` does.
       claimResult: (result) =>
           _claimFocusResult(result) || _claimExperimentResult(result),
     );
@@ -1269,6 +1321,11 @@ class RecordingController extends ChangeNotifier {
       batchSize: _settings.discoveryBatchSize,
     )..focusRequestHeaders = _focusRequestHeaders;
     _discoveryEngine = engine;
+    _testplanCheck = TestplanCheck(
+      executor: executor,
+      onResult: _handleTestplanResult,
+    );
+    _scheduleTestplanRun();
     _savedDiscoveryJson = jsonEncode(discoveryState.toJson());
     final stationary = _isStationary(_now());
     _discoveryUiState = buildDiscoveryUiState(
@@ -1286,6 +1343,18 @@ class RecordingController extends ChangeNotifier {
       _focusSampleInterval,
       (_) => unawaited(_sampleFocus()),
     );
+  }
+
+  /// Schedules a testplan check run [_testplanInitialDelay] out, for
+  /// whatever phase is current once it fires -- called once discovery
+  /// starts (the "shortly after connecting" trigger) and again on every
+  /// [addPhase], replacing any still-pending timer so a phase flipped
+  /// through quickly schedules one run, not one per flip.
+  void _scheduleTestplanRun() {
+    _testplanTimer?.cancel();
+    _testplanTimer = Timer(_testplanInitialDelay, () {
+      unawaited(_testplanCheck?.runForPhase(markers.currentPhase));
+    });
   }
 
   /// Request headers of the current phase's focus ECUs; empty while no
@@ -1482,6 +1551,10 @@ class RecordingController extends ChangeNotifier {
     _focusRestCursor = 0;
     _focusPayloadHashes.clear();
     _focusMovedAt.clear();
+    _testplanTimer?.cancel();
+    _testplanTimer = null;
+    _testplanCheck?.dispose();
+    _testplanCheck = null;
     final engine = _discoveryEngine;
     final discoveryState = _discoveryState;
     _discoveryEngine = null;

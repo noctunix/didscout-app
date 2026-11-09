@@ -373,6 +373,54 @@ void main() {
     });
   });
 
+  group('testplan check card', () {
+    testWidgets('hidden while idle, shown once recording starts', (
+      tester,
+    ) async {
+      final controller = _fakeController();
+      await pumpPage(tester, controller: controller);
+
+      expect(find.text('Testplan check'), findsNothing);
+
+      await _startRecording(tester, controller);
+
+      expect(find.text('Testplan check'), findsOneWidget);
+    });
+
+    testWidgets('collapsed by default, showing the answered/OK summary', (
+      tester,
+    ) async {
+      final controller = _fakeController();
+      await pumpPage(tester, controller: controller);
+      await _startRecording(tester, controller);
+
+      expect(find.text('0 answered · 0 OK'), findsOneWidget);
+      expect(find.text('Mode 01'), findsNothing);
+    });
+
+    testWidgets('tapping it expands to the full catalogue, grouped', (
+      tester,
+    ) async {
+      final controller = _fakeController();
+      await pumpPage(tester, controller: controller);
+      await _startRecording(tester, controller);
+
+      await tester.tap(find.text('Testplan check'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Mode 01'), findsOneWidget);
+      expect(find.text('OBDonUDS'), findsOneWidget);
+      expect(find.text('Hypotheses'), findsOneWidget);
+      expect(find.text('0100'), findsOneWidget);
+      expect(find.text('not run yet'), findsWidgets);
+
+      await tester.tap(find.text('Testplan check'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Mode 01'), findsNothing);
+    });
+  });
+
   testWidgets('tapping a phase button adds and highlights that phase', (
     tester,
   ) async {

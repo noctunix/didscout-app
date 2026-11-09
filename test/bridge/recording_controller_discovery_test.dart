@@ -221,6 +221,7 @@ void main() {
   RecordingController makeController({
     AppSettings settings = const AppSettings.defaultValues(),
     DateTime Function()? clock,
+    Duration testplanInitialDelay = const Duration(seconds: 8),
   }) {
     final controller = RecordingController(
       requestRuntimePermissions: (List<ph.Permission> _) async {},
@@ -230,6 +231,7 @@ void main() {
       tickInterval: const Duration(milliseconds: 500),
       discoveryPumpInterval: const Duration(milliseconds: 5),
       focusSampleInterval: const Duration(milliseconds: 20),
+      testplanInitialDelay: testplanInitialDelay,
       loadSettings: () async => settings,
       loadDiscoveryState: loadState,
       saveDiscoveryState: saveState,
@@ -1287,6 +1289,88 @@ void main() {
       ]);
       expect(lastReason(controller), ExperimentFailure.recordingStopped);
       expect(controller.experimentSuggestions, isEmpty);
+    });
+  });
+
+  group('testplan check', () {
+    test('a positive reply on a known ECU is folded into discovery state and '
+        'reaches onHit', () async {
+      fakeNative.respondToOneShot = (step) {
+        if (step.signalId == 'testplanGateway_222ab2') {
+          return '77A 04 62 2A B2 AB';
+        }
+        return null;
+      };
+      persistedState = _namedGatewayState();
+      final controller = makeController(
+        testplanInitialDelay: const Duration(milliseconds: 5),
+      );
+
+      await controller.start();
+      await waitFor(
+        () =>
+            controller
+                .discoveryEngineForTesting
+                ?.state
+                .ecus['gateway']
+                ?.discovered
+                .contains('2AB2') ??
+            false,
+      );
+      // Read the live state's own object, not the shared `persistedState` --
+      // an unrelated test's own dangling save can otherwise land on it
+      // after this one's `stop()` (the pre-existing sidecar-save race noted
+      // elsewhere in this file).
+      final gateway =
+          controller.discoveryEngineForTesting!.state.ecus['gateway']!;
+
+      await controller.stop();
+
+      expect(gateway.discovered, contains('2AB2'));
+    });
+
+    test('a timed-out probe is quarantined into slow and not resent in the '
+        'same recording', () async {
+      const targetSignalId = 'testplanGateway_222ab2';
+      fakeNative.unanswered.add(targetSignalId);
+      fakeNative.respondToOneShot = (_) => null;
+      persistedState = _namedGatewayState();
+      final controller = makeController(
+        testplanInitialDelay: const Duration(milliseconds: 5),
+      );
+
+      await controller.start();
+      await waitFor(
+        () => fakeNative.enqueuedSteps.any((s) => s.signalId == targetSignalId),
+      );
+      controller.discoveryExecutorForTesting!.deliverOneShotResult(
+        ObdSignalExchangeMessage(
+          signalId: targetSignalId,
+          transport: ObdTransportStatusMessage.timeout,
+        ),
+      );
+
+      await waitFor(
+        () =>
+            controller.discoveryEngineForTesting?.state.ecus['gateway']?.slow
+                .contains('2AB2') ??
+            false,
+      );
+      final sentBefore = fakeNative.enqueuedSteps
+          .where((s) => s.signalId == targetSignalId)
+          .length;
+
+      controller.addPhase(MarkerPhase.drive);
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+
+      expect(
+        fakeNative.enqueuedSteps
+            .where((s) => s.signalId == targetSignalId)
+            .length,
+        sentBefore,
+      );
+
+      await controller.stop();
     });
   });
 }
