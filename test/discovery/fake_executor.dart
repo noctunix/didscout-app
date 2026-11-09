@@ -66,6 +66,11 @@ class FakeExecutor implements ReadExecutor {
     }
   }
 
+  /// Delivers [result] as if the plugin reported it, independently of
+  /// any submitted step -- e.g. a reply that arrives after its batch's
+  /// deadline.
+  void deliver(ProbeResult result) => _controller.add(result);
+
   Future<void> close() => _controller.close();
 }
 

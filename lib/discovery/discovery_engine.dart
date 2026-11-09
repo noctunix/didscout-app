@@ -337,8 +337,34 @@ class DiscoveryEngine {
   void _handleResult(ProbeResult result) {
     _lastResultSummary = _statusBucket(result.status);
     _recentReads.add(_clock());
-    _pending.remove(result.signalId)?.complete(result);
+    final completer = _pending.remove(result.signalId);
     _inFlight[moduleIdOf(result.signalId)]?.remaining.remove(result.signalId);
+    if (completer != null) {
+      completer.complete(result);
+    } else if (result.status is ProbeTimeout) {
+      _quarantineLateTimeout(result.signalId);
+    }
+  }
+
+  /// Quarantines the DID behind a timeout that arrived after its slice's
+  /// deadline. Reads can sit in the adapter's queue far longer than that
+  /// deadline (one-shots only run while no recurring step is due), and a
+  /// timeout ends the session; left unbooked, the same DID would be sent
+  /// again after every reconnect and end every session the same way.
+  void _quarantineLateTimeout(String signalId) {
+    final ecuId = moduleIdOf(signalId);
+    final ecu = state.ecus[ecuId];
+    final command = commandOf(signalId);
+    if (ecu == null || command.length != 6 || !command.startsWith('22')) {
+      return;
+    }
+    final did = command.substring(2);
+    ecu.slow.add(did);
+    ecu.discovered.remove(did);
+    ecu.conditional.remove(did);
+    ecu.unanswered.remove(did);
+    ecu.retryQueue.remove(did);
+    _logEvent(ScoutEventKind.slowDid, ecuId: ecuId, detail: did);
   }
 
   /// Marks a new round as submitted, for [scoutStatus] and the event log --

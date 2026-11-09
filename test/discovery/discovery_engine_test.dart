@@ -1777,6 +1777,54 @@ void main() {
       engine.dispose();
     });
 
+    test('a timeout that arrives after its batch\'s deadline still '
+        'quarantines the DID', () async {
+      final executor = FakeExecutor();
+      final state = DiscoveryState();
+      state.ecus['test'] = EcuInfo(
+        requestHeader: '7A1',
+        responseHeader: '7A9',
+        protocol: 6,
+        discoverRanges: [(0x2A00, 0x2A0F)],
+      );
+      final engine = DiscoveryEngine(
+        executor: executor,
+        state: state,
+        onHit: (_, _, _) {},
+        delay: (_) => Future<void>.delayed(Duration.zero),
+      );
+      for (var did = 0x2A00; did <= 0x2A0F; did++) {
+        executor.droppedSignalIds.add(signalIdFor('test', '22${hex4(did)}'));
+      }
+
+      await engine.runDiscoveryBatch('test', now);
+      expect(
+        state.ecus['test']!.scanPosition,
+        0,
+        reason: 'the batch expired unanswered',
+      );
+
+      executor.deliver(
+        ProbeResult(
+          signalId: signalIdFor('test', '222A00'),
+          status: const ProbeTimeout(),
+          at: now,
+        ),
+      );
+      await settleDiscovery();
+      expect(state.ecus['test']!.slow, {'2A00'});
+
+      executor.droppedSignalIds.clear();
+      executor.submittedSteps.clear();
+      await engine.runDiscoveryBatch('test', now);
+      expect(
+        executor.submittedSteps.map((s) => s.command),
+        isNot(contains('222A00')),
+      );
+
+      engine.dispose();
+    });
+
     test('a lone NO DATA among cancelled reads neither pauses the ECU nor is '
         'booked as checked', () async {
       final executor = FakeExecutor();
