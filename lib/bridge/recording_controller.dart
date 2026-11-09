@@ -1039,12 +1039,17 @@ class RecordingController extends ChangeNotifier {
     return _appendSidecarLine(markersFilePath!, json);
   }
 
-  /// Appends [json] to the sidecar at [path] as one whole line in a single
-  /// append-mode write, so concurrent appends never interleave mid-line.
+  /// Appends [json] to the sidecar at [path] as one whole line. The write
+  /// is synchronous: two concurrent async append-mode writes of a long
+  /// line do interleave mid-line.
   static Future<void> _appendSidecarLine(
     String path,
     Map<String, dynamic> json,
-  ) => File(path).writeAsString('${jsonEncode(json)}\n', mode: FileMode.append);
+  ) => Future.sync(
+    () => File(
+      path,
+    ).writeAsStringSync('${jsonEncode(json)}\n', mode: FileMode.append),
+  );
 
   /// Runs the whole connect-and-record flow. A no-op unless [canStart].
   Future<void> start() async {
