@@ -81,12 +81,16 @@ class EcuInfo {
     this.asleepUntil,
     this.noDataStreak = 0,
     Map<String, DidSampleStats>? sampleStats,
+    List<String>? unanswered,
+    Set<String>? slow,
   }) : sampleStats = sampleStats ?? {},
        discoverRanges = discoverRanges ?? const [],
        identification = identification ?? {},
        discovered = discovered ?? {},
        conditional = conditional ?? {},
-       retryQueue = retryQueue ?? [];
+       retryQueue = retryQueue ?? [],
+       unanswered = unanswered ?? [],
+       slow = slow ?? {};
 
   /// 11-bit or 29-bit request header.
   String requestHeader;
@@ -130,6 +134,16 @@ class EcuInfo {
   /// Recurring-read statistics per discovered DID (4 hex digits).
   Map<String, DidSampleStats> sampleStats;
 
+  /// DIDs a discovery batch sent but never got a vehicle-side answer for
+  /// (cancelled, lost to a transport error, or never submitted) --
+  /// queued to be read again before fresh scan-order progress is of any
+  /// further use, rather than lost.
+  List<String> unanswered;
+
+  /// DIDs whose discovery read ended in a timeout -- never requested by
+  /// discovery again (see `DiscoveryEngine._finalizeAnsweredDid`).
+  Set<String> slow;
+
   /// The decoded F197 system name, or null if never identified or the
   /// read didn't return a name -- used by the moving-vehicle safety
   /// blocklist.
@@ -143,8 +157,9 @@ class EcuInfo {
   /// Folds [other], an entry for the same ECU stored under a different
   /// id, into this one: found and conditional DIDs are united, the scan
   /// resumes from whichever entry got further, a name or sample statistics
-  /// only [other] has are kept, and the later sleep pause and longer
-  /// NO-DATA streak win.
+  /// only [other] has are kept, the later sleep pause and longer NO-DATA
+  /// streak win, and [slow]/[unanswered] are unioned (minus whatever
+  /// [slow] ends up covering, which is never requested either way).
   void absorb(EcuInfo other) {
     responseHeader ??= other.responseHeader;
     for (final MapEntry(:key, :value) in other.identification.entries) {
@@ -176,6 +191,10 @@ class EcuInfo {
     for (final MapEntry(:key, :value) in other.sampleStats.entries) {
       sampleStats.putIfAbsent(key, () => value);
     }
+    slow.addAll(other.slow);
+    unanswered = {...unanswered, ...other.unanswered}
+        .where((did) => !slow.contains(did))
+        .toList();
   }
 
   Map<String, dynamic> toJson() => {
@@ -193,6 +212,8 @@ class EcuInfo {
     'sampleStats': sampleStats.map(
       (did, stats) => MapEntry(did, stats.toJson()),
     ),
+    'unanswered': unanswered,
+    'slow': slow.toList(),
   };
 
   factory EcuInfo.fromJson(Map<String, dynamic> json) => EcuInfo(
@@ -218,6 +239,8 @@ class EcuInfo {
           in (json['sampleStats'] as Map<dynamic, dynamic>? ?? {}).entries)
         key as String: DidSampleStats.fromJson(value as Map<String, dynamic>),
     },
+    unanswered: List<String>.from(json['unanswered'] as List<dynamic>? ?? []),
+    slow: Set<String>.from(json['slow'] as List<dynamic>? ?? []),
   );
 }
 

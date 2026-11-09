@@ -44,11 +44,11 @@ Duration noDataAsleepPause(int streak) {
       : maxNoDataAsleepPauseDuration;
 }
 
-/// Default per-step addition to a batch's result-wait deadline (see
+/// Default per-step addition to a slice's result-wait deadline (see
 /// [DiscoveryEngine.batchDeadlinePerStep]).
 const Duration defaultBatchDeadlinePerStep = Duration(seconds: 2);
 
-/// Default fixed floor of a batch's result-wait deadline (see
+/// Default fixed floor of a slice's result-wait deadline (see
 /// [DiscoveryEngine.batchDeadlineBase]).
 const Duration defaultBatchDeadlineBase = Duration(seconds: 30);
 
@@ -114,6 +114,34 @@ String hex4(int value) => value.toRadixString(16).toUpperCase().padLeft(4, '0');
 typedef DiscoveryHit =
     void Function(String ecuId, String did, List<int> payload);
 
+/// Where one ECU's next batch of DIDs comes from (see
+/// [DiscoveryEngine._nextBatchFor]) -- determines what finalizing it
+/// advances.
+enum _BatchSource {
+  /// The next slice of [EcuInfo.discoverRanges]'s scan order.
+  scanOrder,
+
+  /// Conditional DIDs (NRC 22/33) queued for retry on a phase change.
+  conditionalRetry,
+
+  /// DIDs an earlier batch sent but never got an answer for.
+  unansweredRetry,
+}
+
+/// One ECU's batch currently out with [DiscoveryEngine.executor], for
+/// [DiscoveryEngine.scoutStatus].
+class _InFlightSlice {
+  _InFlightSlice({required this.signalIds, required this.submittedAt})
+    : remaining = signalIds.toSet();
+
+  final List<String> signalIds;
+
+  /// Signal ids still without a result.
+  final Set<String> remaining;
+
+  final DateTime submittedAt;
+}
+
 /// Drives ECU inventory and DID discovery against [executor], persisting
 /// progress into [state]. Motion-gates discovery per [didscout's safety
 /// blocklist] (see `did_order.dart`): while moving, only scans ECUs with
@@ -162,17 +190,17 @@ class DiscoveryEngine {
   final int sweepChunkSize;
 
   /// Added to [batchDeadlineBase] once per queued step to get the deadline
-  /// a batch's results have to arrive by (see [_submitAndAwait]) -- a
-  /// step without a result by then is treated as missing rather than
+  /// a slice's results have to arrive by (see [_awaitAndFinalizeSlice]) --
+  /// a step without a result by then is treated as missing rather than
   /// awaited forever, since the plugin documents that a one-shot result
   /// event may simply never arrive (engine paused, app backgrounded).
   final Duration batchDeadlinePerStep;
 
-  /// Fixed floor of a batch's result-wait deadline, see
+  /// Fixed floor of a slice's result-wait deadline, see
   /// [batchDeadlinePerStep].
   final Duration batchDeadlineBase;
 
-  /// How long [_submitAndAwait] waits before retrying a batch
+  /// How long [_submitRound] waits before retrying a batch
   /// [ReadExecutor.submit] rejected.
   final Duration submitBackoff;
 
@@ -216,10 +244,13 @@ class DiscoveryEngine {
   final List<DateTime> _recentReads = [];
   final List<ScoutEvent> _events = [];
 
+  /// Slices currently out with [executor], keyed by ECU id -- an ECU in
+  /// here is not offered another round by [pump] until its own slice is
+  /// finalized, however many other ECUs' slices are also still in flight.
+  final Map<String, _InFlightSlice> _inFlight = {};
+
   String? _currentEcuId;
   (String, String)? _currentDidRange;
-  int _waitingCount = 0;
-  DateTime? _waitingSince;
 
   /// The last [scoutEventLogCapacity] scouting events, newest first.
   List<ScoutEvent> get eventLog => List.unmodifiable(_events);
@@ -231,6 +262,14 @@ class DiscoveryEngine {
   ScoutStatus scoutStatus(DateTime now) {
     _recentReads.removeWhere((at) => now.difference(at) > readsPerMinuteWindow);
     final ecuId = _currentEcuId;
+    var waitingCount = 0;
+    DateTime? oldestInFlight;
+    for (final slice in _inFlight.values) {
+      waitingCount += slice.remaining.length;
+      if (oldestInFlight == null || slice.submittedAt.isBefore(oldestInFlight)) {
+        oldestInFlight = slice.submittedAt;
+      }
+    }
     return ScoutStatus(
       currentEcuId: ecuId,
       currentEcuName: ecuId == null ? null : state.ecus[ecuId]?.f197Name,
@@ -240,8 +279,10 @@ class DiscoveryEngine {
       readsPerMinute: _recentReads.length,
       lastResultSummary: _lastResultSummary,
       queueDepth: executor.queueDepth,
-      waitingCount: _waitingCount,
-      waitingFor: _waitingSince == null ? null : now.difference(_waitingSince!),
+      waitingCount: waitingCount,
+      waitingFor: oldestInFlight == null
+          ? null
+          : now.difference(oldestInFlight),
       suspended: _suspended,
     );
   }
@@ -256,7 +297,7 @@ class DiscoveryEngine {
     }
   }
 
-  /// Abandons whatever batch is currently in flight, if any: every
+  /// Abandons whatever slices are currently in flight, if any: every
   /// outstanding completer resolves right now with [ProbeCancelled]
   /// instead of waiting out its deadline, a batch whose enqueue is being
   /// retried gives up at its next attempt, and this engine never submits
@@ -270,6 +311,7 @@ class DiscoveryEngine {
     _suspended = true;
     final pending = _pending.entries.toList();
     _pending.clear();
+    _inFlight.clear();
     for (final entry in pending) {
       entry.value.complete(
         ProbeResult(
@@ -290,17 +332,16 @@ class DiscoveryEngine {
     _lastResultSummary = _statusBucket(result.status);
     _recentReads.add(_clock());
     _pending.remove(result.signalId)?.complete(result);
+    _inFlight[moduleIdOf(result.signalId)]?.remaining.remove(result.signalId);
   }
 
-  /// Marks a new batch of [dids] against [ecuIds] (the first entry is the
-  /// one shown as "current" -- the rest matter only for [ScoutStatus.
-  /// waitingCount]) as submitted, for [scoutStatus] and the event log.
-  void _beginBatch(List<String> ecuIds, List<String> dids, int totalSteps) {
+  /// Marks a new round as submitted, for [scoutStatus] and the event log --
+  /// [dids] is the primary (first) ECU's own slice, the rest matter only
+  /// for the log detail.
+  void _beginBatch(List<String> ecuIds, List<String> dids) {
     final primary = ecuIds.isEmpty ? null : ecuIds.first;
     _currentEcuId = primary;
     _currentDidRange = dids.isEmpty ? null : (dids.first, dids.last);
-    _waitingCount = totalSteps;
-    _waitingSince = _clock();
     if (primary != null) {
       _logEvent(
         ScoutEventKind.batchSubmitted,
@@ -310,24 +351,155 @@ class DiscoveryEngine {
     }
   }
 
-  void _endWaiting() {
-    _waitingCount = 0;
-    _waitingSince = null;
-  }
-
-  /// Submits [steps] against [modules], logging every rejection and
-  /// retrying after [submitBackoff] until the executor accepts the batch
-  /// or [cancel] runs; a batch still unaccepted then reports every step as
-  /// null. [SubmitRejectionReason.noActiveRecording] is retried like
+  /// Submits one batch for each of [ecuIds] that still has one ready, in a
+  /// single [ReadExecutor.submit] call -- so the queue is topped up by
+  /// several ECUs' work at once instead of one DID at a time -- then
+  /// returns one future per prepared ECU that resolves, independently of
+  /// every other one, once that ECU's own slice is fully in (or its own
+  /// deadline passed) and finalized. Awaits only submission itself (with
+  /// the usual reject/backoff retry against [cancel]); a caller that wants
+  /// the old all-at-once behavior can simply await the returned futures
+  /// (see [runDiscoveryBatch]). Logs every rejection and retries after
+  /// [submitBackoff] until the executor accepts the batch or [cancel]
+  /// runs; a batch still unaccepted by then resolves to no futures at all.
+  /// [SubmitRejectionReason.noActiveRecording] is retried like
   /// [SubmitRejectionReason.queueFull]: the plugin reports it while it
   /// reconnects to the adapter within a recording that is still running,
   /// and the caller cancels this engine once the recording really ends.
-  /// Once accepted, awaits every step's result up to a deadline of
-  /// [batchDeadlineBase] plus [batchDeadlinePerStep] per step; a step with
-  /// no result by then reports null rather than hanging forever (the
-  /// plugin documents that a one-shot result event may simply be lost),
-  /// and is dropped from [_pending] so a late result for it is ignored
-  /// safely rather than completing an already-abandoned wait.
+  Future<List<Future<List<String>>>> _submitRound(
+    List<String> ecuIds,
+    DateTime now,
+  ) async {
+    final prepared = <String, ({List<String> dids, _BatchSource source, int rawAdvance})>{};
+    for (final ecuId in ecuIds) {
+      final next = _nextBatchFor(ecuId);
+      if (next != null) {
+        prepared[ecuId] = next;
+      }
+    }
+    if (prepared.isEmpty) {
+      return const [];
+    }
+
+    final modules = <ProbeModule>[];
+    final steps = <ProbeStep>[];
+    final signalIdsByEcu = <String, List<String>>{};
+    final completers = <String, Completer<ProbeResult>>{};
+    for (final entry in prepared.entries) {
+      final ecu = state.ecus[entry.key]!;
+      modules.add(
+        ProbeModule(
+          id: entry.key,
+          requestHeader: ecu.requestHeader,
+          responseHeader: ecu.responseHeader,
+          protocol: ecu.protocol,
+        ),
+      );
+      final signalIds = <String>[];
+      for (final did in entry.value.dids) {
+        final signalId = signalIdFor(entry.key, '22$did');
+        signalIds.add(signalId);
+        completers[signalId] = Completer<ProbeResult>();
+        steps.add(ProbeStep(signalId: signalId, command: '22$did'));
+      }
+      signalIdsByEcu[entry.key] = signalIds;
+    }
+    _pending.addAll(completers);
+    _beginBatch(prepared.keys.toList(), prepared.values.first.dids);
+
+    while (true) {
+      if (_suspended) {
+        // Cancelled -- a retry waiting out a reconnect must not keep
+        // submitting against an executor the caller may already have
+        // torn down.
+        for (final id in completers.keys) {
+          _pending.remove(id);
+        }
+        return const [];
+      }
+      try {
+        await executor.submit(modules, steps);
+        break;
+      } on ReadExecutorRejection catch (rejection) {
+        _logEvent(
+          ScoutEventKind.enqueueRejected,
+          detail: rejection.reason.name,
+        );
+        await _delay(submitBackoff);
+      }
+    }
+
+    return [
+      for (final entry in prepared.entries)
+        _awaitAndFinalizeSlice(
+          ecuId: entry.key,
+          dids: entry.value.dids,
+          source: entry.value.source,
+          rawAdvance: entry.value.rawAdvance,
+          signalIds: signalIdsByEcu[entry.key]!,
+          completers: completers,
+          now: now,
+        ),
+    ];
+  }
+
+  /// Awaits one ECU's own slice of a round up to its own deadline (base
+  /// plus per-step times [signalIds.length], independent of every other
+  /// ECU's slice in the same round), then finalizes it. Registers the
+  /// slice in [_inFlight] for [scoutStatus] and [pump]'s own in-flight
+  /// check, and always removes it again before returning.
+  Future<List<String>> _awaitAndFinalizeSlice({
+    required String ecuId,
+    required List<String> dids,
+    required _BatchSource source,
+    required int rawAdvance,
+    required List<String> signalIds,
+    required Map<String, Completer<ProbeResult>> completers,
+    required DateTime now,
+  }) async {
+    final deadline = batchDeadlineBase + batchDeadlinePerStep * signalIds.length;
+    _inFlight[ecuId] = _InFlightSlice(
+      signalIds: signalIds,
+      submittedAt: _clock(),
+    );
+    final results = await Future.wait([
+      for (final signalId in signalIds)
+        _awaitStepOrDeadline(signalId, completers[signalId]!, deadline),
+    ]);
+    _inFlight.remove(ecuId);
+    if (_suspended) {
+      // Cancelled: no result is an answer, and this engine never gets
+      // another chance to retry this slice -- nothing to finalize.
+      return const [];
+    }
+    return _finalizeSlice(ecuId, dids, source, rawAdvance, results, now);
+  }
+
+  Future<ProbeResult?> _awaitStepOrDeadline(
+    String signalId,
+    Completer<ProbeResult> completer,
+    Duration deadline,
+  ) async {
+    final result = await Future.any<ProbeResult?>([
+      completer.future.then<ProbeResult?>((r) => r),
+      _delay(deadline).then((_) => null),
+    ]);
+    if (result == null) {
+      // Expired -- drop it from `_pending` so a result that does arrive
+      // later for this signal id is ignored rather than mis-delivered to
+      // whatever batch happens to reuse it next.
+      _pending.remove(signalId);
+    }
+    return result;
+  }
+
+  /// Submits [steps] against [modules] and awaits every result, up to a
+  /// deadline of [batchDeadlineBase] plus [batchDeadlinePerStep] per step;
+  /// used by the sequential inventory/identification flows, which (unlike
+  /// discovery batches) have no per-DID scan state to finalize and simply
+  /// want every step's answer or null. Retries a rejected submit after
+  /// [submitBackoff] until the executor accepts or [cancel] runs, same as
+  /// [_submitRound].
   Future<List<ProbeResult?>> _submitAndAwait(
     List<ProbeModule> modules,
     List<ProbeStep> steps,
@@ -369,24 +541,6 @@ class DiscoveryEngine {
           deadline,
         ),
     ]);
-  }
-
-  Future<ProbeResult?> _awaitStepOrDeadline(
-    String signalId,
-    Completer<ProbeResult> completer,
-    Duration deadline,
-  ) async {
-    final result = await Future.any<ProbeResult?>([
-      completer.future.then<ProbeResult?>((r) => r),
-      _delay(deadline).then((_) => null),
-    ]);
-    if (result == null) {
-      // Expired -- drop it from `_pending` so a result that does arrive
-      // later for this signal id is ignored rather than mis-delivered to
-      // whatever batch happens to reuse it next.
-      _pending.remove(signalId);
-    }
-    return result;
   }
 
   /// Seeds [state] with the ECUs the vag-ppe profile already names --
@@ -678,8 +832,11 @@ class DiscoveryEngine {
     }
   }
 
-  /// Whether [ecuId] still has pending discovery work: a queued retry, or
-  /// more of its scan order left, and it isn't currently paused asleep.
+  /// Whether [ecuId] still has pending discovery work: a read missing an
+  /// answer, a queued retry, or more of its scan order left, and it isn't
+  /// currently paused asleep. True regardless of whether a batch for
+  /// [ecuId] is currently in flight -- its work only actually shrinks once
+  /// that batch is finalized.
   bool hasDiscoveryWork(String ecuId, DateTime now) {
     final ecu = state.ecus[ecuId];
     if (ecu == null) {
@@ -688,7 +845,7 @@ class DiscoveryEngine {
     if (ecu.asleepUntil != null && now.isBefore(ecu.asleepUntil!)) {
       return false;
     }
-    if (ecu.retryQueue.isNotEmpty) {
+    if (ecu.unanswered.isNotEmpty || ecu.retryQueue.isNotEmpty) {
       return true;
     }
     return ecu.scanPosition < _orderFor(ecuId, ecu.discoverRanges).length;
@@ -697,7 +854,9 @@ class DiscoveryEngine {
   /// The next ECU [pump]'s discovery scan should run a batch on: honors a
   /// sleeping-ECU pause and, while moving, only offers an ECU whose F197
   /// name is known and doesn't match [movingDiscoveryBlocked] -- ECU (re)discovery
-  /// itself never runs while moving (the caller gates that separately).
+  /// itself never runs while moving (the caller gates that separately). An
+  /// ECU with a batch already in flight is still offered here -- it is
+  /// still being scanned, just not yet given a second one.
   String? selectNextEcuForScan({
     required bool stationary,
     required DateTime now,
@@ -718,199 +877,204 @@ class DiscoveryEngine {
       (stationary || !movingDiscoveryBlocked(state.ecus[ecuId]!.f197Name)) &&
       hasDiscoveryWork(ecuId, now);
 
-  /// The next batch of DIDs [ecuId] would read -- its pending conditional
-  /// retries first, else the next slice of its scan order -- without
-  /// submitting or mutating anything. Null once there is nothing left.
-  ({List<String> dids, bool fromRetry})? _nextBatchFor(String ecuId) {
+  /// What [ecuId]'s next batch would read, without submitting anything:
+  /// DIDs an earlier batch sent but never got an answer for first
+  /// ([EcuInfo.unanswered]), else pending conditional retries
+  /// ([EcuInfo.retryQueue]), else the next slice of the scan order. Null
+  /// once there is nothing left to read. [rawAdvance], meaningful only for
+  /// a [_BatchSource.scanOrder] result, is how far [EcuInfo.scanPosition]
+  /// moves once the batch is read, including any already-[EcuInfo.slow]
+  /// DIDs skipped along the way; skipping a run of them all the way to the
+  /// end of the scan order needs no probe, so that much of
+  /// [EcuInfo.scanPosition] is simply advanced here.
+  ({List<String> dids, _BatchSource source, int rawAdvance})? _nextBatchFor(
+    String ecuId,
+  ) {
     final ecu = state.ecus[ecuId];
     if (ecu == null) {
       return null;
     }
-    final fromRetry = ecu.retryQueue.isNotEmpty;
-    final dids = fromRetry
-        ? ecu.retryQueue.take(batchSize).toList()
-        : _orderFor(
-            ecuId,
-            ecu.discoverRanges,
-          ).skip(ecu.scanPosition).take(batchSize).map(hex4).toList();
-    return dids.isEmpty ? null : (dids: dids, fromRetry: fromRetry);
+    final unanswered = ecu.unanswered.take(batchSize).toList();
+    if (unanswered.isNotEmpty) {
+      return (
+        dids: unanswered,
+        source: _BatchSource.unansweredRetry,
+        rawAdvance: 0,
+      );
+    }
+    final retry = ecu.retryQueue.take(batchSize).toList();
+    if (retry.isNotEmpty) {
+      return (dids: retry, source: _BatchSource.conditionalRetry, rawAdvance: 0);
+    }
+
+    final order = _orderFor(ecuId, ecu.discoverRanges);
+    final dids = <String>[];
+    var cursor = ecu.scanPosition;
+    while (dids.length < batchSize && cursor < order.length) {
+      final did = hex4(order[cursor]);
+      cursor += 1;
+      if (!ecu.slow.contains(did)) {
+        dids.add(did);
+      }
+    }
+    final rawAdvance = cursor - ecu.scanPosition;
+    if (dids.isEmpty) {
+      ecu.scanPosition = cursor;
+      return null;
+    }
+    return (dids: dids, source: _BatchSource.scanOrder, rawAdvance: rawAdvance);
   }
 
-  /// Applies one completed batch's [results] (in the same order as
-  /// [dids]) to [ecuId]: missing-result and asleep detection,
-  /// position/retry-queue advancement, discovered/conditional bookkeeping,
-  /// and [onHit] reporting. Returns the DIDs found OK.
-  ///
-  /// A batch with any missing (null), [ProbeCancelled] or
-  /// [ProbeTransportError] result -- its deadline passed before the plugin
-  /// reported one, the request was cancelled, or the adapter connection
-  /// dropped -- advances nothing: it is logged and left exactly as queued,
-  /// so the same slice is simply retried on a later batch instead of being
-  /// silently treated as answered.
-  List<String> _finalizeBatch(
+  /// Books one DID that got a vehicle-side answer: discovered on
+  /// [ProbeOk], queued for retry on NRC 22/33, or quarantined into
+  /// [EcuInfo.slow] on a timeout -- a timeout ends the adapter session and
+  /// cancels every queued read, so retrying such a DID stalls all
+  /// discovery. Anything else (NO DATA, another NRC) just clears any
+  /// stale conditional flag.
+  void _finalizeAnsweredDid(
+    EcuInfo ecu,
+    String ecuId,
+    String did,
+    ProbeResult result,
+    List<String> newlyFound,
+  ) {
+    switch (result.status) {
+      case ProbeOk():
+        ecu.discovered.add(did);
+        ecu.conditional.remove(did);
+        newlyFound.add(did);
+        _logEvent(ScoutEventKind.hit, ecuId: ecuId, detail: did);
+        onHit(ecuId, did, result.payload ?? const []);
+      case ProbeNrc(code: 0x22) || ProbeNrc(code: 0x33):
+        ecu.conditional.add(did);
+        _logEvent(ScoutEventKind.conditional, ecuId: ecuId, detail: did);
+      case ProbeTimeout():
+        ecu.slow.add(did);
+        ecu.discovered.remove(did);
+        ecu.conditional.remove(did);
+        _logEvent(ScoutEventKind.slowDid, ecuId: ecuId, detail: did);
+      default:
+        ecu.conditional.remove(did);
+    }
+  }
+
+  /// Applies one ECU's completed slice of a round ([dids]/[source], from
+  /// [_nextBatchFor]) to its state. Every entry of [results] (same order
+  /// as [dids]) with a vehicle-side answer ([_isAnswer]) is booked via
+  /// [_finalizeAnsweredDid]; [source]'s own queue or [EcuInfo.scanPosition]
+  /// then advances. A [source] of [_BatchSource.scanOrder] also queues
+  /// every entry without an answer into [EcuInfo.unanswered], so it is
+  /// read again rather than lost; [_BatchSource.conditionalRetry] and
+  /// [_BatchSource.unansweredRetry] simply leave such an entry in its own
+  /// queue for the next pull. Asleep/no-data detection ([batchIsAsleep]/
+  /// [batchLooksNoDataAsleep]) runs over the answered entries only, before
+  /// any of this: a slice with none answered changes nothing, and one
+  /// that looks asleep is left exactly as queued, to be read again once
+  /// the ECU wakes rather than counted as checked while it couldn't
+  /// possibly have meant it. Returns the DIDs found OK.
+  List<String> _finalizeSlice(
     String ecuId,
     List<String> dids,
-    bool fromRetry,
+    _BatchSource source,
+    int rawAdvance,
     List<ProbeResult?> results,
     DateTime now,
   ) {
     final ecu = state.ecus[ecuId]!;
-    final missing = results
-        .where((r) => r == null || !_isAnswer(r.status))
-        .length;
-    if (missing > 0) {
+    final answeredDids = <String>[];
+    final answeredResults = <ProbeResult>[];
+    final missingDids = <String>[];
+    for (var i = 0; i < dids.length; i++) {
+      final result = results[i];
+      if (result != null && _isAnswer(result.status)) {
+        answeredDids.add(dids[i]);
+        answeredResults.add(result);
+      } else {
+        missingDids.add(dids[i]);
+      }
+    }
+    if (missingDids.isNotEmpty) {
       _logEvent(
         ScoutEventKind.batchTimedOut,
         ecuId: ecuId,
-        detail: '$missing/${dids.length} missing',
+        detail: '${missingDids.length}/${dids.length} missing',
       );
-      return [];
     }
-    final okResults = results.cast<ProbeResult>();
+    if (answeredResults.isEmpty) {
+      return const [];
+    }
 
     final statusCounts = <String, int>{};
-    for (final result in okResults) {
+    for (final result in answeredResults) {
       final bucket = _statusBucket(result.status);
       statusCounts[bucket] = (statusCounts[bucket] ?? 0) + 1;
     }
 
-    if (batchLooksNoDataAsleep(statusCounts, dids.length)) {
+    if (batchLooksNoDataAsleep(statusCounts, answeredResults.length)) {
       ecu.noDataStreak += 1;
       ecu.asleepUntil = now.add(noDataAsleepPause(ecu.noDataStreak));
       _logEvent(ScoutEventKind.asleep, ecuId: ecuId, detail: 'no data');
-      return [];
+      return const [];
     }
     ecu.noDataStreak = 0;
-    if (batchIsAsleep(statusCounts, dids.length)) {
+    if (batchIsAsleep(statusCounts, answeredResults.length)) {
       ecu.asleepUntil = now.add(asleepPauseDuration);
       _logEvent(ScoutEventKind.asleep, ecuId: ecuId);
-      return [];
+      return const [];
     }
 
-    if (fromRetry) {
-      ecu.retryQueue = ecu.retryQueue.sublist(dids.length);
-    } else {
-      ecu.scanPosition += dids.length;
+    switch (source) {
+      case _BatchSource.scanOrder:
+        ecu.scanPosition += rawAdvance;
+        for (final did in missingDids) {
+          if (!ecu.unanswered.contains(did)) {
+            ecu.unanswered.add(did);
+          }
+        }
+      case _BatchSource.conditionalRetry:
+        ecu.retryQueue.removeWhere(answeredDids.contains);
+      case _BatchSource.unansweredRetry:
+        ecu.unanswered.removeWhere(answeredDids.contains);
     }
 
     final newlyFound = <String>[];
-    for (var i = 0; i < dids.length; i++) {
-      final did = dids[i];
-      final result = okResults[i];
-      switch (result.status) {
-        case ProbeOk():
-          ecu.discovered.add(did);
-          ecu.conditional.remove(did);
-          newlyFound.add(did);
-          _logEvent(ScoutEventKind.hit, ecuId: ecuId, detail: did);
-          onHit(ecuId, did, result.payload ?? const []);
-        case ProbeNrc(code: 0x22) || ProbeNrc(code: 0x33):
-          ecu.conditional.add(did);
-          _logEvent(ScoutEventKind.conditional, ecuId: ecuId, detail: did);
-        default:
-          ecu.conditional.remove(did);
-      }
+    for (var i = 0; i < answeredDids.length; i++) {
+      _finalizeAnsweredDid(
+        ecu,
+        ecuId,
+        answeredDids[i],
+        answeredResults[i],
+        newlyFound,
+      );
     }
     return newlyFound;
   }
 
-  /// Reads one batch ([batchSize] DIDs) of [ecuId]'s discovery
-  /// work. If the batch looks asleep ([batchIsAsleep]), progress does not
-  /// advance and the ECU pauses for [asleepPauseDuration]; otherwise
-  /// updates position/discovered/conditional, reports every newly found
-  /// DID via [onHit], and returns the DIDs found OK.
+  /// Reads one batch of [ecuId]'s discovery work and fully awaits its
+  /// outcome -- a thin, blocking wrapper around [_submitRound] for
+  /// callers (tests, mainly) that want the old one-ECU-at-a-time
+  /// behavior; [pump] itself never awaits a slice's results, only its
+  /// submission. A no-op (returns empty) while [ecuId] already has a
+  /// slice in flight.
   Future<List<String>> runDiscoveryBatch(String ecuId, DateTime now) async {
     final ecu = state.ecus[ecuId];
     if (ecu == null ||
-        (ecu.asleepUntil != null && now.isBefore(ecu.asleepUntil!))) {
+        (ecu.asleepUntil != null && now.isBefore(ecu.asleepUntil!)) ||
+        _inFlight.containsKey(ecuId)) {
       return [];
     }
-    final next = _nextBatchFor(ecuId);
-    if (next == null) {
-      return [];
-    }
-    final module = ProbeModule(
-      id: ecuId,
-      requestHeader: ecu.requestHeader,
-      responseHeader: ecu.responseHeader,
-      protocol: ecu.protocol,
-    );
-    final steps = [
-      for (final did in next.dids)
-        ProbeStep(signalId: signalIdFor(ecuId, '22$did'), command: '22$did'),
-    ];
-    _beginBatch([ecuId], next.dids, steps.length);
-    final results = await _submitAndAwait([module], steps);
-    _endWaiting();
-    if (_suspended) {
-      // Cancelled: no result is an answer, and this engine never gets
-      // another chance to retry this batch -- nothing to finalize.
-      return [];
-    }
-    return _finalizeBatch(ecuId, next.dids, next.fromRetry, results, now);
+    final futures = await _submitRound([ecuId], now);
+    return futures.isEmpty ? [] : await futures.single;
   }
 
-  /// Submits one batch for each of [ecuIds] in a single
-  /// [ReadExecutor.submit] call -- so the queue is topped up by several
-  /// ECUs' work at once instead of one DID at a time -- then finalizes
-  /// each ECU's own slice of the results independently.
+  /// Submits one batch for each of [ecuIds] that still has one ready, in a
+  /// single [ReadExecutor.submit] call, and fully awaits every one of
+  /// their slices before returning -- an explicit-ECU-list, blocking
+  /// counterpart to [pump]'s own round selection, for callers that want
+  /// the old all-at-once behavior for a specific group of ECUs.
   Future<void> runDiscoveryBatchGroup(List<String> ecuIds, DateTime now) async {
-    final prepared = <String, ({List<String> dids, bool fromRetry})>{};
-    for (final ecuId in ecuIds) {
-      final next = _nextBatchFor(ecuId);
-      if (next != null) {
-        prepared[ecuId] = next;
-      }
-    }
-    if (prepared.isEmpty) {
-      return;
-    }
-
-    final modules = <ProbeModule>[];
-    final steps = <ProbeStep>[];
-    for (final entry in prepared.entries) {
-      final ecu = state.ecus[entry.key]!;
-      modules.add(
-        ProbeModule(
-          id: entry.key,
-          requestHeader: ecu.requestHeader,
-          responseHeader: ecu.responseHeader,
-          protocol: ecu.protocol,
-        ),
-      );
-      for (final did in entry.value.dids) {
-        steps.add(
-          ProbeStep(
-            signalId: signalIdFor(entry.key, '22$did'),
-            command: '22$did',
-          ),
-        );
-      }
-    }
-    _beginBatch(
-      prepared.keys.toList(),
-      prepared.values.first.dids,
-      steps.length,
-    );
-    final results = await _submitAndAwait(modules, steps);
-    _endWaiting();
-    if (_suspended) {
-      // Cancelled: no result is an answer, and this engine never gets
-      // another chance to retry this batch -- nothing to finalize.
-      return;
-    }
-
-    var offset = 0;
-    for (final entry in prepared.entries) {
-      final count = entry.value.dids.length;
-      _finalizeBatch(
-        entry.key,
-        entry.value.dids,
-        entry.value.fromRetry,
-        results.sublist(offset, offset + count),
-        now,
-      );
-      offset += count;
+    for (final future in await _submitRound(ecuIds, now)) {
+      await future;
     }
   }
 
@@ -950,22 +1114,25 @@ class DiscoveryEngine {
   }
 
   /// One scheduler tick: while stationary, tops up any pending ECU
-  /// (re)discovery and names unnamed ECUs ([nameUnnamedEcus]); then groups
-  /// one batch from every currently eligible ECU into a single submission
-  /// -- so the executor's queue is topped up by several ECUs at once,
-  /// bounded by [maxQueueDepth] -- and returns. The caller invokes this
-  /// repeatedly (e.g. once per scheduler iteration) rather than draining
-  /// all discovery work in one call, keeping the queue in the
-  /// [minQueueDepth]-[maxQueueDepth] band over time instead of flooding
-  /// it. A no-op once [suspended]; while the executor rejects batches (see
-  /// [_submitAndAwait]) this call keeps retrying until it accepts again or
-  /// [cancel] runs.
+  /// (re)discovery and names unnamed ECUs ([nameUnnamedEcus]) -- both
+  /// fully awaited, as before; then groups one batch from every currently
+  /// eligible, not-already-in-flight ECU into a single submission -- so
+  /// the executor's queue is topped up by several ECUs at once, bounded by
+  /// [maxQueueDepth] -- and returns without waiting for any of that
+  /// round's results: each ECU's own slice is finalized independently,
+  /// in the background, as soon as it is fully in or its own deadline
+  /// passes (see [_submitRound]). The caller invokes this repeatedly (e.g.
+  /// once per scheduler iteration) rather than draining all discovery work
+  /// in one call, keeping the queue in the [minQueueDepth]-[maxQueueDepth]
+  /// band over time instead of flooding it. A no-op once [suspended];
+  /// while the executor rejects batches this call keeps retrying until it
+  /// accepts again or [cancel] runs.
   ///
-  /// Every eligible ECU whose scan has not yet passed its own
-  /// [EcuInfo.discoverRanges] gets a batch in every round, ahead of the
-  /// rest: those ranges are where its useful DIDs are expected, and a
+  /// Every eligible, not-in-flight ECU whose scan has not yet passed its
+  /// own [EcuInfo.discoverRanges] gets a batch in every round, ahead of
+  /// the rest: those ranges are where its useful DIDs are expected, and a
   /// plain rotation over a few dozen ECUs would reach each of them only
-  /// once every few rounds. Every eligible ECU in [focusRequestHeaders]
+  /// once every few rounds. Every such ECU in [focusRequestHeaders]
   /// follows next, also every round, as far as the round has room.
   ///
   /// The remaining room is filled starting from just after wherever the
@@ -999,15 +1166,17 @@ class DiscoveryEngine {
     }
     final round = <String>[];
     bool roundFull() => round.length * batchSize >= maxQueueDepth;
+    bool eligible(String ecuId) =>
+        !round.contains(ecuId) &&
+        !_inFlight.containsKey(ecuId) &&
+        _scannable(ecuId, stationary: stationary, now: now);
 
     void addPreferred(bool Function(String ecuId, EcuInfo ecu) preferred) {
       for (final ecuId in keys) {
         if (roundFull()) {
           return;
         }
-        if (!round.contains(ecuId) &&
-            preferred(ecuId, state.ecus[ecuId]!) &&
-            _scannable(ecuId, stationary: stationary, now: now)) {
+        if (preferred(ecuId, state.ecus[ecuId]!) && eligible(ecuId)) {
           round.add(ecuId);
         }
       }
@@ -1019,8 +1188,7 @@ class DiscoveryEngine {
     while (considered < keys.length && !roundFull()) {
       final ecuId = keys[(_roundRobinCursor + considered) % keys.length];
       considered += 1;
-      if (!round.contains(ecuId) &&
-          _scannable(ecuId, stationary: stationary, now: now)) {
+      if (eligible(ecuId)) {
         round.add(ecuId);
       }
     }
@@ -1028,6 +1196,8 @@ class DiscoveryEngine {
     if (round.isEmpty) {
       return;
     }
-    await runDiscoveryBatchGroup(round, now);
+    for (final future in await _submitRound(round, now)) {
+      unawaited(future);
+    }
   }
 }

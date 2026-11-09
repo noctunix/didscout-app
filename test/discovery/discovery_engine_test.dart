@@ -1104,6 +1104,7 @@ void main() {
         );
 
         await engine.pump(stationary: true, now: now);
+        await settleDiscovery();
 
         expect(state.ecus['only']!.scanPosition, fullOrderLength);
         expect(engine.hasDiscoveryWork('only', now), isFalse);
@@ -1112,6 +1113,7 @@ void main() {
         // 'only' is now fully scanned; a second call never touches it
         // again even though other seeded ECUs still have work.
         await engine.pump(stationary: true, now: now);
+        await settleDiscovery();
         expect(state.ecus['only']!.scanPosition, fullOrderLength);
 
         engine.dispose();
@@ -1150,6 +1152,7 @@ void main() {
       // them once each.
       for (var round = 0; round < 5; round++) {
         await engine.pump(stationary: true, now: now);
+        await settleDiscovery();
       }
 
       for (final id in ids) {
@@ -1199,6 +1202,7 @@ void main() {
       };
 
       await engine.pump(stationary: true, now: now);
+      await settleDiscovery();
       expect(positions(), {
         'ecu0': 16,
         'ecu1': 0,
@@ -1210,6 +1214,7 @@ void main() {
       });
 
       await engine.pump(stationary: true, now: now);
+      await settleDiscovery();
       expect(positions(), {
         'ecu0': 16,
         'ecu1': 16,
@@ -1221,13 +1226,16 @@ void main() {
       });
 
       await engine.pump(stationary: true, now: now);
+      await settleDiscovery();
       await engine.pump(stationary: true, now: now);
+      await settleDiscovery();
       expect(positions(), {
         for (final id in ids) id: 16,
         'targeted': 32,
       }, reason: 'once its discover ranges are scanned, it waits its turn');
 
       await engine.pump(stationary: true, now: now);
+      await settleDiscovery();
       expect(state.ecus['targeted']!.scanPosition, 48);
       expect(state.ecus['ecu0']!.scanPosition, 32);
 
@@ -1265,6 +1273,7 @@ void main() {
         );
         for (var round = 0; round < 3; round++) {
           await engine.pump(stationary: true, now: now);
+          await settleDiscovery();
         }
         engine.dispose();
         return {
@@ -1287,6 +1296,69 @@ void main() {
         'focus': 0,
       });
     });
+
+    test(
+      'pump gives another ECU a round while an earlier one\'s slice is '
+      'still awaiting results',
+      () async {
+        final executor = FakeExecutor();
+        final state = DiscoveryState(
+          inventoryStagesDone: {'ecus11', 'ecus29', 'vag29'},
+        );
+        state.ecus['a'] = EcuInfo(
+          requestHeader: '701',
+          responseHeader: '709',
+          protocol: 6,
+          discoverRanges: [(0x2A00, 0x2A0F)],
+        );
+        final engine = DiscoveryEngine(
+          executor: executor,
+          state: state,
+          onHit: (_, _, _) {},
+          maxQueueDepth: 16,
+        );
+        // Only 'a' (and later 'b') matter to this test -- drop the
+        // vag-ppe seed ECUs the engine adds on its own, which would
+        // otherwise compete for the same one-ECU-per-round budget.
+        state.ecus.removeWhere((id, _) => id != 'a');
+        // 'a' never gets a single result back -- its slice stays in
+        // flight for the rest of this test.
+        for (var did = 0x2A00; did <= 0x2A0F; did++) {
+          executor.droppedSignalIds.add(signalIdFor('a', '22${hex4(did)}'));
+        }
+        executor.respond = (step) =>
+            ProbeResult(signalId: step.signalId, status: const ProbeOk(), at: now);
+
+        await engine.pump(stationary: true, now: now);
+        await settleDiscovery();
+        expect(
+          state.ecus['a']!.scanPosition,
+          0,
+          reason: 'a\'s slice has not finalized yet',
+        );
+
+        // 'b' only appears now -- while 'a' is still in flight.
+        state.ecus['b'] = EcuInfo(
+          requestHeader: '711',
+          responseHeader: '719',
+          protocol: 6,
+          discoverRanges: [(0x2A00, 0x2A0F)],
+        );
+        executor.submittedSteps.clear();
+        await engine.pump(stationary: true, now: now);
+        await settleDiscovery();
+
+        expect(
+          executor.submittedSteps.map((s) => moduleIdOf(s.signalId)).toSet(),
+          {'b'},
+          reason: "a is skipped -- still in flight -- but b gets a round",
+        );
+        expect(state.ecus['a']!.scanPosition, 0);
+        expect(state.ecus['b']!.scanPosition, 16);
+
+        engine.dispose();
+      },
+    );
   });
 
   group('scanProgress', () {
@@ -1393,7 +1465,8 @@ void main() {
 
   group('batch deadline and enqueue rejection', () {
     test(
-      'a lost result event times out without advancing position, and is retried',
+      'a lost result event is booked as missing without blocking the rest '
+      'of the batch, and is retried ahead of fresh scan-order progress',
       () async {
         final executor = FakeExecutor();
         final state = DiscoveryState();
@@ -1424,33 +1497,51 @@ void main() {
 
         final found = await engine.runDiscoveryBatch('test', now);
 
-        expect(found, isEmpty);
+        expect(
+          found.length,
+          15,
+          reason: 'every DID that did answer is still booked',
+        );
         expect(
           state.ecus['test']!.scanPosition,
-          0,
-          reason: 'a batch with a missing result must not advance',
+          16,
+          reason: 'scan position advances even with one result missing',
         );
-        expect(state.ecus['test']!.discovered, isEmpty);
+        expect(state.ecus['test']!.discovered.length, 15);
+        expect(state.ecus['test']!.unanswered, ['2A00']);
         expect(
-          engine.eventLog.first.kind,
-          ScoutEventKind.batchTimedOut,
-          reason: 'newest event first',
+          engine.eventLog.any(
+            (e) =>
+                e.kind == ScoutEventKind.batchTimedOut &&
+                e.ecuId == 'test' &&
+                e.detail == '1/16 missing',
+          ),
+          isTrue,
         );
-        expect(engine.eventLog.first.ecuId, 'test');
-        expect(engine.eventLog.first.detail, '1/16 missing');
 
-        // Retried on the next call: the lost DID answers this time.
+        // Retried on the next call, ahead of fresh scan-order progress:
+        // the lost DID answers this time.
         executor.droppedSignalIds.clear();
+        executor.submittedSteps.clear();
         final retried = await engine.runDiscoveryBatch('test', now);
-        expect(retried.length, 16);
-        expect(state.ecus['test']!.scanPosition, 16);
+        expect(retried, ['2A00']);
+        expect(
+          executor.submittedSteps.map((s) => s.command).toList(),
+          ['222A00'],
+        );
+        expect(state.ecus['test']!.unanswered, isEmpty);
+        expect(
+          state.ecus['test']!.scanPosition,
+          16,
+          reason: 'unchanged by a retry batch',
+        );
 
         engine.dispose();
       },
     );
 
-    test('a transport error does not advance position, and the DID is read '
-        'again on the next batch', () async {
+    test('a transport error is booked as missing without blocking the rest '
+        'of the batch, and the DID is read again on the next batch', () async {
       final executor = FakeExecutor();
       final state = DiscoveryState();
       state.ecus['test'] = EcuInfo(
@@ -1476,17 +1567,25 @@ void main() {
 
       final found = await engine.runDiscoveryBatch('test', now);
 
-      expect(found, isEmpty);
-      expect(state.ecus['test']!.scanPosition, 0);
-      expect(state.ecus['test']!.discovered, isEmpty);
-      expect(engine.eventLog.first.kind, ScoutEventKind.batchTimedOut);
-      expect(engine.eventLog.first.detail, '1/16 missing');
+      expect(found.length, 15);
+      expect(state.ecus['test']!.scanPosition, 16);
+      expect(state.ecus['test']!.discovered.length, 15);
+      expect(state.ecus['test']!.unanswered, ['2A03']);
+      expect(
+        engine.eventLog.any(
+          (e) =>
+              e.kind == ScoutEventKind.batchTimedOut &&
+              e.detail == '1/16 missing',
+        ),
+        isTrue,
+      );
 
       disconnected = false;
       executor.submittedSteps.clear();
       final retried = await engine.runDiscoveryBatch('test', now);
       expect(executor.submittedSteps.map((s) => s.command), contains('222A03'));
       expect(retried, contains('2A03'));
+      expect(state.ecus['test']!.unanswered, isEmpty);
       expect(state.ecus['test']!.scanPosition, 16);
 
       engine.dispose();
@@ -1583,6 +1682,7 @@ void main() {
       );
 
       await engine.pump(stationary: true, now: now);
+      await settleDiscovery();
 
       expect(engine.suspended, isFalse);
       expect(requestedBackoffs.take(2), [
@@ -1602,6 +1702,7 @@ void main() {
 
       executor.submittedSteps.clear();
       await engine.pump(stationary: true, now: now);
+      await settleDiscovery();
       expect(
         executor.submittedSteps,
         isNotEmpty,
@@ -1610,6 +1711,129 @@ void main() {
 
       engine.dispose();
     });
+  });
+
+  group('per-DID finalization and slow DID quarantine', () {
+    test(
+      'a timed-out DID is quarantined forever; every cancelled DID in the '
+      'same batch is booked for retry rather than lost',
+      () async {
+        final executor = FakeExecutor();
+        final state = DiscoveryState();
+        state.ecus['test'] = EcuInfo(
+          requestHeader: '7A1',
+          responseHeader: '7A9',
+          protocol: 6,
+          discoverRanges: [(0x2A00, 0x2A0F)],
+        );
+        final engine = DiscoveryEngine(
+          executor: executor,
+          state: state,
+          onHit: (_, _, _) {},
+        );
+        // One DID (2A00) is a genuine vehicle-side timeout -- the adapter
+        // session drop it causes cancels every other queued read, the
+        // same real-world signature the bug report describes.
+        executor.respond = (step) => ProbeResult(
+          signalId: step.signalId,
+          status: step.command == '222A00'
+              ? const ProbeTimeout()
+              : const ProbeCancelled(),
+          at: now,
+        );
+
+        final found = await engine.runDiscoveryBatch('test', now);
+
+        expect(found, isEmpty, reason: 'no OK reply in this batch');
+        expect(
+          state.ecus['test']!.slow,
+          {'2A00'},
+          reason: 'the timed-out DID is quarantined',
+        );
+        expect(
+          state.ecus['test']!.unanswered,
+          [for (var did = 0x2A01; did <= 0x2A0F; did++) hex4(did)],
+          reason: 'every cancelled DID is queued to be read again',
+        );
+        expect(
+          state.ecus['test']!.scanPosition,
+          16,
+          reason: 'the whole window was visited, slow DID included',
+        );
+
+        // The next batch must pull the cancelled DIDs from `unanswered`
+        // and must never ask for the quarantined DID again.
+        executor.submittedSteps.clear();
+        executor.respond = (step) => ProbeResult(
+          signalId: step.signalId,
+          status: const ProbeOk(),
+          payload: const [],
+          at: now,
+        );
+        final retried = await engine.runDiscoveryBatch('test', now);
+
+        expect(
+          executor.submittedSteps.map((s) => s.command),
+          isNot(contains('222A00')),
+          reason: 'a slow DID is never requested again',
+        );
+        expect(retried.length, 15);
+        expect(state.ecus['test']!.unanswered, isEmpty);
+        expect(state.ecus['test']!.slow, {'2A00'});
+
+        engine.dispose();
+      },
+    );
+
+    test(
+      'in a round of two ECUs, each ECU\'s cancelled DIDs are re-read and '
+      'its own slow DID is quarantined, independently of the other',
+      () async {
+        final executor = FakeExecutor();
+        final state = DiscoveryState();
+        state.ecus['a'] = EcuInfo(
+          requestHeader: '701',
+          responseHeader: '709',
+          protocol: 6,
+          discoverRanges: [(0x2A00, 0x2A0F)],
+        );
+        state.ecus['b'] = EcuInfo(
+          requestHeader: '711',
+          responseHeader: '719',
+          protocol: 6,
+          discoverRanges: [(0x2A00, 0x2A0F)],
+        );
+        final engine = DiscoveryEngine(
+          executor: executor,
+          state: state,
+          onHit: (_, _, _) {},
+        );
+        // Each ECU's own first DID times out; the session drop it causes
+        // cancels the rest of that ECU's own slice -- independently of
+        // the other ECU sharing the same round.
+        executor.respond = (step) => ProbeResult(
+          signalId: step.signalId,
+          status: step.command == '222A00'
+              ? const ProbeTimeout()
+              : const ProbeCancelled(),
+          at: now,
+        );
+
+        await engine.runDiscoveryBatchGroup(['a', 'b'], now);
+
+        for (final id in ['a', 'b']) {
+          expect(state.ecus[id]!.discovered, isEmpty);
+          expect(state.ecus[id]!.slow, {'2A00'});
+          expect(
+            state.ecus[id]!.unanswered,
+            [for (var did = 0x2A01; did <= 0x2A0F; did++) hex4(did)],
+          );
+          expect(state.ecus[id]!.scanPosition, 16);
+        }
+
+        engine.dispose();
+      },
+    );
   });
 
   group('cancel', () {
@@ -1718,6 +1942,48 @@ void main() {
       expect(found, isEmpty);
       expect(state.ecus['test']!.scanPosition, 0);
     });
+
+    test(
+      'cancelling a pipelined round in flight finalizes nothing once its '
+      'results do arrive',
+      () async {
+        final executor = FakeExecutor();
+        final state = DiscoveryState();
+        state.ecus['test'] = EcuInfo(
+          requestHeader: '7A1',
+          responseHeader: '7A9',
+          protocol: 6,
+          discoverRanges: [(0x2A00, 0x2A0F)],
+        );
+        final engine = DiscoveryEngine(
+          executor: executor,
+          state: state,
+          onHit: (_, _, _) {},
+        );
+        executor.respond = (step) => ProbeResult(
+          signalId: step.signalId,
+          status: const ProbeOk(),
+          payload: const [],
+          at: now,
+        );
+
+        // `pump` only awaits submission, not the round's results -- the
+        // cancel below races the still-pending finalize.
+        await engine.pump(stationary: true, now: now);
+        engine.cancel();
+        await settleDiscovery();
+
+        expect(
+          state.ecus['test']!.scanPosition,
+          0,
+          reason: 'nothing is recorded once cancel has run',
+        );
+        expect(state.ecus['test']!.discovered, isEmpty);
+        expect(engine.suspended, isTrue);
+
+        engine.dispose();
+      },
+    );
   });
 
   group('scoutStatus', () {

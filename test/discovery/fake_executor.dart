@@ -68,3 +68,10 @@ class FakeExecutor implements ReadExecutor {
 
   Future<void> close() => _controller.close();
 }
+
+/// Flushes every pending microtask -- a pipelined `DiscoveryEngine.pump`
+/// round finalizes each ECU's slice in the background, across the
+/// `FakeExecutor.submit`/stream/completer microtask chain, after `pump`
+/// itself has already returned; a test that wants to see a round's
+/// results applied awaits this once before inspecting state.
+Future<void> settleDiscovery() => Future<void>.delayed(Duration.zero);

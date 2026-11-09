@@ -59,6 +59,8 @@ void main() {
         retryQueue: ['2A26'],
         asleepUntil: DateTime.utc(2026, 10, 28, 9, 31),
         noDataStreak: 3,
+        unanswered: ['2A05'],
+        slow: {'2A06'},
         sampleStats: {
           '2A04': DidSampleStats(
             lastPayloadHash: 0xDEADBEEF,
@@ -99,6 +101,8 @@ void main() {
       expect(gateway.retryQueue, ['2A26']);
       expect(gateway.asleepUntil, DateTime.utc(2026, 10, 28, 9, 31));
       expect(gateway.noDataStreak, 3);
+      expect(gateway.unanswered, ['2A05']);
+      expect(gateway.slow, {'2A06'});
       final stats = gateway.sampleStats['2A04']!;
       expect(stats.lastPayloadHash, 0xDEADBEEF);
       expect(stats.stableSamples, 12);
@@ -118,6 +122,26 @@ void main() {
 
       expect(loaded.experimentCompletions, isEmpty);
     });
+
+    test(
+      'an ECU saved before unanswered/slow existed loads with both empty',
+      () {
+        final loaded = DiscoveryState.fromJson({
+          'ecus': {
+            'gateway': {
+              'requestHeader': '710',
+              'responseHeader': '77A',
+              'protocol': 6,
+              'scanPosition': 48,
+            },
+          },
+        });
+
+        final gateway = loaded.ecus['gateway']!;
+        expect(gateway.unanswered, isEmpty);
+        expect(gateway.slow, isEmpty);
+      },
+    );
 
     test('a persisted phantom 0x700 ECU is dropped on load', () async {
       final original = DiscoveryState(

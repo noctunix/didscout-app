@@ -20,8 +20,12 @@ enum ScoutEventKind {
   asleep,
 
   /// A batch's deadline passed with at least one step still missing a
-  /// result; the ECU's scan position does not advance.
+  /// result; those DIDs are queued to be read again rather than lost.
   batchTimedOut,
+
+  /// A DID's discovery read timed out; it is now quarantined and never
+  /// requested by discovery again.
+  slowDid,
 
   /// [ReadExecutor.submit] rejected a batch outright (queue full, or no
   /// active recording).
@@ -83,11 +87,13 @@ class ScoutStatus {
   /// The executor's own queue depth right now.
   final int queueDepth;
 
-  /// Results still outstanding for the batch currently in flight, if any.
+  /// Results still outstanding, summed across every ECU slice currently
+  /// in flight (zero or more at once -- the engine pipelines rounds
+  /// rather than scanning one ECU at a time).
   final int waitingCount;
 
-  /// How long the current batch has been waiting on [waitingCount] results,
-  /// null when nothing is in flight.
+  /// How long the oldest of those in-flight slices has been waiting,
+  /// null when none is in flight.
   final Duration? waitingFor;
 
   /// Once true (the engine was cancelled), the engine never submits again

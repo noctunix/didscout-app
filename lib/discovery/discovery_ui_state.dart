@@ -125,6 +125,11 @@ DiscoveryUiState buildDiscoveryUiState({
     );
   }
 
+  // An ECU with a slice already in flight still has pending work by
+  // `hasDiscoveryWork`'s own accounting (nothing advances until that
+  // slice is finalized), so it is still reported as `scanning` here, not
+  // `idle`/`waiting*` -- it genuinely is being scanned, just not given a
+  // second slice on top of the one it already has out.
   final nextEcuId = engine.selectNextEcuForScan(
     stationary: stationary,
     now: now,

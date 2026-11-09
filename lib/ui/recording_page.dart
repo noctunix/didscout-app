@@ -761,9 +761,10 @@ class _ReadsPerMinuteKpi extends StatelessWidget {
 
 /// Compact one-line summary of [ScoutStatus], shown under the Scouting
 /// card for the whole recording -- e.g. `HCP1 · 1A40–1A4F · 284/min · NRC
-/// 31 · q 24`, or, once a batch has been pending more than 10 seconds,
-/// `waiting 16 for 12 s` in the error color. Tapping opens the full event
-/// log.
+/// 31 · q 24`, or, once the oldest in-flight ECU slice has been pending
+/// more than 10 seconds, `waiting 16 for 12 s` in the error color (16
+/// outstanding results summed across every slice currently in flight, not
+/// just that one). Tapping opens the full event log.
 class _ScoutStatusLine extends StatelessWidget {
   const _ScoutStatusLine({required this.status, required this.onTap});
 
@@ -880,6 +881,7 @@ class _ScoutEventRow extends StatelessWidget {
       ScoutEventKind.conditional => 'conditional',
       ScoutEventKind.asleep => 'asleep',
       ScoutEventKind.batchTimedOut => 'batch timed out',
+      ScoutEventKind.slowDid => 'slow DID quarantined',
       ScoutEventKind.enqueueRejected => 'enqueue rejected',
       ScoutEventKind.inventoryStep => 'inventory step',
     };
