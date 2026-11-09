@@ -19,8 +19,9 @@ void main() {
   test('every known profile DID is read, plus the base signals', () {
     final known = vagPpeModules.fold<int>(0, (n, m) => n + m.dids.length);
     // Speed, energy, range, odometer, outside temp., charging power,
-    // battery temp. and 22F449/22F442; none of them is also a profile DID.
-    expect(plan.steps.length, known + 9);
+    // battery temp., the BMS's 06C7/06C8 and 22F449/22F442; none of them
+    // is also a profile DID.
+    expect(plan.steps.length, known + 11);
   });
 
   test('signal ids are unique and name a planned module', () {
@@ -112,10 +113,12 @@ void main() {
       'module7_22f446',
       'module6_220311',
       'vag29-7B_221e10',
+      'vag29-7B_2206c7',
+      'vag29-7B_2206c8',
     ];
 
     test('reads only speed, energy, range, odometer, outside temp., '
-        'charging power and battery temp.', () {
+        'charging power, battery temp. and the BMS curve-fit DIDs', () {
       expect(scoutOnlyPlan.steps.map((s) => s.signalId), baseSignalIds);
       final intervals = {
         for (final s in scoutOnlyPlan.steps) s.signalId: s.intervalMs,
@@ -126,6 +129,8 @@ void main() {
       expect(intervals['module7_22f446'], 60000);
       expect(intervals['module6_220311'], 10000);
       expect(intervals['vag29-7B_221e10'], 30000);
+      expect(intervals['vag29-7B_2206c7'], 30000);
+      expect(intervals['vag29-7B_2206c8'], 30000);
     });
 
     test('every command passes the hard guard and the app policy', () {
@@ -434,7 +439,7 @@ void main() {
       );
 
       final known = vagPpeModules.fold<int>(0, (n, m) => n + m.dids.length);
-      expect(withoutDiscovery.steps, hasLength(known + 9));
+      expect(withoutDiscovery.steps, hasLength(known + 11));
       expect(
         withoutDiscovery.steps.map((s) => s.signalId),
         isNot(contains('ecus11-7B0_222a00')),

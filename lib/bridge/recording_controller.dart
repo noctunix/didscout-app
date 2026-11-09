@@ -109,6 +109,10 @@ const String _bmsResponseHeader = '17FE007B';
 /// A starting value, not yet measured against a worse real-world case.
 const int _bmsReadDeadlineExtraMs = 10000;
 
+/// How often [_bmsModuleId]'s DIDs `06C7`/`06C8` are read -- fixed steps
+/// for curve-fitting while charging, not decoded for a live tile.
+const int _bmsExtraDidIntervalMs = 30000;
+
 /// A live value counts for this many of its step's planned intervals after
 /// it was received, the same rule as [AppSettings.speedFreshnessWindow]:
 /// one missed or slow read is tolerated, a stalled one is not shown.
@@ -1866,6 +1870,20 @@ class RecordingController extends ChangeNotifier {
           responseHeader: spec.responseHeader,
           intervalMs: spec.plannedIntervalMs(settings),
         ),
+      ObdStepMessage(
+        signalId: signalIdFor(_bmsModuleId, '2206C7'),
+        moduleId: _bmsModuleId,
+        command: '2206C7',
+        responseHeader: _bmsResponseHeader,
+        intervalMs: _bmsExtraDidIntervalMs,
+      ),
+      ObdStepMessage(
+        signalId: signalIdFor(_bmsModuleId, '2206C8'),
+        moduleId: _bmsModuleId,
+        command: '2206C8',
+        responseHeader: _bmsResponseHeader,
+        intervalMs: _bmsExtraDidIntervalMs,
+      ),
       if (recordKnown) ...[
         ObdStepMessage(
           signalId: 'module7_22f449',
