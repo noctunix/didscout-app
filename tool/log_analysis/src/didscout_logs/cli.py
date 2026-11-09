@@ -21,6 +21,13 @@ from didscout_logs.fit import Alias, fit_candidates, select_readings
 from didscout_logs.series import DecodeSpec, did_series, parse_decode_spec
 from didscout_logs.sessions import LogError, Session, load_sessions, session_created_ms
 from didscout_logs.table import format_local, format_utc, render_table
+from didscout_logs.testplan import (
+    HeaderReply,
+    OutcomeCount,
+    Probe,
+    describe_payload,
+    summarize_testplan,
+)
 
 _MS_PER_S: Final = 1000
 _SHOWN_CHANGES: Final = 8
@@ -198,6 +205,16 @@ def _parser() -> argparse.ArgumentParser:
         help="show a payload only when it differs from the previous one",
     )
     series.set_defaults(command=_run_series)
+
+    testplan = commands.add_parser(
+        "testplan",
+        parents=[common],
+        help="outcomes and decodes of the one-shot testplan check's probes",
+        description="For every probe of the testplan check's fixed catalogue: outcome "
+        "counts across the selected sessions, the number of sessions it ran in, and the "
+        "latest positive reply's payload with its decode, where one is known.",
+    )
+    testplan.set_defaults(command=_run_testplan)
     return parser
 
 
@@ -442,3 +459,30 @@ def _payload_cells(spec: DecodeSpec | None, payload: bytes) -> list[str]:
 
 def _seconds(duration_ms: float | None) -> str:
     return "-" if duration_ms is None else f"{duration_ms / _MS_PER_S:.2f} s"
+
+
+def _run_testplan(args: argparse.Namespace) -> list[str]:
+    summaries = summarize_testplan(_sessions(args))
+    header = ["module", "request", "header", "sessions", "outcomes", "latest positive"]
+    rows = [
+        [
+            summary.probe.module,
+            summary.probe.request,
+            summary.probe.header,
+            str(summary.sessions),
+            _describe_outcomes(summary.outcomes),
+            _describe_latest(summary.probe, summary.latest),
+        ]
+        for summary in summaries
+    ]
+    return render_table(header, rows, right={3})
+
+
+def _describe_outcomes(outcomes: tuple[OutcomeCount, ...]) -> str:
+    return " ".join(f"{outcome.label}:{outcome.count}" for outcome in outcomes) or "-"
+
+
+def _describe_latest(probe: Probe, latest: tuple[HeaderReply, ...]) -> str:
+    if not latest:
+        return "-"
+    return "; ".join(f"{hr.header} {describe_payload(probe, hr.payload)}" for hr in latest)

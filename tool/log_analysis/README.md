@@ -42,6 +42,9 @@ uv run didscout-logs experiments --module climate
 # One DID over time, decoded, with the owner's readings interleaved.
 uv run didscout-logs series bms 1E10 --decode 'u16@0*0.125-40' \
     --quantity battery_temp --changes-only
+
+# The one-shot testplan check's probes: outcomes and the latest decode.
+uv run didscout-logs testplan --sessions 0123abcd
 ```
 
 ### How the commands decide
@@ -67,6 +70,11 @@ uv run didscout-logs series bms 1E10 --decode 'u16@0*0.125-40' \
   within the before window on its own.
 - **series** `--decode` takes `<u|s><bits>@<offset>[*<scale>][<+|-><add>]`,
   big-endian, bits 8/16/24/32.
+- **testplan**: a mode 01 functional reply is decoded per responding
+  header; the gateway and tyre pressure hypotheses are decoded too but
+  always labelled `unverified` unless noted `verified`, since they come
+  from a research dossier or another car's public catalogue and have not
+  been checked on this car.
 
 ## Checks
 

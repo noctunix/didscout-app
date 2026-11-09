@@ -112,7 +112,7 @@ def decode_reply(request: bytes, reply: AdapterReply) -> Outcome:
     Returns:
         The outcome of the request.
     """
-    positive_prefix = bytes([request[0] + _POSITIVE_OFFSET]) + request[1:]
+    positive_prefix = _positive_prefix(request)
     final_nrc: int | None = None
     pending = False
     incomplete = False
@@ -137,6 +137,33 @@ def decode_reply(request: bytes, reply: AdapterReply) -> Outcome:
     if not reply.messages and not reply.other_lines:
         return NoAnswer(NoAnswerReason.EMPTY)
     return NoAnswer(NoAnswerReason.UNRECOGNIZED)
+
+
+def _positive_prefix(request: bytes) -> bytes:
+    return bytes([request[0] + _POSITIVE_OFFSET]) + request[1:]
+
+
+def positive_replies(request: bytes, reply: AdapterReply) -> list[tuple[str, bytes]]:
+    """Find every responding header's positive answer to a request.
+
+    `decode_reply` reports one outcome for the whole reply. A
+    functional request such as OBD mode 01 to `7DF` can draw a
+    positive answer from several ECUs, each on its own header; this
+    collects every one of them instead of just the first.
+
+    Args:
+        request: The request bytes, service id first.
+        reply: The adapter's reassembled reply.
+
+    Returns:
+        (header, payload) pairs, in the order their message arrived.
+    """
+    positive_prefix = _positive_prefix(request)
+    return [
+        (message.header, message.data[len(positive_prefix) :])
+        for message in reply.messages
+        if message.complete and message.data.startswith(positive_prefix)
+    ]
 
 
 def outcome_label(outcome: Outcome) -> str:

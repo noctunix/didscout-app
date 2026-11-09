@@ -38,6 +38,16 @@ def positive_reply(header: str, did: str, payload: bytes) -> str:
     return reply(*frames(header, bytes([0x62]) + bytes.fromhex(did) + payload))
 
 
+def mode1_reply(entries: list[tuple[str, bytes]], pid: str) -> str:
+    """Build a functional mode 01 reply from one or more ECUs."""
+    lines = [
+        line
+        for header, payload in entries
+        for line in frames(header, bytes([0x41]) + bytes.fromhex(pid) + payload)
+    ]
+    return reply(*lines)
+
+
 @dataclass
 class SessionLog:
     session_id: str
@@ -57,10 +67,51 @@ class SessionLog:
         duration_ms: float = 100,
         one_shot: bool = False,
     ) -> None:
+        self._append_read(
+            module,
+            f"22{did.lower()}",
+            at_ms,
+            reply_text,
+            transport=transport,
+            duration_ms=duration_ms,
+            one_shot=one_shot,
+        )
+
+    def mode1_read(
+        self,
+        module: str,
+        pid: str,
+        at_ms: float,
+        reply_text: str,
+        *,
+        transport: str = "ok",
+        duration_ms: float = 100,
+    ) -> None:
+        self._append_read(
+            module,
+            f"01{pid.lower()}",
+            at_ms,
+            reply_text,
+            transport=transport,
+            duration_ms=duration_ms,
+            one_shot=False,
+        )
+
+    def _append_read(
+        self,
+        module: str,
+        command_hex: str,
+        at_ms: float,
+        reply_text: str,
+        *,
+        transport: str,
+        duration_ms: float,
+        one_shot: bool,
+    ) -> None:
         self.sequence += 1
         record: dict[str, object] = {
             "sequence": self.sequence,
-            "signalId": f"{module}_22{did.lower()}",
+            "signalId": f"{module}_{command_hex}",
             "requestStartedUtcMs": int(at_ms),
             "monotonicStartNs": self.sequence,
             "durationNs": int(duration_ms * 1e6),

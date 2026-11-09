@@ -11,7 +11,9 @@ from didscout_logs.uds import (
     describe_reply,
     nrc_name,
     outcome_label,
+    positive_replies,
 )
+from tests.synthetic import frames
 
 READ_1234 = bytes.fromhex("221234")
 
@@ -101,3 +103,27 @@ def test_describe_reply_shortens_long_messages() -> None:
 def test_describe_reply_keeps_other_lines_and_empty_reply() -> None:
     assert describe_reply(reassemble("NO DATA\r")) == "NO DATA"
     assert describe_reply(reassemble("")) == "(no reply)"
+
+
+def test_positive_replies_lists_every_responding_header() -> None:
+    request = bytes.fromhex("0100")
+    payload_a = bytes([0xC0, 0x00, 0x00, 0x00])
+    payload_b = bytes([0x00, 0x80, 0x00, 0x00])
+    lines = frames("7E8", bytes([0x41, 0x00]) + payload_a) + frames(
+        "7E9", bytes([0x41, 0x00]) + payload_b
+    )
+    reply = reassemble("\r".join(lines))
+    assert positive_replies(request, reply) == [("7E8", payload_a), ("7E9", payload_b)]
+
+
+def test_positive_replies_ignores_negative_and_incomplete_messages() -> None:
+    request = bytes.fromhex("0100")
+    payload = bytes([0xC0, 0x00, 0x00, 0x00])
+    incomplete_first_frame = frames("7EA", bytes([0x41, 0x00]) + bytes(10))[0]
+    lines = [
+        *frames("7E8", bytes([0x7F, 0x01, 0x11])),
+        *frames("7E9", bytes([0x41, 0x00]) + payload),
+        incomplete_first_frame,
+    ]
+    reply = reassemble("\r".join(lines))
+    assert positive_replies(request, reply) == [("7E9", payload)]

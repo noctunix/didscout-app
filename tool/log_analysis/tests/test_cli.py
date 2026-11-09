@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from didscout_logs.cli import main
-from tests.synthetic import BASE_MS, SessionLog, reply
+from tests.synthetic import BASE_MS, SessionLog, mode1_reply, reply
 
 S = 1000
 DAY_MS = 86_400_000
@@ -149,6 +149,42 @@ def test_unusable_logs_dir_exits_with_error(
 ) -> None:
     assert main(["timeouts", "--logs", str(tmp_path / "missing")]) == 1
     assert "logs directory not found" in capsys.readouterr().err
+
+
+def test_testplan(capsys: pytest.CaptureFixture[str], tmp_path: Path) -> None:
+    directory = tmp_path / "logs"
+    directory.mkdir()
+    log = SessionLog("cccc0001")
+    log.mode1_read(
+        "testplanMode1",
+        "00",
+        BASE_MS,
+        mode1_reply(
+            [
+                ("7E8", bytes([0xC0, 0x00, 0x00, 0x00])),
+                ("7E9", bytes([0x00, 0x80, 0x00, 0x00])),
+            ],
+            "00",
+        ),
+    )
+    log.positive("testplanGateway", "2AB6", BASE_MS + S, (321).to_bytes(2, "big"), header="77A")
+    log.write(directory)
+
+    out = run(capsys, "testplan", "--logs", str(directory))
+    assert out[0].split() == [
+        "module",
+        "request",
+        "header",
+        "sessions",
+        "outcomes",
+        "latest",
+        "positive",
+    ]
+    mode1_row = next(line for line in out if line.split()[:2] == ["testplanMode1", "0100"])
+    assert "7E8 C0 00 00 00  PIDs 01 02" in mode1_row
+    assert "7E9 00 80 00 00  PIDs 09" in mode1_row
+    gateway_row = next(line for line in out if "2AB6" in line)
+    assert "verified: range=321km" in gateway_row
 
 
 def test_default_logs_dir_is_found_above_the_working_directory(
