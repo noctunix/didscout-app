@@ -1,7 +1,6 @@
 /// Learns from finished recordings which discovered DIDs never change
 /// value, so the recurring plan can sample those rarely and leave the
-/// adapter's read budget to discovery: the recurring plan always runs
-/// before any queued discovery read.
+/// adapter's read budget to discovery.
 library;
 
 import 'dart:convert';

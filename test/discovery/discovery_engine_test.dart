@@ -1464,6 +1464,44 @@ void main() {
   });
 
   group('batch deadline and enqueue rejection', () {
+    test('a slice\'s deadline grows with the reads already queued ahead of '
+        'it', () async {
+      final executor = FakeExecutor();
+      final state = DiscoveryState();
+      for (final id in ['a', 'b']) {
+        state.ecus[id] = EcuInfo(
+          requestHeader: id == 'a' ? '701' : '711',
+          responseHeader: id == 'a' ? '709' : '719',
+          protocol: 6,
+          discoverRanges: [(0x2A00, 0x2A0F)],
+        );
+      }
+      final waits = <Duration>[];
+      final engine = DiscoveryEngine(
+        executor: executor,
+        state: state,
+        onHit: (_, _, _) {},
+        delay: (duration) {
+          waits.add(duration);
+          return Future<void>.delayed(Duration.zero);
+        },
+      );
+      // Never answered, so all 16 stay in the executor's queue.
+      for (var did = 0x2A00; did <= 0x2A0F; did++) {
+        executor.droppedSignalIds.add(signalIdFor('a', '22${hex4(did)}'));
+      }
+
+      await engine.runDiscoveryBatch('a', now);
+      waits.clear();
+      await engine.runDiscoveryBatch('b', now);
+
+      expect(waits.toSet(), {
+        defaultBatchDeadlineBase + defaultBatchDeadlinePerStep * 32,
+      }, reason: '16 queued ahead plus its own 16');
+
+      engine.dispose();
+    });
+
     test(
       'a lost result event is booked as missing without blocking the rest '
       'of the batch, and is retried ahead of fresh scan-order progress',

@@ -13,12 +13,14 @@ import 'inventory.dart' show ecu11ReceiveFilter, ecu11ReceiveMask;
 import 'probe.dart';
 
 /// Fixed floor of one probe group's result-wait deadline, plus
-/// [testplanDeadlinePerStep] per probe in the group -- the same base/
+/// [testplanDeadlinePerStep] per probe in the group and per read queued
+/// ahead of it -- the same base/
 /// per-step idiom `DiscoveryEngine` uses for its own batches, sized for a
 /// one-shot group of at most a few dozen probes.
 const Duration testplanDeadlineBase = Duration(seconds: 15);
 
-/// Added to [testplanDeadlineBase] once per probe in a group.
+/// Added to [testplanDeadlineBase] once per probe in a group and once per
+/// read queued ahead of it.
 const Duration testplanDeadlinePerStep = Duration(seconds: 2);
 
 /// The three probe groups the catalogue runs in order.
@@ -400,6 +402,7 @@ class TestplanCheck {
       state.everSubmitted = true;
     }
     _awaiting.addAll(completers);
+    final queuedAhead = executor.queueDepth;
     try {
       await executor.submit(modules.values.toList(), steps);
     } on ReadExecutorRejection {
@@ -410,7 +413,8 @@ class TestplanCheck {
       return;
     }
     final deadline =
-        testplanDeadlineBase + testplanDeadlinePerStep * steps.length;
+        testplanDeadlineBase +
+        testplanDeadlinePerStep * (queuedAhead + steps.length);
     await Future.wait([
       for (final state in due)
         _awaitProbeOrDeadline(

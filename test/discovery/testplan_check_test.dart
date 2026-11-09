@@ -173,6 +173,31 @@ void main() {
       },
     );
 
+    test('a group\'s deadline grows with the reads already queued ahead of '
+        'it', () async {
+      final executor = FakeExecutor();
+      final queued = [
+        for (var i = 0; i < 10; i++)
+          ProbeStep(signalId: 'other_22000$i', command: '22000$i'),
+      ];
+      executor.droppedSignalIds.addAll(queued.map((step) => step.signalId));
+      await executor.submit(const [], queued);
+      final probeA = probe('222AF7');
+      final waits = <Duration>[];
+      final check = TestplanCheck(
+        executor: executor,
+        probes: [probeA],
+        delay: (duration) {
+          waits.add(duration);
+          return Future<void>.delayed(Duration.zero);
+        },
+      );
+
+      await check.runForPhase(MarkerPhase.drive);
+
+      expect(waits, [testplanDeadlineBase + testplanDeadlinePerStep * 11]);
+    });
+
     test('a timed-out probe is answered and never resent again', () async {
       final executor = FakeExecutor();
       final probeA = probe('222AF7');

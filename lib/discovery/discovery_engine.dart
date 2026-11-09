@@ -194,8 +194,9 @@ class DiscoveryEngine {
   /// Max probes submitted in one inventory sweep chunk.
   final int sweepChunkSize;
 
-  /// Added to [batchDeadlineBase] once per queued step to get the deadline
-  /// a slice's results have to arrive by (see [_awaitAndFinalizeSlice]) --
+  /// Added to [batchDeadlineBase] once per step of the submission and once
+  /// per step already queued ahead of it, to get the deadline a slice's
+  /// results have to arrive by (see [_awaitAndFinalizeSlice]) --
   /// a step without a result by then is treated as missing rather than
   /// awaited forever, since the plugin documents that a one-shot result
   /// event may simply never arrive (engine paused, app backgrounded).
@@ -347,8 +348,7 @@ class DiscoveryEngine {
   }
 
   /// Quarantines the DID behind a timeout that arrived after its slice's
-  /// deadline. Reads can sit in the adapter's queue far longer than that
-  /// deadline (one-shots only run while no recurring step is due), and a
+  /// deadline. A slow adapter queue can still outlast that deadline, and a
   /// timeout ends the session; left unbooked, the same DID would be sent
   /// again after every reconnect and end every session the same way.
   void _quarantineLateTimeout(String signalId) {
@@ -440,6 +440,7 @@ class DiscoveryEngine {
     _pending.addAll(completers);
     _beginBatch(prepared.keys.toList(), prepared.values.first.dids);
 
+    var queuedAhead = 0;
     while (true) {
       if (_suspended) {
         // Cancelled -- a retry waiting out a reconnect must not keep
@@ -450,6 +451,7 @@ class DiscoveryEngine {
         }
         return const [];
       }
+      queuedAhead = executor.queueDepth;
       try {
         await executor.submit(modules, steps);
         break;
@@ -462,6 +464,7 @@ class DiscoveryEngine {
       }
     }
 
+    final deadline = _deadlineFor(queuedAhead + steps.length);
     return [
       for (final entry in prepared.entries)
         _awaitAndFinalizeSlice(
@@ -471,14 +474,15 @@ class DiscoveryEngine {
           rawAdvance: entry.value.rawAdvance,
           signalIds: signalIdsByEcu[entry.key]!,
           completers: completers,
+          deadline: deadline,
           now: now,
         ),
     ];
   }
 
-  /// Awaits one ECU's own slice of a round up to its own deadline (base
-  /// plus per-step times [signalIds.length], independent of every other
-  /// ECU's slice in the same round), then finalizes it. Registers the
+  /// Awaits one ECU's own slice of a round up to [deadline] (each slice
+  /// on its own, independent of every other ECU's slice in the same
+  /// round), then finalizes it. Registers the
   /// slice in [_inFlight] for [scoutStatus] and [pump]'s own in-flight
   /// check, and always removes it again before returning.
   Future<List<String>> _awaitAndFinalizeSlice({
@@ -488,10 +492,9 @@ class DiscoveryEngine {
     required int rawAdvance,
     required List<String> signalIds,
     required Map<String, Completer<ProbeResult>> completers,
+    required Duration deadline,
     required DateTime now,
   }) async {
-    final deadline =
-        batchDeadlineBase + batchDeadlinePerStep * signalIds.length;
     _inFlight[ecuId] = _InFlightSlice(
       signalIds: signalIds,
       submittedAt: _clock(),
@@ -508,6 +511,9 @@ class DiscoveryEngine {
     }
     return _finalizeSlice(ecuId, dids, source, rawAdvance, results, now);
   }
+
+  Duration _deadlineFor(int queuedSteps) =>
+      batchDeadlineBase + batchDeadlinePerStep * queuedSteps;
 
   Future<ProbeResult?> _awaitStepOrDeadline(
     String signalId,
@@ -528,7 +534,8 @@ class DiscoveryEngine {
   }
 
   /// Submits [steps] against [modules] and awaits every result, up to a
-  /// deadline of [batchDeadlineBase] plus [batchDeadlinePerStep] per step;
+  /// deadline of [batchDeadlineBase] plus [batchDeadlinePerStep] per step
+  /// queued ahead of or with them;
   /// used by the sequential inventory/identification flows, which (unlike
   /// discovery batches) have no per-DID scan state to finalize and simply
   /// want every step's answer or null. Retries a rejected submit after
@@ -544,6 +551,7 @@ class DiscoveryEngine {
     }
     _pending.addAll(completers);
 
+    var queuedAhead = 0;
     while (true) {
       if (_suspended) {
         // Cancelled -- an abandoned sweep loop (inventory, identification)
@@ -554,6 +562,7 @@ class DiscoveryEngine {
         }
         return [for (final _ in steps) null];
       }
+      queuedAhead = executor.queueDepth;
       try {
         await executor.submit(modules, steps);
         break;
@@ -566,7 +575,7 @@ class DiscoveryEngine {
       }
     }
 
-    final deadline = batchDeadlineBase + batchDeadlinePerStep * steps.length;
+    final deadline = _deadlineFor(queuedAhead + steps.length);
     return Future.wait([
       for (final step in steps)
         _awaitStepOrDeadline(
