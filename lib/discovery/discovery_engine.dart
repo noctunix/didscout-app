@@ -106,6 +106,11 @@ bool _isAnswer(ProbeStatus status) => switch (status) {
   ProbeTransportError() || ProbeCancelled() => false,
 };
 
+/// Whether [status] is one of the replies [batchIsAsleep] and
+/// [batchLooksNoDataAsleep] read as a sleeping ECU.
+bool _isSleepSignature(ProbeStatus status) =>
+    status is ProbeNoData || status is ProbeNrc && status.code == 0x11;
+
 String hex3(int value) => value.toRadixString(16).toUpperCase().padLeft(3, '0');
 String hex4(int value) => value.toRadixString(16).toUpperCase().padLeft(4, '0');
 
@@ -266,7 +271,8 @@ class DiscoveryEngine {
     DateTime? oldestInFlight;
     for (final slice in _inFlight.values) {
       waitingCount += slice.remaining.length;
-      if (oldestInFlight == null || slice.submittedAt.isBefore(oldestInFlight)) {
+      if (oldestInFlight == null ||
+          slice.submittedAt.isBefore(oldestInFlight)) {
         oldestInFlight = slice.submittedAt;
       }
     }
@@ -370,7 +376,8 @@ class DiscoveryEngine {
     List<String> ecuIds,
     DateTime now,
   ) async {
-    final prepared = <String, ({List<String> dids, _BatchSource source, int rawAdvance})>{};
+    final prepared =
+        <String, ({List<String> dids, _BatchSource source, int rawAdvance})>{};
     for (final ecuId in ecuIds) {
       final next = _nextBatchFor(ecuId);
       if (next != null) {
@@ -457,7 +464,8 @@ class DiscoveryEngine {
     required Map<String, Completer<ProbeResult>> completers,
     required DateTime now,
   }) async {
-    final deadline = batchDeadlineBase + batchDeadlinePerStep * signalIds.length;
+    final deadline =
+        batchDeadlineBase + batchDeadlinePerStep * signalIds.length;
     _inFlight[ecuId] = _InFlightSlice(
       signalIds: signalIds,
       submittedAt: _clock(),
@@ -904,7 +912,11 @@ class DiscoveryEngine {
     }
     final retry = ecu.retryQueue.take(batchSize).toList();
     if (retry.isNotEmpty) {
-      return (dids: retry, source: _BatchSource.conditionalRetry, rawAdvance: 0);
+      return (
+        dids: retry,
+        source: _BatchSource.conditionalRetry,
+        rawAdvance: 0,
+      );
     }
 
     final order = _orderFor(ecuId, ecu.discoverRanges);
@@ -993,6 +1005,19 @@ class DiscoveryEngine {
         missingDids.add(dids[i]);
       }
     }
+    // With fewer than half of the batch answered (the rest cancelled by
+    // another read's session reset) a NO DATA or NRC 11 cannot be told
+    // apart from an ECU going to sleep, so those DIDs are read again
+    // instead of being booked or pausing the ECU.
+    final representative = answeredResults.length * 2 >= dids.length;
+    if (!representative) {
+      for (var i = answeredResults.length - 1; i >= 0; i--) {
+        if (_isSleepSignature(answeredResults[i].status)) {
+          missingDids.add(answeredDids.removeAt(i));
+          answeredResults.removeAt(i);
+        }
+      }
+    }
     if (missingDids.isNotEmpty) {
       _logEvent(
         ScoutEventKind.batchTimedOut,
@@ -1010,14 +1035,15 @@ class DiscoveryEngine {
       statusCounts[bucket] = (statusCounts[bucket] ?? 0) + 1;
     }
 
-    if (batchLooksNoDataAsleep(statusCounts, answeredResults.length)) {
+    if (representative &&
+        batchLooksNoDataAsleep(statusCounts, answeredResults.length)) {
       ecu.noDataStreak += 1;
       ecu.asleepUntil = now.add(noDataAsleepPause(ecu.noDataStreak));
       _logEvent(ScoutEventKind.asleep, ecuId: ecuId, detail: 'no data');
       return const [];
     }
     ecu.noDataStreak = 0;
-    if (batchIsAsleep(statusCounts, answeredResults.length)) {
+    if (representative && batchIsAsleep(statusCounts, answeredResults.length)) {
       ecu.asleepUntil = now.add(asleepPauseDuration);
       _logEvent(ScoutEventKind.asleep, ecuId: ecuId);
       return const [];
