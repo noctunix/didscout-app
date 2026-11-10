@@ -23,6 +23,10 @@ const Duration testplanDeadlineBase = Duration(seconds: 15);
 /// read queued ahead of it.
 const Duration testplanDeadlinePerStep = Duration(seconds: 2);
 
+/// How long a run cut short by a lost session waits before retrying the
+/// same phase -- long enough for the adapter to reconnect.
+const Duration testplanRetryDelay = Duration(seconds: 30);
+
 /// The three probe groups the catalogue runs in order.
 enum TestplanGroup {
   mode01('Mode 01'),
@@ -306,7 +310,11 @@ class TestplanProbeState {
 /// every not-yet-answered probe, once per distinct phase value for the
 /// life of this instance (one recording) -- the caller is expected to
 /// call it once shortly after connecting, with whatever phase is current
-/// then, and again on every later phase change. Every [TestplanProbe.
+/// then, and again on every later phase change. A run cut short by a
+/// lost session (a rejected submit, or a probe cancelled or failed in
+/// transport) does not count as that phase's run: the remaining groups
+/// are skipped and the phase is retried after [testplanRetryDelay],
+/// unless another phase has been asked for in the meantime. Every [TestplanProbe.
 /// signalId] in the catalogue is unique to this check, so its results
 /// need no claiming against discovery's own: this subscribes to
 /// [executor]'s result stream directly, exactly like [DiscoveryEngine]
@@ -341,8 +349,11 @@ class TestplanCheck {
   /// Current status per probe, keyed by [TestplanProbe.signalId].
   late final Map<String, TestplanProbeState> states;
 
-  final Set<MarkerPhase?> _ranForPhase = {};
+  final Set<MarkerPhase?> _completedPhases = {};
   final Map<String, Completer<ProbeResult>> _awaiting = {};
+  Future<void> _runs = Future<void>.value();
+  MarkerPhase? _latestPhase;
+  bool _disposed = false;
 
   /// The phase the most recently completed run served, for the card's
   /// "last run" line -- null before the first run.
@@ -372,24 +383,44 @@ class TestplanCheck {
 
   /// Cancels the subscription to [executor]'s result stream; call once
   /// the recording this check serves has ended.
-  void dispose() => _subscription.cancel();
+  void dispose() {
+    _disposed = true;
+    _subscription.cancel();
+  }
 
-  /// Runs every not-yet-answered probe against [phase]; a no-op once
-  /// [phase] already had a run this recording.
-  Future<void> runForPhase(MarkerPhase? phase) async {
-    if (!_ranForPhase.add(phase)) return;
+  /// Runs every not-yet-answered probe against [phase], after any run
+  /// still in progress; a no-op once [phase] already had a run this
+  /// recording that no lost session cut short.
+  Future<void> runForPhase(MarkerPhase? phase) {
+    _latestPhase = phase;
+    return _runs = _runs.then((_) => _run(phase));
+  }
+
+  Future<void> _run(MarkerPhase? phase) async {
+    if (_disposed || _completedPhases.contains(phase)) return;
     for (final group in TestplanGroup.values) {
-      await _runGroup(group);
+      if (!await _runGroup(group)) {
+        unawaited(_retryAfterLostSession(phase));
+        return;
+      }
     }
+    _completedPhases.add(phase);
     lastRunPhase = phase;
   }
 
-  Future<void> _runGroup(TestplanGroup group) async {
+  Future<void> _retryAfterLostSession(MarkerPhase? phase) async {
+    await _delay(testplanRetryDelay);
+    if (_disposed || _latestPhase != phase) return;
+    await runForPhase(phase);
+  }
+
+  /// Returns false if the session was lost while this group ran.
+  Future<bool> _runGroup(TestplanGroup group) async {
     final due = [
       for (final state in states.values)
         if (state.probe.group == group && !state.answered) state,
     ];
-    if (due.isEmpty) return;
+    if (due.isEmpty) return true;
     final modules = <String, ProbeModule>{};
     final steps = <ProbeStep>[];
     final completers = <String, Completer<ProbeResult>>{};
@@ -410,12 +441,12 @@ class TestplanCheck {
         state.pending = false;
         _awaiting.remove(state.probe.signalId);
       }
-      return;
+      return false;
     }
     final deadline =
         testplanDeadlineBase +
         testplanDeadlinePerStep * (queuedAhead + steps.length);
-    await Future.wait([
+    final results = await Future.wait([
       for (final state in due)
         _awaitProbeOrDeadline(
           state,
@@ -423,9 +454,15 @@ class TestplanCheck {
           deadline,
         ),
     ]);
+    return !results.any(
+      (result) => switch (result?.status) {
+        ProbeCancelled() || ProbeTransportError() => true,
+        _ => false,
+      },
+    );
   }
 
-  Future<void> _awaitProbeOrDeadline(
+  Future<ProbeResult?> _awaitProbeOrDeadline(
     TestplanProbeState state,
     Completer<ProbeResult> completer,
     Duration deadline,
@@ -440,10 +477,11 @@ class TestplanCheck {
       // later for this signal id is ignored rather than mis-delivered to
       // whatever run happens to reuse it next.
       _awaiting.remove(state.probe.signalId);
-      return;
+      return null;
     }
     state.lastStatus = result.status;
     state.payloadLength = result.payload?.length;
     onResult?.call(state.probe, result);
+    return result;
   }
 }

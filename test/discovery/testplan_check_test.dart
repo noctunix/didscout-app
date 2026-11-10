@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:didscout_app/bridge/didscout_policy.dart';
@@ -170,6 +172,81 @@ void main() {
           executor.submittedSteps.where((s) => s.signalId == probeA.signalId),
           hasLength(1),
         );
+      },
+    );
+
+    test('a lost session skips the remaining groups and retries the same '
+        'phase after testplanRetryDelay', () async {
+      final executor = FakeExecutor();
+      final first = TestplanProbe(
+        group: TestplanGroup.mode01,
+        moduleId: 'tp',
+        requestHeader: '7DF',
+        protocol: 6,
+        command: '0100',
+        description: 'test probe',
+      );
+      final second = probe('222AF7');
+      var cancelNext = true;
+      executor.respond = (step) {
+        final cancel = cancelNext;
+        cancelNext = false;
+        return ProbeResult(
+          signalId: step.signalId,
+          status: cancel ? const ProbeCancelled() : const ProbeOk(),
+          at: now,
+        );
+      };
+      final retry = Completer<void>();
+      final check = TestplanCheck(
+        executor: executor,
+        probes: [first, second],
+        delay: (duration) => duration == testplanRetryDelay
+            ? retry.future
+            : Future<void>.delayed(Duration.zero),
+      );
+
+      await check.runForPhase(MarkerPhase.drive);
+      expect(executor.submittedSteps.map((s) => s.signalId), [first.signalId]);
+      expect(check.lastRunPhase, isNull);
+
+      retry.complete();
+      await pumpEventQueue();
+      expect(executor.submittedSteps.map((s) => s.signalId), [
+        first.signalId,
+        first.signalId,
+        second.signalId,
+      ]);
+      expect(check.lastRunPhase, MarkerPhase.drive);
+    });
+
+    test(
+      'a pending retry is dropped once another phase was asked for',
+      () async {
+        final executor = FakeExecutor();
+        final probeA = probe('222AF7');
+        executor.rejectionsToThrow.add(
+          const FakeRejection(SubmitRejectionReason.noActiveRecording),
+        );
+        final retry = Completer<void>();
+        final check = TestplanCheck(
+          executor: executor,
+          probes: [probeA],
+          delay: (duration) => duration == testplanRetryDelay
+              ? retry.future
+              : Future<void>.delayed(Duration.zero),
+        );
+
+        await check.runForPhase(MarkerPhase.drive);
+        await check.runForPhase(MarkerPhase.park);
+        retry.complete();
+        await pumpEventQueue();
+
+        expect(
+          executor.submittedSteps.where((s) => s.signalId == probeA.signalId),
+          hasLength(1),
+        );
+        expect(check.lastRunPhase, MarkerPhase.park);
       },
     );
 
