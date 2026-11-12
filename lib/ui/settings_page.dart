@@ -127,6 +127,10 @@ class _SettingsPageState extends State<SettingsPage> {
                 ),
                 SwitchListTile(
                   title: const Text('Never give up reconnecting'),
+                  subtitle: const Text(
+                    'Still stops once a lost connection lasts as long as '
+                    '"Stop after no vehicle data for"',
+                  ),
                   value: settings.neverGiveUpReconnecting,
                   onChanged: (v) =>
                       _update((s) => s.copyWith(neverGiveUpReconnecting: v)),
