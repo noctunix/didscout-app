@@ -94,15 +94,20 @@ String _statusBucket(ProbeStatus status) => switch (status) {
   ProbeNrc(code: final code) =>
     'NRC ${code.toRadixString(16).toUpperCase().padLeft(2, '0')}',
   ProbeTimeout() => 'TIMEOUT',
+  ProbeOverflow() => 'OVERFLOW',
   ProbeTransportError() => 'TRANSPORT_ERROR',
   ProbeCancelled() => 'CANCELLED',
 };
 
 /// Whether [status] is an answer from the vehicle side -- OK, NO DATA, an
-/// NRC or an adapter timeout -- rather than a request cancelled or lost to
+/// NRC, an oversized reply or an adapter timeout -- rather than a request cancelled or lost to
 /// a transport failure, which says nothing about the request itself.
 bool _isAnswer(ProbeStatus status) => switch (status) {
-  ProbeOk() || ProbeNoData() || ProbeNrc() || ProbeTimeout() => true,
+  ProbeOk() ||
+  ProbeNoData() ||
+  ProbeNrc() ||
+  ProbeTimeout() ||
+  ProbeOverflow() => true,
   ProbeTransportError() || ProbeCancelled() => false,
 };
 
@@ -365,6 +370,29 @@ class DiscoveryEngine {
     ecu.unanswered.remove(did);
     ecu.retryQueue.remove(did);
     _logEvent(ScoutEventKind.slowDid, ecuId: ecuId, detail: did);
+  }
+
+  /// Quarantines the DID behind [signalId] into [EcuInfo.oversized]: its
+  /// reply exceeds the adapter's response limit, so every further read,
+  /// whoever sends it, only comes back truncated.
+  void quarantineOversized(String signalId) {
+    final ecuId = moduleIdOf(signalId);
+    final ecu = state.ecus[ecuId];
+    final command = commandOf(signalId);
+    if (ecu == null || command.length != 6 || !command.startsWith('22')) {
+      return;
+    }
+    final did = command.substring(2);
+    _quarantineOversizedDid(ecu, ecuId, did);
+    ecu.unanswered.remove(did);
+    ecu.retryQueue.remove(did);
+  }
+
+  void _quarantineOversizedDid(EcuInfo ecu, String ecuId, String did) {
+    ecu.oversized.add(did);
+    ecu.discovered.remove(did);
+    ecu.conditional.remove(did);
+    _logEvent(ScoutEventKind.oversizedDid, ecuId: ecuId, detail: did);
   }
 
   /// Marks a new round as submitted, for [scoutStatus] and the event log --
@@ -960,7 +988,7 @@ class DiscoveryEngine {
     while (dids.length < batchSize && cursor < order.length) {
       final did = hex4(order[cursor]);
       cursor += 1;
-      if (!ecu.slow.contains(did)) {
+      if (!ecu.slow.contains(did) && !ecu.oversized.contains(did)) {
         dids.add(did);
       }
     }
@@ -976,7 +1004,8 @@ class DiscoveryEngine {
   /// [ProbeOk], queued for retry on NRC 22/33, or quarantined into
   /// [EcuInfo.slow] on a timeout -- a timeout ends the adapter session and
   /// cancels every queued read, so retrying such a DID stalls all
-  /// discovery. Anything else (NO DATA, another NRC) just clears any
+  /// discovery -- or into [EcuInfo.oversized] on a reply too long to read.
+  /// Anything else (NO DATA, another NRC) just clears any
   /// stale conditional flag.
   void _finalizeAnsweredDid(
     EcuInfo ecu,
@@ -1000,6 +1029,8 @@ class DiscoveryEngine {
         ecu.discovered.remove(did);
         ecu.conditional.remove(did);
         _logEvent(ScoutEventKind.slowDid, ecuId: ecuId, detail: did);
+      case ProbeOverflow():
+        _quarantineOversizedDid(ecu, ecuId, did);
       default:
         ecu.conditional.remove(did);
     }

@@ -256,6 +256,9 @@ enum TestplanOutcome {
   /// The adapter timed out waiting for a reply.
   timeout,
 
+  /// The reply exceeded the adapter's response limit.
+  overflow,
+
   /// Cancelled, or left without any result by its own deadline -- may be
   /// retried on the next run.
   cancelledOrMissing,
@@ -275,7 +278,11 @@ class TestplanProbeState {
   /// conclusive answer -- cancelled/missing never counts, so it stays
   /// eligible for a retry on the next run.
   bool get answered => switch (lastStatus) {
-    ProbeOk() || ProbeNoData() || ProbeNrc() || ProbeTimeout() => true,
+    ProbeOk() ||
+    ProbeNoData() ||
+    ProbeNrc() ||
+    ProbeTimeout() ||
+    ProbeOverflow() => true,
     ProbeCancelled() || ProbeTransportError() || null => false,
   };
 
@@ -288,6 +295,7 @@ class TestplanProbeState {
       ProbeNrc() => TestplanOutcome.nrc,
       ProbeNoData() => TestplanOutcome.noData,
       ProbeTimeout() => TestplanOutcome.timeout,
+      ProbeOverflow() => TestplanOutcome.overflow,
       ProbeCancelled() ||
       ProbeTransportError() => TestplanOutcome.cancelledOrMissing,
     };
@@ -302,6 +310,7 @@ class TestplanProbeState {
       'NRC ${(lastStatus as ProbeNrc).code.toRadixString(16).toUpperCase().padLeft(2, '0')}',
     TestplanOutcome.noData => 'NO DATA',
     TestplanOutcome.timeout => 'timeout',
+    TestplanOutcome.overflow => 'too long',
     TestplanOutcome.cancelledOrMissing => 'cancelled/missing',
   };
 }

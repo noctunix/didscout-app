@@ -33,6 +33,12 @@ class ProbeTimeout extends ProbeStatus {
   const ProbeTimeout();
 }
 
+/// The reply exceeded the adapter's response limit: the DID answers, but
+/// with more than can ever be read whole.
+class ProbeOverflow extends ProbeStatus {
+  const ProbeOverflow();
+}
+
 /// The transport itself failed (e.g. a BLE disconnect) before a reply
 /// could be collected.
 class ProbeTransportError extends ProbeStatus {

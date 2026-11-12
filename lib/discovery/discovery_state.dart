@@ -83,6 +83,7 @@ class EcuInfo {
     Map<String, DidSampleStats>? sampleStats,
     List<String>? unanswered,
     Set<String>? slow,
+    Set<String>? oversized,
   }) : sampleStats = sampleStats ?? {},
        discoverRanges = discoverRanges ?? const [],
        identification = identification ?? {},
@@ -90,7 +91,8 @@ class EcuInfo {
        conditional = conditional ?? {},
        retryQueue = retryQueue ?? [],
        unanswered = unanswered ?? [],
-       slow = slow ?? {};
+       slow = slow ?? {},
+       oversized = oversized ?? {};
 
   /// 11-bit or 29-bit request header.
   String requestHeader;
@@ -144,6 +146,10 @@ class EcuInfo {
   /// discovery again (see `DiscoveryEngine._finalizeAnsweredDid`).
   Set<String> slow;
 
+  /// DIDs whose reply exceeded the adapter's response limit -- never read
+  /// again, by discovery, the survey or focus sampling.
+  Set<String> oversized;
+
   /// The decoded F197 system name, or null if never identified or the
   /// read didn't return a name -- used by the moving-vehicle safety
   /// blocklist.
@@ -158,8 +164,9 @@ class EcuInfo {
   /// id, into this one: found and conditional DIDs are united, the scan
   /// resumes from whichever entry got further, a name or sample statistics
   /// only [other] has are kept, the later sleep pause and longer NO-DATA
-  /// streak win, and [slow]/[unanswered] are unioned (minus whatever
-  /// [slow] ends up covering, which is never requested either way).
+  /// streak win, and [slow]/[oversized]/[unanswered] are unioned (minus
+  /// whatever [slow] and [oversized] end up covering, which is never
+  /// requested either way).
   void absorb(EcuInfo other) {
     responseHeader ??= other.responseHeader;
     for (final MapEntry(:key, :value) in other.identification.entries) {
@@ -192,9 +199,12 @@ class EcuInfo {
       sampleStats.putIfAbsent(key, () => value);
     }
     slow.addAll(other.slow);
-    unanswered = {...unanswered, ...other.unanswered}
-        .where((did) => !slow.contains(did))
-        .toList();
+    oversized.addAll(other.oversized);
+    discovered.removeAll(oversized);
+    unanswered = {
+      ...unanswered,
+      ...other.unanswered,
+    }.where((did) => !slow.contains(did) && !oversized.contains(did)).toList();
   }
 
   Map<String, dynamic> toJson() => {
@@ -214,6 +224,7 @@ class EcuInfo {
     ),
     'unanswered': unanswered,
     'slow': slow.toList(),
+    'oversized': oversized.toList(),
   };
 
   factory EcuInfo.fromJson(Map<String, dynamic> json) => EcuInfo(
@@ -241,6 +252,7 @@ class EcuInfo {
     },
     unanswered: List<String>.from(json['unanswered'] as List<dynamic>? ?? []),
     slow: Set<String>.from(json['slow'] as List<dynamic>? ?? []),
+    oversized: Set<String>.from(json['oversized'] as List<dynamic>? ?? []),
   );
 }
 

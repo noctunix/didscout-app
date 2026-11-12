@@ -888,6 +888,7 @@ class _ScoutEventRow extends StatelessWidget {
       ScoutEventKind.asleep => 'asleep',
       ScoutEventKind.batchTimedOut => 'batch timed out',
       ScoutEventKind.slowDid => 'slow DID quarantined',
+      ScoutEventKind.oversizedDid => 'oversized DID quarantined',
       ScoutEventKind.enqueueRejected => 'enqueue rejected',
       ScoutEventKind.inventoryStep => 'inventory step',
     };

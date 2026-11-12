@@ -300,6 +300,21 @@ void main() {
       expect(results.single.status, isA<ProbeTimeout>());
     });
 
+    test('an overflowing reply decodes into ProbeOverflow', () async {
+      final results = <ProbeResult>[];
+      executor.results.listen(results.add);
+
+      executor.deliverOneShotResult(
+        _exchange(
+          signalId: 'ecu1_22019d',
+          transport: ObdTransportStatusMessage.overflow,
+        ),
+      );
+      await Future<void>.delayed(Duration.zero);
+
+      expect(results.single.status, isA<ProbeOverflow>());
+    });
+
     test('a cancelled transport decodes into ProbeCancelled', () async {
       final results = <ProbeResult>[];
       executor.results.listen(results.add);

@@ -61,6 +61,7 @@ void main() {
         noDataStreak: 3,
         unanswered: ['2A05'],
         slow: {'2A06'},
+        oversized: {'2A07'},
         sampleStats: {
           '2A04': DidSampleStats(
             lastPayloadHash: 0xDEADBEEF,
@@ -103,6 +104,7 @@ void main() {
       expect(gateway.noDataStreak, 3);
       expect(gateway.unanswered, ['2A05']);
       expect(gateway.slow, {'2A06'});
+      expect(gateway.oversized, {'2A07'});
       final stats = gateway.sampleStats['2A04']!;
       expect(stats.lastPayloadHash, 0xDEADBEEF);
       expect(stats.stableSamples, 12);

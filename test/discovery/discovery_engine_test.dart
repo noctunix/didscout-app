@@ -1815,6 +1815,62 @@ void main() {
       engine.dispose();
     });
 
+    test('an oversized reply quarantines the DID instead of queueing it '
+        'for a retry', () async {
+      final executor = FakeExecutor();
+      final state = DiscoveryState();
+      state.ecus['test'] = EcuInfo(
+        requestHeader: '7A1',
+        responseHeader: '7A9',
+        protocol: 6,
+        discoverRanges: [(0x2A00, 0x2A0F)],
+      );
+      final engine = DiscoveryEngine(
+        executor: executor,
+        state: state,
+        onHit: (_, _, _) {},
+      );
+      executor.respond = (step) => ProbeResult(
+        signalId: step.signalId,
+        status: step.command == '222A03'
+            ? const ProbeOverflow()
+            : const ProbeNrc(0x31),
+        at: now,
+      );
+
+      await engine.runDiscoveryBatch('test', now);
+
+      final ecu = state.ecus['test']!;
+      expect(ecu.oversized, {'2A03'});
+      expect(ecu.discovered, isEmpty);
+      expect(ecu.unanswered, isEmpty);
+
+      engine.dispose();
+    });
+
+    test('quarantineOversized takes an already discovered DID out of the '
+        'plan', () {
+      final state = DiscoveryState();
+      state.ecus['tme'] = EcuInfo(
+        requestHeader: '742',
+        responseHeader: '7AC',
+        protocol: 6,
+        discovered: {'019D', '0100'},
+      );
+      final engine = DiscoveryEngine(
+        executor: FakeExecutor(),
+        state: state,
+        onHit: (_, _, _) {},
+      );
+
+      engine.quarantineOversized('tme_22019d');
+
+      expect(state.ecus['tme']!.oversized, {'019D'});
+      expect(state.ecus['tme']!.discovered, {'0100'});
+
+      engine.dispose();
+    });
+
     test('a timeout that arrives after its batch\'s deadline still '
         'quarantines the DID', () async {
       final executor = FakeExecutor();

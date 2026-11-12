@@ -21,6 +21,7 @@ import '../discovery/phase_focus.dart';
 import '../discovery/probe.dart'
     show
         ProbeModule,
+        ProbeOverflow,
         ProbeResult,
         ProbeStep,
         ProbeTimeout,
@@ -859,6 +860,9 @@ class RecordingController extends ChangeNotifier {
   /// when its payload differs from that DID's previous focus read.
   bool _claimFocusResult(ProbeResult result) {
     if (!_focusPending.remove(result.signalId)) return false;
+    if (result.status is ProbeOverflow) {
+      _discoveryEngine?.quarantineOversized(result.signalId);
+    }
     if (result.payload case final payload?) {
       final hash = Object.hashAll(payload);
       final previous = _focusPayloadHashes[result.signalId];

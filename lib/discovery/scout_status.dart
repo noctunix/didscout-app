@@ -27,6 +27,10 @@ enum ScoutEventKind {
   /// requested by discovery again.
   slowDid,
 
+  /// A DID's reply exceeded the adapter's response limit; it is now
+  /// quarantined and never read again.
+  oversizedDid,
+
   /// [ReadExecutor.submit] rejected a batch outright (queue full, or no
   /// active recording).
   enqueueRejected,
