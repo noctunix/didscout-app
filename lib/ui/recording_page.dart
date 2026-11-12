@@ -89,6 +89,7 @@ class _RecordingPageState extends State<RecordingPage> {
     _ageTicker = Timer.periodic(const Duration(seconds: 30), (_) {
       if (_controller.phase != RecordingPhase.recording) setState(() {});
     });
+    unawaited(_controller.adoptRunningRecording());
     final powerMonitor = widget.powerMonitor;
     if (powerMonitor != null) {
       _powerCoordinator = PowerRecordingCoordinator(

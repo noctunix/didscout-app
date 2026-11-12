@@ -1051,9 +1051,112 @@ class RecordingController extends ChangeNotifier {
     ).writeAsStringSync('${jsonEncode(json)}\n', mode: FileMode.append),
   );
 
-  /// Runs the whole connect-and-record flow. A no-op unless [canStart].
+  /// Adopts a recording native is still running from before this
+  /// controller existed, if any, and returns whether it did. The plugin's
+  /// foreground service outlives the Flutter engine: a recreated UI that
+  /// stayed idle beside it would never see the adapter again, since
+  /// native rejects every scan while the recording holds the link.
+  /// A no-op returning false unless [canStart].
+  Future<bool> adoptRunningRecording() async {
+    if (!canStart) return false;
+    final ObdRecordingStateMessage state;
+    try {
+      state = await _bridge.recordingState();
+    } catch (_) {
+      // Native state unknown -- proceed as if nothing were running, which
+      // is what a start did before adopting existed.
+      return false;
+    }
+    final sessionId = state.sessionId;
+    // Re-checked after the await: a concurrent adopt or start may have
+    // claimed the controller meanwhile.
+    if (state.state != ObdRecordingStateValueMessage.recording ||
+        sessionId == null ||
+        !canStart) {
+      return false;
+    }
+    _setPhase(RecordingPhase.startingRecording);
+    try {
+      await _adoptSession(sessionId);
+    } catch (error) {
+      // Still reported as adopted: a scan instead would only fail again
+      // while native holds the adapter.
+      _setPhase(RecordingPhase.error, 'could not resume recording: $error');
+    }
+    return true;
+  }
+
+  Future<void> _adoptSession(String sessionId) async {
+    try {
+      _settings = await _loadSettings();
+    } catch (_) {
+      // Advisory, as in [start].
+    }
+    _chargeReminder = ChargeReminderScheduler(
+      interval: _settings.chargeReminderInterval,
+      clock: _clock,
+    );
+    _nativeStopAt = null;
+    _nativeStopReason = null;
+    _experimentRun = null;
+    final directory = await _recordingsDirectory();
+    final bufferFilePath = '${directory.path}/$sessionId.jsonl';
+    final sidecar = File('$bufferFilePath.markers.jsonl');
+    final sidecarModuleIds = <String>{};
+    PhaseMarker? lastPhase;
+    if (sidecar.existsSync()) {
+      for (final line in await sidecar.readAsLines()) {
+        try {
+          final json = jsonDecode(line) as Map<String, dynamic>;
+          switch (json['type']) {
+            case 'plan' || 'modules':
+              for (final module in json['modules'] as List<dynamic>) {
+                sidecarModuleIds.add(
+                  (module as Map<String, dynamic>)['id'] as String,
+                );
+              }
+            case 'phase':
+              lastPhase = PhaseMarker(
+                at: DateTime.parse(json['at'] as String),
+                phase: MarkerPhase.values.byName(json['phase'] as String),
+              );
+          }
+        } catch (_) {
+          // A line torn by the killed process that wrote it; the rest of
+          // the sidecar still holds.
+        }
+      }
+    }
+    if (lastPhase != null && markers.currentPhase == null) {
+      markers.restorePhase(lastPhase.phase, lastPhase.at);
+      _chargeReminder.phaseChanged(lastPhase.phase);
+    }
+    DiscoveryState discoveryState;
+    try {
+      discoveryState = await _loadDiscoveryState();
+    } catch (_) {
+      // As in [start]: no discovered DIDs this time rather than no
+      // recording.
+      discoveryState = DiscoveryState();
+    }
+    _sessionId = sessionId;
+    _bufferFilePath = bufferFilePath;
+    final unflushed = List.of(_unflushedMarkers);
+    _unflushedMarkers.clear();
+    for (final marker in unflushed) {
+      await _appendMarkerLine(marker);
+    }
+    _setPhase(RecordingPhase.recording);
+    _startTicking();
+    _startDiscovery(discoveryState, sidecarModuleIds);
+  }
+
+  /// Runs the whole connect-and-record flow, or adopts a recording native
+  /// is still running ([adoptRunningRecording]). A no-op unless
+  /// [canStart].
   Future<void> start() async {
     if (!canStart) return;
+    if (await adoptRunningRecording() || !canStart) return;
     _sessionId = null;
     _bufferFilePath = null;
     _nativeStopAt = null;
@@ -1217,7 +1320,9 @@ class RecordingController extends ChangeNotifier {
         adapter.advertisedName ?? adapter.handle,
       );
       _startTicking();
-      _startDiscovery(discoveryState, plan);
+      _startDiscovery(discoveryState, {
+        for (final module in plan.modules) module.moduleId,
+      });
     } catch (error) {
       _setPhase(RecordingPhase.error, error.toString());
     }
@@ -1294,16 +1399,17 @@ class RecordingController extends ChangeNotifier {
 
   /// Starts the discovery engine, focus sampling ([_sampleFocus]) and
   /// experiment supervision ([_superviseExperiment]) for the recording
-  /// that just started with [plan], when [AppSettings.scoutWhileRecording]
+  /// that just started or was adopted, whose sidecar already lists the
+  /// modules in [sidecarModuleIds], when [AppSettings.scoutWhileRecording]
   /// is on; a no-op otherwise, and [discoveryUiState] then stays null and
   /// [experimentSuggestions] empty for the whole recording.
-  void _startDiscovery(DiscoveryState discoveryState, ObdPlanMessage plan) {
+  void _startDiscovery(
+    DiscoveryState discoveryState,
+    Set<String> sidecarModuleIds,
+  ) {
     if (!_settings.scoutWhileRecording) return;
     _discoveryState = discoveryState;
     final sidecarPath = markersFilePath!;
-    final sidecarModuleIds = {
-      for (final module in plan.modules) module.moduleId,
-    };
     final executor = BridgeReadExecutor(
       _bridge,
       onAccepted: (modules) =>

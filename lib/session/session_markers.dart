@@ -230,6 +230,13 @@ class SessionMarkerLog extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Re-adds a phase already recorded at [at] in an earlier sidecar, so
+  /// [currentPhase] survives this log being recreated mid-recording.
+  void restorePhase(MarkerPhase phase, DateTime at) {
+    _markers.add(PhaseMarker(at: at.toUtc(), phase: phase));
+    notifyListeners();
+  }
+
   void addNote(String text) {
     _markers.add(NoteMarker(at: _clock().toUtc(), text: text));
     notifyListeners();

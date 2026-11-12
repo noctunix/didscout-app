@@ -380,6 +380,73 @@ void main() {
     });
   });
 
+  group('adopting a recording native is still running', () {
+    ObdRecordingStateMessage running(String sessionId) =>
+        ObdRecordingStateMessage(
+          sessionId: sessionId,
+          state: ObdRecordingStateValueMessage.recording,
+          lastFlushedSequence: 0,
+          bufferBytes: 0,
+          gapCount: 0,
+          resumedAfterRestart: false,
+          oneShotQueueDepth: 0,
+        );
+
+    test('adopts its session and sidecar, restoring the last phase past a '
+        'torn final line, without scanning or starting a new recording', () async {
+      fakeNative.recordingStateResult = running('orphan');
+      await File('${tempDir.path}/orphan.jsonl.markers.jsonl').writeAsString(
+        '${jsonEncode({
+          'type': 'plan',
+          'modules': [
+            {'id': 'module6'},
+          ],
+        })}\n'
+        '${jsonEncode({'type': 'phase', 'phase': 'drive', 'at': '2026-01-01T10:00:00Z'})}\n'
+        '${jsonEncode({'type': 'phase', 'phase': 'park', 'at': '2026-01-01T11:00:00Z'})}\n'
+        '{"type":"no',
+      );
+
+      expect(await controller.adoptRunningRecording(), isTrue);
+
+      expect(controller.phase, RecordingPhase.recording);
+      expect(controller.bufferFilePath, '${tempDir.path}/orphan.jsonl');
+      expect(controller.markers.currentPhase, MarkerPhase.park);
+      expect(fakeNative.scanAdaptersCallCount, 0);
+      expect(fakeNative.lastStartRecordingRequest, isNull);
+
+      await controller.stop();
+      expect(fakeNative.lastStoppedSessionId, 'orphan');
+    });
+
+    test('start adopts instead of scanning, which native would reject while '
+        'its recording holds the adapter', () async {
+      fakeNative.recordingStateResult = running('orphan');
+
+      await controller.start();
+
+      expect(controller.phase, RecordingPhase.recording);
+      expect(controller.bufferFilePath, '${tempDir.path}/orphan.jsonl');
+      expect(fakeNative.scanAdaptersCallCount, 0);
+      expect(fakeNative.lastStartRecordingRequest, isNull);
+    });
+
+    test('a finished native recording is not adopted', () async {
+      fakeNative.recordingStateResult = ObdRecordingStateMessage(
+        sessionId: 'old',
+        state: ObdRecordingStateValueMessage.stopped,
+        lastFlushedSequence: 0,
+        bufferBytes: 0,
+        gapCount: 0,
+        resumedAfterRestart: false,
+        oneShotQueueDepth: 0,
+      );
+
+      expect(await controller.adoptRunningRecording(), isFalse);
+      expect(controller.phase, RecordingPhase.idle);
+    });
+  });
+
   test('stop is a no-op unless currently recording', () async {
     await controller.stop();
     expect(controller.phase, RecordingPhase.idle);
