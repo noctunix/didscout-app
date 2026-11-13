@@ -41,11 +41,35 @@ const Map<String, Set<String>> settledDids = {
   '18DA04F1': {'F40D', 'F446'},
   // Fixed step: odometer.
   '18DA06F1': {'F4A6'},
+  // The odometer again, from the front motor.
+  '18DA07F1': {'F4A6'},
   // Fixed steps: range, stored energy, charging power; 0430 is a ring
   // buffer of past charging events, not a live value.
   '710': {'2AB6', '2AB8', '0311', '0430'},
-  // Fixed step: battery temperature.
-  '17FC007B': {'1E10'},
+  // Fixed step: battery temperature. Decoded: max/min module temperature
+  // (1E0E/1E0F), max/min cell SoC (1E2C/1E2D), max/min cell voltage
+  // (1E33/1E34), pack voltage (1E3B). Not live: event memory (018A), time
+  // counters (0191/0192), part numbers and build strings of both
+  // controller halves (0611-0617).
+  '17FC007B': {
+    '1E10',
+    '1E0E',
+    '1E0F',
+    '1E2C',
+    '1E2D',
+    '1E33',
+    '1E34',
+    '1E3B',
+    '018A',
+    '0191',
+    '0192',
+    '0611',
+    '0612',
+    '0613',
+    '0614',
+    '0616',
+    '0617',
+  },
   // The odometer again, as the cluster shows it.
   '714': {'2203'},
   // Ruled out as the battery temperature.
