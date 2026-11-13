@@ -24,9 +24,15 @@ const List<(int, int)> discoveryPriorityRanges = [
 /// public signal set, https://github.com/OBDb/Porsche-Taycan), plus, for
 /// the HV battery controller at `17FC007B`, the 06xx DIDs it lists itself
 /// in DID 0250 and then the rest of 0300-0FFF, where its predicted maximum
-/// charging power is still to be found. New ranges go at the end of a
-/// list: an ECU keeps its scan position then.
+/// charging power is still to be found. Telematics (`753`, which carries
+/// its own GNSS receiver for emergency calls) and infotainment (`773`)
+/// are searched for a vehicle position; where they keep it is not known,
+/// so they get the measurement ranges their scan has not reached yet.
+/// New ranges go at the end of a list: an ECU keeps its scan position
+/// then.
 const Map<String, List<(int, int)>> targetedDiscoverRanges = {
+  '753': [(0x0100, 0x0FFF), (0x1000, 0x2FFF)],
+  '773': [(0x1000, 0x2FFF)],
   '742': [(0x2600, 0x27FF), (0x4700, 0x47FF)],
   '18DA0FF1': [(0x1800, 0x18FF)],
   '17FC007B': [
