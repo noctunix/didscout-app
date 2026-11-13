@@ -198,7 +198,7 @@ void main() {
         requestHeader: '17FC007B',
         responseHeader: '17FE007B',
         protocol: 7,
-      )..discovered.addAll({'1E10', '1E0E'});
+      )..discovered.addAll({'1E10', '1E17'});
 
       final withDiscovery = RecordingController.buildPlanForTesting(
         discoveryState: state,
@@ -206,7 +206,7 @@ void main() {
 
       final ids = withDiscovery.steps.map((s) => s.signalId).toList();
       expect(ids.where((id) => id == 'vag29-7B_221e10'), hasLength(1));
-      expect(ids, contains('vag29-7B_221e0e'));
+      expect(ids, contains('vag29-7B_221e17'));
       final moduleIds = withDiscovery.modules.map((m) => m.moduleId).toList();
       expect(moduleIds.where((id) => id == 'vag29-7B'), hasLength(1));
     });
