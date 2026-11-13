@@ -1,3 +1,5 @@
+import 'dart:math';
+
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:didscout_app/discovery/did_order.dart';
@@ -2610,7 +2612,8 @@ void main() {
       '2AFF': [0x00, 0x08],
     };
 
-    test('a compliant ECU calibrates supported', () async {
+    test('a compliant ECU calibrates supported, is scanned in groups of up '
+        'to three, and nothing is missed', () async {
       final executor = FakeExecutor()..respond = simulatedEcu(truth, at: now);
       final state = DiscoveryState();
       final ecu = state.ecus['test'] = testEcu();
@@ -2630,6 +2633,18 @@ void main() {
             'reference DID',
       );
       expect(ecu.multiDid, MultiDidSupport.supported);
+
+      await scanRange(engine, ecu, 256);
+
+      expect(ecu.discovered, truth.keys.toSet());
+      expect(ecu.slow, isEmpty);
+      final dids = executor.submittedSteps.map((s) => didsOf(s.command));
+      expect(dids.map((d) => d.length).reduce(max), 3);
+      expect(
+        executor.submittedSteps.length,
+        lessThan(256 * 0.6),
+        reason: 'single reads would take 256 steps',
+      );
 
       engine.dispose();
     });
@@ -2675,6 +2690,160 @@ void main() {
 
       expect(ecu.multiDid, MultiDidSupport.unsupported);
       expect(ecu.discovered, truth.keys.toSet());
+
+      engine.dispose();
+    });
+
+    test('NRC 13 to a grouped read turns the ECU unsupported and re-reads '
+        'every grouped DID singly', () async {
+      final executor = FakeExecutor()
+        ..respond = simulatedEcu(
+          truth,
+          at: now,
+          behavior: MultiDidBehavior.rejectsMultiple,
+        );
+      final state = DiscoveryState();
+      final ecu = state.ecus['test'] = testEcu(
+        multiDid: MultiDidSupport.supported,
+      );
+      final engine = buildEngine(executor, state);
+
+      await engine.runDiscoveryBatch('test', now);
+
+      expect(ecu.multiDid, MultiDidSupport.unsupported);
+      expect(ecu.discovered, isEmpty);
+      expect(ecu.scanPosition, 16);
+      expect(ecu.unanswered, [
+        for (var did = 0x2A00; did <= 0x2A0E; did++) hex4(did),
+      ], reason: '2A0F, alone in the last step, is a single read');
+
+      await scanRange(engine, ecu, 256);
+
+      expect(ecu.discovered, truth.keys.toSet());
+      expect(
+        executor.submittedSteps.skip(6).where((s) => s.command.length > 6),
+        isEmpty,
+      );
+
+      engine.dispose();
+    });
+
+    test(
+      'a positive reply that happens to contain another requested DID '
+      'makes it a candidate, read again singly and booked by that read',
+      () async {
+        final executor = FakeExecutor()
+          ..respond = simulatedEcu({
+            '2A00': [0x2A, 0x01, 0x07],
+          }, at: now);
+        final state = DiscoveryState();
+        final ecu = state.ecus['test'] = testEcu(
+          ranges: [(0x2A00, 0x2A0F)],
+          multiDid: MultiDidSupport.supported,
+        );
+        final engine = buildEngine(executor, state);
+
+        await engine.runDiscoveryBatch('test', now);
+
+        expect(executor.submittedSteps.first.command, '222A002A012A02');
+        expect(executor.submittedSteps, hasLength(6));
+        expect(ecu.discovered, isEmpty, reason: 'nothing booked from a group');
+        expect(ecu.unanswered, ['2A00', '2A01']);
+
+        executor.submittedSteps.clear();
+        await engine.runDiscoveryBatch('test', now);
+
+        expect(executor.submittedSteps.map((s) => s.command), [
+          '222A00',
+          '222A01',
+        ]);
+        expect(ecu.discovered, {'2A00'});
+        expect(ecu.unanswered, isEmpty);
+
+        engine.dispose();
+      },
+    );
+
+    test('a grouped read that times out quarantines none of its DIDs; the '
+        'single re-read finds the slow one', () async {
+      final executor = FakeExecutor();
+      final compliant = simulatedEcu(truth, at: now);
+      executor.respond = (step) => didsOf(step.command).contains('2A04')
+          ? ProbeResult(
+              signalId: step.signalId,
+              status: const ProbeTimeout(),
+              at: now,
+            )
+          : compliant(step);
+      final state = DiscoveryState();
+      final ecu = state.ecus['test'] = testEcu(
+        multiDid: MultiDidSupport.supported,
+      );
+      final engine = buildEngine(executor, state);
+
+      await engine.runDiscoveryBatch('test', now);
+
+      expect(ecu.slow, isEmpty);
+      expect(ecu.unanswered, ['2A03', '2A04', '2A05']);
+
+      executor.deliver(
+        ProbeResult(
+          signalId: signalIdFor('test', '222A032A042A05'),
+          status: const ProbeTimeout(),
+          at: now,
+        ),
+      );
+      await settleDiscovery();
+      expect(
+        ecu.slow,
+        isEmpty,
+        reason: 'a late grouped timeout quarantines nothing either',
+      );
+
+      await engine.runDiscoveryBatch('test', now);
+
+      expect(ecu.slow, {'2A04'});
+      expect(ecu.discovered, {'2A03'});
+      expect(ecu.unanswered, isEmpty);
+
+      engine.dispose();
+    });
+
+    test('a grouped NO DATA counts once per DID toward the asleep '
+        'detection', () async {
+      final executor = FakeExecutor();
+      final state = DiscoveryState();
+      final ecu = state.ecus['test'] = testEcu(
+        multiDid: MultiDidSupport.supported,
+      );
+      final engine = buildEngine(executor, state);
+
+      await engine.runDiscoveryBatch('test', now);
+
+      expect(executor.submittedSteps, hasLength(6));
+      expect(ecu.asleepUntil, now.add(noDataAsleepPause(1)));
+      expect(ecu.scanPosition, 0);
+      expect(ecu.unanswered, isEmpty);
+
+      engine.dispose();
+    });
+
+    test('retry slices read one DID per step on a supported ECU', () async {
+      final executor = FakeExecutor()..respond = simulatedEcu(truth, at: now);
+      final state = DiscoveryState();
+      final ecu = state.ecus['test'] =
+          testEcu(multiDid: MultiDidSupport.supported)
+            ..conditional = {'2A05', '2A06'}
+            ..retryQueue = ['2A05', '2A06'];
+      final engine = buildEngine(executor, state);
+
+      await engine.runDiscoveryBatch('test', now);
+
+      expect(executor.submittedSteps.map((s) => s.command), [
+        '222A05',
+        '222A06',
+      ]);
+      expect(ecu.retryQueue, isEmpty);
 
       engine.dispose();
     });

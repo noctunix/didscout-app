@@ -2,6 +2,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:obdbridge/obdbridge.dart';
 
 import 'package:didscout_app/bridge/didscout_policy.dart';
+import 'package:didscout_app/discovery/discovery_engine.dart';
 
 void main() {
   final policy = DidscoutPolicy();
@@ -216,6 +217,14 @@ void main() {
 
     test('a three-DID read passes both layers', () {
       expect(allowedThroughFilter('22F40DF4460311'), isTrue);
+    });
+
+    test('the discovery engine never groups more DIDs than both layers '
+        'allow', () {
+      expect(
+        maxDidsPerGroupedRead,
+        lessThanOrEqualTo(HardGuard.maxDidsPerRead),
+      );
     });
 
     test('a plan command allowed by both layers passes through the filter', () {

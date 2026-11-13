@@ -44,6 +44,10 @@ Duration noDataAsleepPause(int streak) {
       : maxNoDataAsleepPauseDuration;
 }
 
+/// Most DIDs one grouped scan read carries: a request must fit one CAN
+/// single frame, since the ELM327 command set cannot send a segmented one.
+const int maxDidsPerGroupedRead = 3;
+
 /// Multi-DID calibration reads without a usable answer after which an
 /// ECU's [EcuInfo.multiDid] is given up as unsupported.
 const int maxMultiDidCalibrationFailures = 3;
@@ -159,7 +163,8 @@ class _Slice {
   final _BatchSource source;
   final int rawAdvance;
 
-  /// [dids] split into steps, in order: one DID per step.
+  /// [dids] split into steps, in order: one DID per step unless the ECU
+  /// reads several at once.
   final List<List<String>> groups;
 
   /// The DIDs of this slice's multi-DID calibration read -- two known
@@ -545,7 +550,9 @@ class DiscoveryEngine {
     ];
   }
 
-  /// Splits [next], [ecuId]'s next batch, into steps, one DID each; a
+  /// Splits [next], [ecuId]'s next batch, into steps: a scan-order slice of
+  /// an ECU with [MultiDidSupport.supported] reads up to
+  /// [maxDidsPerGroupedRead] DIDs per step, every other slice one; a
   /// scan-order slice of an ECU still [MultiDidSupport.unknown] also
   /// carries a calibration read when [_calibrationDids] finds one.
   _Slice _planSlice(
@@ -554,13 +561,17 @@ class DiscoveryEngine {
   ) {
     final ecu = state.ecus[ecuId]!;
     final scan = next.source == _BatchSource.scanOrder;
+    final groupSize = scan && ecu.multiDid == MultiDidSupport.supported
+        ? maxDidsPerGroupedRead
+        : 1;
     return _Slice(
       ecuId: ecuId,
       dids: next.dids,
       source: next.source,
       rawAdvance: next.rawAdvance,
       groups: [
-        for (final did in next.dids) [did],
+        for (var i = 0; i < next.dids.length; i += groupSize)
+          next.dids.sublist(i, min(i + groupSize, next.dids.length)),
       ],
       calibration: scan && ecu.multiDid == MultiDidSupport.unknown
           ? _calibrationDids(ecuId, ecu)
@@ -1154,18 +1165,26 @@ class DiscoveryEngine {
   /// [stepResults] holds one entry per [_Slice.groups] step, in order, and
   /// [calibrationResult] the slice's calibration read, if it had one.
   ///
-  /// Every DID with a vehicle-side answer ([_isAnswer]) is booked via [_finalizeAnsweredDid]; [_Slice.source]'s
+  /// A grouped step's result is first mapped back to its DIDs
+  /// ([_groupedResultFor]); a DID it cannot settle is read again singly
+  /// (a re-read), queued at the front of [EcuInfo.unanswered]. A grouped
+  /// step the ECU rejects as malformed (NRC 12/13) marks the ECU
+  /// [MultiDidSupport.unsupported] and re-reads every grouped DID of the
+  /// slice.
+  ///
+  /// Every DID with a vehicle-side answer ([_isAnswer]) that is no
+  /// re-read is then booked via [_finalizeAnsweredDid]; [_Slice.source]'s
   /// own queue or [EcuInfo.scanPosition] advances. A
   /// [_BatchSource.scanOrder] slice also queues every DID without an
   /// answer into [EcuInfo.unanswered], so it is read again rather than
   /// lost; [_BatchSource.conditionalRetry] and
   /// [_BatchSource.unansweredRetry] simply leave such a DID in its own
   /// queue for the next pull. Asleep/no-data detection ([batchIsAsleep]/
-  /// [batchLooksNoDataAsleep]) runs over the answered DIDs only, before
-  /// any of this: a slice with none answered changes nothing, and one
-  /// that looks asleep is left exactly as queued, to be read again once
-  /// the ECU wakes rather than counted as checked while it couldn't
-  /// possibly have meant it. The
+  /// [batchLooksNoDataAsleep]) runs over the answered DIDs only, a grouped
+  /// step's status counting once per DID, before any of this: a slice
+  /// with none answered changes nothing, and one that looks asleep is left
+  /// exactly as queued, to be read again once the ECU wakes rather than
+  /// counted as checked while it couldn't possibly have meant it. The
   /// calibration result is applied either way ([_applyCalibration]).
   /// Returns the DIDs found OK.
   List<String> _finalizeSlice(
@@ -1181,8 +1200,40 @@ class DiscoveryEngine {
         ? null
         : _calibrationOutcome(calibration.last, calibrationResult);
 
+    var groupRejected = false;
+    for (var i = 0; i < slice.groups.length; i++) {
+      if (stepResults[i]?.status case ProbeNrc(
+        code: 0x12 || 0x13,
+      ) when slice.groups[i].length > 1) {
+        groupRejected = true;
+      }
+    }
+    if (groupRejected) {
+      _setMultiDid(ecu, ecuId, MultiDidSupport.unsupported);
+    }
+
     final dids = slice.dids;
-    final results = stepResults;
+    final results = <ProbeResult?>[];
+    final rereads = <String>{};
+    for (var i = 0; i < slice.groups.length; i++) {
+      final group = slice.groups[i];
+      if (group.length == 1) {
+        results.add(stepResults[i]);
+        continue;
+      }
+      for (final did in group) {
+        final (result, reread) = _groupedResultFor(
+          did,
+          stepResults[i],
+          trusted: !groupRejected,
+        );
+        results.add(result);
+        if (reread) {
+          rereads.add(did);
+        }
+      }
+    }
+
     final answeredDids = <String>[];
     final answeredResults = <ProbeResult>[];
     final missingDids = <String>[];
@@ -1251,6 +1302,10 @@ class DiscoveryEngine {
             ecu.unanswered.add(did);
           }
         }
+        final queuedRereads = answeredDids.where(rereads.contains).toList();
+        ecu.unanswered
+          ..removeWhere(queuedRereads.contains)
+          ..insertAll(0, queuedRereads);
       case _BatchSource.conditionalRetry:
         ecu.retryQueue.removeWhere(answeredDids.contains);
       case _BatchSource.unansweredRetry:
@@ -1259,6 +1314,9 @@ class DiscoveryEngine {
 
     final newlyFound = <String>[];
     for (var i = 0; i < answeredDids.length; i++) {
+      if (rereads.contains(answeredDids[i])) {
+        continue;
+      }
       _finalizeAnsweredDid(
         ecu,
         ecuId,
@@ -1268,6 +1326,60 @@ class DiscoveryEngine {
       );
     }
     return newlyFound;
+  }
+
+  /// What [group], the result of a grouped read, says about one of its
+  /// DIDs [did]: the result to book or count it by, and whether it has to
+  /// be read again singly instead of being booked. A missing or
+  /// unanswered [group] leaves [did] missing. Unless the slice's grouped
+  /// replies are not [trusted], an NRC 31 makes [did] a plain negative,
+  /// and so does a positive reply that does not contain [did]'s two bytes
+  /// anywhere: a compliant ECU omits an unsupported DID from it and
+  /// answers NRC 31 only if it supports none of them (ISO 14229-1:2013
+  /// §10.2). A positive reply that does contain them may hold [did]'s
+  /// record or merely the same bytes inside another one, so [did] is read
+  /// again; so is it after any other answer, which could come from any of
+  /// the group's DIDs alone (e.g. the one timeout among them).
+  (ProbeResult?, bool) _groupedResultFor(
+    String did,
+    ProbeResult? group, {
+    required bool trusted,
+  }) {
+    if (group == null || !_isAnswer(group.status)) {
+      return (group, false);
+    }
+    if (!trusted) {
+      return (group, true);
+    }
+    switch (group.status) {
+      case ProbeNrc(code: 0x31):
+        return (group, false);
+      case ProbeOk():
+        final payload = group.payload;
+        if (payload == null || _containsDid(payload, did)) {
+          return (group, true);
+        }
+        return (
+          ProbeResult(
+            signalId: group.signalId,
+            status: const ProbeNrc(0x31),
+            at: group.at,
+          ),
+          false,
+        );
+      default:
+        return (group, true);
+    }
+  }
+
+  static bool _containsDid(List<int> payload, String did) {
+    final value = int.parse(did, radix: 16);
+    for (var i = 0; i + 1 < payload.length; i++) {
+      if (payload[i] == value >> 8 && payload[i + 1] == (value & 0xFF)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /// Reads a calibration read's [result] for an ECU whose calibration
