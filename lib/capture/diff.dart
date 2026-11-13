@@ -134,8 +134,8 @@ List<DidDiff> computeDiffBetweenMarkers({
   );
 }
 
-/// Decodes every positive ReadDataByIdentifier exchange in [entries] into
-/// its (module, DID) -> time-ordered samples.
+/// Decodes every positive single-DID ReadDataByIdentifier exchange in
+/// [entries] into its (module, DID) -> time-ordered samples.
 Map<(String?, String), List<_Sample>> _collectPositiveSamples(
   List<CaptureEntry> entries,
 ) {
@@ -143,7 +143,7 @@ Map<(String?, String), List<_Sample>> _collectPositiveSamples(
   for (final entry in entries) {
     if (entry.isNote) continue;
     final command = entry.command.toUpperCase();
-    if (!command.startsWith('22') || command.length < 6) continue;
+    if (!command.startsWith('22') || command.length != 6) continue;
     final did = command.substring(2);
     final payload = decodePositivePayload(command, entry.response, null);
     if (payload == null) continue;

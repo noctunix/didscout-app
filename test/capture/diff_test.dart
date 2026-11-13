@@ -103,6 +103,27 @@ void main() {
     expect(diffs, isEmpty);
   });
 
+  test('ignores a read of several DIDs', () {
+    final t0 = DateTime.utc(2026, 1, 1, 12, 0, 0);
+    CaptureEntry multiRead(int value, int seconds) => CaptureEntry(
+      stage: 'sweep',
+      command: '22AAAABBBB',
+      response:
+          '7E8 07 62 AA AA BB BB ${value.toRadixString(16).padLeft(2, '0')} 00',
+      status: 'OK',
+      startedUtc: t0.add(Duration(seconds: seconds)),
+      module: 'm1',
+    );
+
+    final diffs = computeDiff(
+      entries: [multiRead(0x01, 90), multiRead(0x02, 145)],
+      beforeTimestamp: t0.add(const Duration(seconds: 100)),
+      afterTimestamp: t0.add(const Duration(seconds: 140)),
+    );
+
+    expect(diffs, isEmpty);
+  });
+
   test('sorts results by number of changed bytes ascending', () {
     final t0 = DateTime.utc(2026, 1, 1, 12, 0, 0);
     final marker1 = t0.add(const Duration(seconds: 100));
