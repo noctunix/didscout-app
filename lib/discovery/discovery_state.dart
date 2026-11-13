@@ -65,6 +65,20 @@ class DidSampleStats {
   );
 }
 
+/// Whether an ECU answers a ReadDataByIdentifier request carrying several
+/// DIDs as ISO 14229-1 specifies (see `DiscoveryEngine`'s calibration).
+enum MultiDidSupport {
+  /// Not calibrated yet; scanned with single-DID reads.
+  unknown,
+
+  /// Calibrated: scan-order reads may group several DIDs.
+  supported,
+
+  /// Calibration failed or the ECU rejected a grouped read; single-DID
+  /// reads only.
+  unsupported,
+}
+
 /// Everything the discovery engine knows about one ECU: how to address
 /// it, what it identified as, and how far its DID scan has gotten.
 class EcuInfo {
@@ -84,6 +98,8 @@ class EcuInfo {
     List<String>? unanswered,
     Set<String>? slow,
     Set<String>? oversized,
+    this.multiDid = MultiDidSupport.unknown,
+    this.multiDidCalibrationFailures = 0,
   }) : sampleStats = sampleStats ?? {},
        discoverRanges = discoverRanges ?? const [],
        identification = identification ?? {},
@@ -150,6 +166,14 @@ class EcuInfo {
   /// again, by discovery, the survey or focus sampling.
   Set<String> oversized;
 
+  /// Whether this ECU's scan may group several DIDs into one read.
+  MultiDidSupport multiDid;
+
+  /// Multi-DID calibration reads that got no usable answer (timeout, NO
+  /// DATA, a transient NRC, a lost read); [multiDid] turns
+  /// [MultiDidSupport.unsupported] once these reach the engine's limit.
+  int multiDidCalibrationFailures;
+
   /// The decoded F197 system name, or null if never identified or the
   /// read didn't return a name -- used by the moving-vehicle safety
   /// blocklist.
@@ -166,7 +190,9 @@ class EcuInfo {
   /// only [other] has are kept, the later sleep pause and longer NO-DATA
   /// streak win, and [slow]/[oversized]/[unanswered] are unioned (minus
   /// whatever [slow] and [oversized] end up covering, which is never
-  /// requested either way).
+  /// requested either way). Of the two [multiDid] states, unsupported
+  /// beats supported beats unknown, and the higher calibration failure
+  /// count is kept.
   void absorb(EcuInfo other) {
     responseHeader ??= other.responseHeader;
     for (final MapEntry(:key, :value) in other.identification.entries) {
@@ -205,6 +231,13 @@ class EcuInfo {
       ...unanswered,
       ...other.unanswered,
     }.where((did) => !slow.contains(did) && !oversized.contains(did)).toList();
+    if (other.multiDid == MultiDidSupport.unsupported ||
+        multiDid == MultiDidSupport.unknown) {
+      multiDid = other.multiDid;
+    }
+    if (other.multiDidCalibrationFailures > multiDidCalibrationFailures) {
+      multiDidCalibrationFailures = other.multiDidCalibrationFailures;
+    }
   }
 
   Map<String, dynamic> toJson() => {
@@ -225,6 +258,8 @@ class EcuInfo {
     'unanswered': unanswered,
     'slow': slow.toList(),
     'oversized': oversized.toList(),
+    'multiDid': multiDid.name,
+    'multiDidCalibrationFailures': multiDidCalibrationFailures,
   };
 
   factory EcuInfo.fromJson(Map<String, dynamic> json) => EcuInfo(
@@ -253,6 +288,11 @@ class EcuInfo {
     unanswered: List<String>.from(json['unanswered'] as List<dynamic>? ?? []),
     slow: Set<String>.from(json['slow'] as List<dynamic>? ?? []),
     oversized: Set<String>.from(json['oversized'] as List<dynamic>? ?? []),
+    multiDid:
+        MultiDidSupport.values.asNameMap()[json['multiDid']] ??
+        MultiDidSupport.unknown,
+    multiDidCalibrationFailures:
+        json['multiDidCalibrationFailures'] as int? ?? 0,
   );
 }
 

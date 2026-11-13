@@ -62,6 +62,8 @@ void main() {
         unanswered: ['2A05'],
         slow: {'2A06'},
         oversized: {'2A07'},
+        multiDid: MultiDidSupport.supported,
+        multiDidCalibrationFailures: 2,
         sampleStats: {
           '2A04': DidSampleStats(
             lastPayloadHash: 0xDEADBEEF,
@@ -105,6 +107,8 @@ void main() {
       expect(gateway.unanswered, ['2A05']);
       expect(gateway.slow, {'2A06'});
       expect(gateway.oversized, {'2A07'});
+      expect(gateway.multiDid, MultiDidSupport.supported);
+      expect(gateway.multiDidCalibrationFailures, 2);
       final stats = gateway.sampleStats['2A04']!;
       expect(stats.lastPayloadHash, 0xDEADBEEF);
       expect(stats.stableSamples, 12);
@@ -117,6 +121,8 @@ void main() {
       final other = loaded.ecus['ecus29-04']!;
       expect(other.responseHeader, '18DAF104');
       expect(other.asleepUntil, isNull);
+      expect(other.multiDid, MultiDidSupport.unknown);
+      expect(other.multiDidCalibrationFailures, 0);
     });
 
     test('a state saved without experiment completions loads with none', () {
@@ -144,6 +150,29 @@ void main() {
         expect(gateway.slow, isEmpty);
       },
     );
+
+    test('an ECU saved before multi-DID calibration existed loads as '
+        'unknown, and so does an unrecognised value', () {
+      final loaded = DiscoveryState.fromJson({
+        'ecus': {
+          'gateway': {
+            'requestHeader': '710',
+            'responseHeader': '77A',
+            'protocol': 6,
+          },
+          'other': {
+            'requestHeader': '7A1',
+            'protocol': 6,
+            'multiDid': 'sometimes',
+          },
+        },
+      });
+
+      for (final ecu in loaded.ecus.values) {
+        expect(ecu.multiDid, MultiDidSupport.unknown);
+        expect(ecu.multiDidCalibrationFailures, 0);
+      }
+    });
 
     test('a persisted phantom 0x700 ECU is dropped on load', () async {
       final original = DiscoveryState(
@@ -271,6 +300,34 @@ void main() {
       });
 
       expect(state.ecus['parking-lock']!.f197Name, 'PARKSP. HIGH');
+    });
+
+    test('merging keeps unsupported over supported over unknown, and the '
+        'higher calibration failure count', () {
+      Map<String, dynamic> withMultiDid(
+        String request,
+        MultiDidSupport support,
+        int failures,
+      ) => (ecuJson(request: request)
+        ..['multiDid'] = support.name
+        ..['multiDidCalibrationFailures'] = failures);
+
+      final state = DiscoveryState.fromJson({
+        'ecus': {
+          'a': withMultiDid('7A1', MultiDidSupport.unknown, 2),
+          'a2': withMultiDid('7A1', MultiDidSupport.supported, 0),
+          'b': withMultiDid('7A2', MultiDidSupport.unsupported, 0),
+          'b2': withMultiDid('7A2', MultiDidSupport.supported, 1),
+          'c': withMultiDid('7A3', MultiDidSupport.supported, 0),
+          'c2': withMultiDid('7A3', MultiDidSupport.unknown, 0),
+        },
+      });
+
+      expect(state.ecus['a']!.multiDid, MultiDidSupport.supported);
+      expect(state.ecus['a']!.multiDidCalibrationFailures, 2);
+      expect(state.ecus['b']!.multiDid, MultiDidSupport.unsupported);
+      expect(state.ecus['b']!.multiDidCalibrationFailures, 1);
+      expect(state.ecus['c']!.multiDid, MultiDidSupport.supported);
     });
 
     test('the same header on another protocol stays a separate ECU', () {
