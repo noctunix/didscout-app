@@ -167,8 +167,9 @@ class _Slice {
   /// reads several at once.
   final List<List<String>> groups;
 
-  /// The DIDs of this slice's multi-DID calibration read -- two known
-  /// negatives, then the reference DID it must answer first -- or null.
+  /// The DIDs of this slice's multi-DID calibration read -- a known
+  /// negative, then the two reference DIDs it must answer in turn -- or
+  /// null.
   final List<String>? calibration;
 
   String signalIdOf(List<String> stepDids) =>
@@ -580,14 +581,16 @@ class DiscoveryEngine {
   }
 
   /// The DIDs of a multi-DID calibration read for [ecu], in request order:
-  /// the two DIDs closest below its scan position that are known negatives
+  /// the DID closest below its scan position that is a known negative
   /// (scanned, and neither discovered, conditional, unanswered, slow nor
-  /// oversized), then a discovered reference DID, an identification DID
-  /// (F18x/F19x) where there is one. A compliant ECU omits the negatives
-  /// from its reply (ISO 14229-1:2013 §10.2), so the reply starts with the
-  /// reference DID. Null while [ecu] has no such reference or negatives.
+  /// oversized), then two discovered reference DIDs, identification DIDs
+  /// (F18x/F19x) first. A compliant ECU omits the negative from its reply
+  /// and answers both references (ISO 14229-1:2013 §10.2), so the reply
+  /// starts with the first reference and carries the second after it; an
+  /// ECU that answers only one DID per request cannot pass. Null while
+  /// [ecu] has no such negative or fewer than two references.
   List<String>? _calibrationDids(String ecuId, EcuInfo ecu) {
-    final references =
+    final usable =
         ecu.discovered
             .where(
               (did) =>
@@ -599,21 +602,17 @@ class DiscoveryEngine {
             )
             .toList()
           ..sort();
-    final reference =
-        references
-            .where((did) => did.startsWith('F18') || did.startsWith('F19'))
-            .firstOrNull ??
-        references.firstOrNull;
-    if (reference == null) {
+    bool identification(String did) =>
+        did.startsWith('F18') || did.startsWith('F19');
+    final references = [
+      ...usable.where(identification),
+      ...usable.where((did) => !identification(did)),
+    ];
+    if (references.length < 2) {
       return null;
     }
     final order = _orderFor(ecuId, ecu.discoverRanges);
-    final negatives = <String>[];
-    for (
-      var i = min(ecu.scanPosition, order.length) - 1;
-      i >= 0 && negatives.length < 2;
-      i--
-    ) {
+    for (var i = min(ecu.scanPosition, order.length) - 1; i >= 0; i--) {
       final did = hex4(order[i]);
       if (!ecu.discovered.contains(did) &&
           !ecu.conditional.contains(did) &&
@@ -621,10 +620,10 @@ class DiscoveryEngine {
           !ecu.retryQueue.contains(did) &&
           !ecu.slow.contains(did) &&
           !ecu.oversized.contains(did)) {
-        negatives.add(did);
+        return [did, references[0], references[1]];
       }
     }
-    return negatives.length < 2 ? null : [...negatives.reversed, reference];
+    return null;
   }
 
   /// Awaits one ECU's own slice of a round up to [deadline] (each slice
@@ -1198,7 +1197,11 @@ class DiscoveryEngine {
     final calibration = slice.calibration;
     final calibrationOutcome = calibration == null
         ? null
-        : _calibrationOutcome(calibration.last, calibrationResult);
+        : _calibrationOutcome(
+            calibration[1],
+            calibration[2],
+            calibrationResult,
+          );
 
     var groupRejected = false;
     for (var i = 0; i < slice.groups.length; i++) {
@@ -1383,17 +1386,21 @@ class DiscoveryEngine {
   }
 
   /// Reads a calibration read's [result] for an ECU whose calibration
-  /// asked for [reference] after two known negatives.
+  /// asked for a known negative, then [first] and [second]: a positive
+  /// reply passes only if it starts with [first]'s record and [second]'s
+  /// two bytes follow somewhere after that record's DID echo.
   static _CalibrationOutcome _calibrationOutcome(
-    String reference,
+    String first,
+    String second,
     ProbeResult? result,
   ) {
     switch (result?.status) {
       case ProbeOk():
         final payload = result!.payload;
         return payload != null &&
-                payload.length >= 2 &&
-                hex4((payload[0] << 8) | payload[1]) == reference
+                payload.length >= 4 &&
+                hex4((payload[0] << 8) | payload[1]) == first &&
+                _containsDid(payload.sublist(2), second)
             ? _CalibrationOutcome.supported
             : _CalibrationOutcome.unsupported;
       case ProbeNoData() || ProbeNrc(code: 0x11):

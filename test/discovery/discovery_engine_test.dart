@@ -2627,10 +2627,10 @@ void main() {
       await engine.runDiscoveryBatch('test', now);
       expect(
         executor.submittedSteps.last.command,
-        '222A0E2A0F2A03',
+        '222A0F2A032A04',
         reason:
-            'two known negatives below the scan position, then the '
-            'reference DID',
+            'a known negative below the scan position, then both '
+            'reference DIDs',
       );
       expect(ecu.multiDid, MultiDidSupport.supported);
 
@@ -2861,12 +2861,12 @@ void main() {
           : compliant(step);
       final state = DiscoveryState();
       final ecu = state.ecus['test'] = testEcu()
-        ..discovered = {'2A03'}
+        ..discovered = {'2A03', '2A04'}
         ..scanPosition = 16;
       final engine = buildEngine(executor, state);
 
       await engine.runDiscoveryBatch('test', now);
-      expect(executor.submittedSteps.last.command, '222A0E2A0F2A03');
+      expect(executor.submittedSteps.last.command, '222A0F2A032A04');
       expect(ecu.multiDid, MultiDidSupport.unknown);
       expect(ecu.multiDidCalibrationFailures, 1);
 
@@ -2890,13 +2890,13 @@ void main() {
       final executor = FakeExecutor();
       final state = DiscoveryState();
       final ecu = state.ecus['test'] = testEcu()
-        ..discovered = {'2A03'}
+        ..discovered = {'2A03', '2A04'}
         ..scanPosition = 16;
       final engine = buildEngine(executor, state);
 
       await engine.runDiscoveryBatch('test', now);
 
-      expect(executor.submittedSteps.last.command, '222A0E2A0F2A03');
+      expect(executor.submittedSteps.last.command, '222A0F2A032A04');
       expect(ecu.asleepUntil, isNotNull);
       expect(ecu.multiDidCalibrationFailures, 0);
       expect(ecu.multiDid, MultiDidSupport.unknown);
@@ -2912,19 +2912,70 @@ void main() {
           ? ProbeResult(
               signalId: step.signalId,
               status: const ProbeOk(),
-              payload: const [0x2A, 0x0E, 0x00],
+              payload: const [0x2A, 0x0F, 0x00],
               at: now,
             )
           : compliant(step);
       final state = DiscoveryState();
       final ecu = state.ecus['test'] = testEcu()
-        ..discovered = {'2A03'}
+        ..discovered = {'2A03', '2A04'}
         ..scanPosition = 16;
       final engine = buildEngine(executor, state);
 
       await engine.runDiscoveryBatch('test', now);
 
       expect(ecu.multiDid, MultiDidSupport.unsupported);
+
+      engine.dispose();
+    });
+
+    test('an ECU answering only the first supported DID of a request '
+        'calibrates unsupported, and nothing is missed', () async {
+      final executor = FakeExecutor()
+        ..respond = simulatedEcu(
+          truth,
+          at: now,
+          behavior: MultiDidBehavior.answersFirstSupportedOnly,
+        );
+      final state = DiscoveryState();
+      final ecu = state.ecus['test'] = testEcu();
+      final engine = buildEngine(executor, state);
+
+      await engine.runDiscoveryBatch('test', now);
+      await engine.runDiscoveryBatch('test', now);
+      expect(executor.submittedSteps.last.command, '222A0F2A032A04');
+      expect(ecu.multiDid, MultiDidSupport.unsupported);
+
+      await scanRange(engine, ecu, 256);
+
+      expect(ecu.discovered, truth.keys.toSet());
+      expect(
+        executor.submittedSteps.where((s) => s.command.length > 6),
+        hasLength(1),
+        reason: 'only the calibration read carries several DIDs',
+      );
+
+      engine.dispose();
+    });
+
+    test('an ECU with a single usable reference DID is not calibrated and '
+        'keeps single reads', () async {
+      final executor = FakeExecutor()..respond = simulatedEcu(truth, at: now);
+      final state = DiscoveryState();
+      final ecu = state.ecus['test'] = testEcu()
+        ..discovered = {'2A03', '2A04'}
+        ..oversized = {'2A04'}
+        ..scanPosition = 16;
+      final engine = buildEngine(executor, state);
+
+      await engine.runDiscoveryBatch('test', now);
+
+      expect(
+        executor.submittedSteps.map((s) => s.command.length),
+        everyElement(6),
+      );
+      expect(ecu.multiDid, MultiDidSupport.unknown);
+      expect(ecu.multiDidCalibrationFailures, 0);
 
       engine.dispose();
     });
@@ -2941,7 +2992,7 @@ void main() {
 
       await engine.runDiscoveryBatch('test', now);
 
-      expect(executor.submittedSteps.last.command, '222A0E2A0FF189');
+      expect(executor.submittedSteps.last.command, '222A0FF1892A03');
 
       engine.dispose();
     });

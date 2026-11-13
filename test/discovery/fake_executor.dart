@@ -91,6 +91,9 @@ enum MultiDidBehavior {
 
   /// NRC 13 to any request carrying more than one DID.
   rejectsMultiple,
+
+  /// Answers only the first supported DID of a request, NRC 31 if none.
+  answersFirstSupportedOnly,
 }
 
 /// The DIDs a `22` [command] reads.
@@ -130,8 +133,11 @@ ProbeResult Function(ProbeStep step) simulatedEcu(
       if (supported.isEmpty) {
         return result(const ProbeNrc(0x31));
       }
+      final answered = behavior == MultiDidBehavior.answersFirstSupportedOnly
+          ? supported.take(1)
+          : supported;
       return result(const ProbeOk(), [
-        for (final did in supported) ...[
+        for (final did in answered) ...[
           int.parse(did.substring(0, 2), radix: 16),
           int.parse(did.substring(2), radix: 16),
           ...records[did]!,
