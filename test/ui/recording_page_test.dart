@@ -651,6 +651,25 @@ void main() {
       expect(marker.prefillOrigin, PrefillOrigin.entry);
     });
 
+    testWidgets('temperature steppers move by the display\'s half degree', (
+      tester,
+    ) async {
+      final controller = _fakeController();
+      await pumpPage(tester, controller: controller);
+
+      await openTile(tester, 'Inside temp.');
+      await tester.enterText(find.byType(TextField), '21');
+      await tester.pump();
+      await tester.tap(find.byTooltip('Increase by 0.5'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+      await tester.pumpAndSettle();
+
+      final marker = controller.markers.markers.single as ReadingMarker;
+      expect(marker.value, 21.5);
+      expect(marker.source, ReadingSource.stepped);
+    });
+
     testWidgets('without a value to prefill, the sheet opens empty and '
         'Save and the steppers stay disabled until a number is typed', (
       tester,

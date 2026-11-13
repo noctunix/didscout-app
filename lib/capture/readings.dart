@@ -65,9 +65,16 @@ extension ReadingQuantityWire on ReadingQuantity {
     ReadingQuantity.chargePower ||
     ReadingQuantity.chargePowerMax => 'kilowatts',
   };
+
+  /// The resolution of the vehicle's display for this quantity, which the
+  /// entry sheet's steppers move by.
+  num get displayStep => switch (this) {
+    ReadingQuantity.outsideTemp || ReadingQuantity.insideTemp => 0.5,
+    _ => 1,
+  };
 }
 
-/// Where a [ReadingMarker]'s value came from: the numeric keypad, the ±1
+/// Where a [ReadingMarker]'s value came from: the numeric keypad, the
 /// steppers, or the entry sheet's prefilled value saved unchanged.
 enum ReadingSource { typed, stepped, confirmed }
 

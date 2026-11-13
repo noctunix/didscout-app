@@ -97,7 +97,7 @@ class _ReadingEntrySheetState extends State<_ReadingEntrySheet> {
   num? _stepBase(num? value) =>
       value ?? (_text.text.trim().isEmpty ? widget.prefill : null);
 
-  void _step(num base, int delta) {
+  void _step(num base, num delta) {
     setState(() {
       _lastEdit = ReadingSource.stepped;
       _text.text = formatReadingValue(base + delta);
@@ -115,6 +115,7 @@ class _ReadingEntrySheetState extends State<_ReadingEntrySheet> {
   Widget build(BuildContext context) {
     final value = _parseReading(_text.text);
     final stepBase = _stepBase(value);
+    final step = widget.quantity.displayStep;
     final prefill = widget.prefill;
     return Padding(
       padding: EdgeInsets.fromLTRB(
@@ -145,10 +146,12 @@ class _ReadingEntrySheetState extends State<_ReadingEntrySheet> {
           Row(
             children: [
               IconButton(
-                onPressed: stepBase == null ? null : () => _step(stepBase, -1),
+                onPressed: stepBase == null
+                    ? null
+                    : () => _step(stepBase, -step),
                 icon: const Icon(Icons.remove_circle_outline),
                 iconSize: 36,
-                tooltip: 'Decrease by 1',
+                tooltip: 'Decrease by ${formatReadingValue(step)}',
               ),
               Expanded(
                 child: TextField(
@@ -174,10 +177,12 @@ class _ReadingEntrySheetState extends State<_ReadingEntrySheet> {
                 ),
               ),
               IconButton(
-                onPressed: stepBase == null ? null : () => _step(stepBase, 1),
+                onPressed: stepBase == null
+                    ? null
+                    : () => _step(stepBase, step),
                 icon: const Icon(Icons.add_circle_outline),
                 iconSize: 36,
-                tooltip: 'Increase by 1',
+                tooltip: 'Increase by ${formatReadingValue(step)}',
               ),
             ],
           ),
