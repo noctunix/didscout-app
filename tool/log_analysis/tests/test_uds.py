@@ -62,6 +62,21 @@ def test_late_answer_for_another_did_is_skipped() -> None:
     assert decode("7E80462123301\r") == NoAnswer(NoAnswerReason.UNRECOGNIZED)
 
 
+def test_multi_did_positive_keeps_the_did_echoes() -> None:
+    request = bytes.fromhex("22111122223333")
+    assert decode("7E8076222220133330A\r", request) == Positive(bytes.fromhex("22220133330A"))
+
+
+def test_multi_did_reply_starting_with_an_unrequested_did_is_not_positive() -> None:
+    request = bytes.fromhex("22111122223333")
+    assert decode("7E80462444401\r", request) == NoAnswer(NoAnswerReason.UNRECOGNIZED)
+
+
+def test_multi_did_negative_answer() -> None:
+    request = bytes.fromhex("22111122223333")
+    assert decode("7E8037F2231\r", request) == Negative(0x31)
+
+
 def test_no_data() -> None:
     assert decode("NO DATA\r\r") == NoAnswer(NoAnswerReason.NO_DATA)
 

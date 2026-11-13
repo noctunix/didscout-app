@@ -9,6 +9,8 @@ from didscout_logs.isotp import AdapterReply, IsoTpMessage
 NEGATIVE_RESPONSE: Final = 0x7F
 RESPONSE_PENDING: Final = 0x78
 _POSITIVE_OFFSET: Final = 0x40
+_READ_DATA_BY_IDENTIFIER: Final = 0x22
+_DID_LENGTH: Final = 2
 _SHOWN_BYTES: Final = 12
 
 # ISO 14229-1, Annex A.1.
@@ -99,7 +101,11 @@ def decode_reply(request: bytes, reply: AdapterReply) -> Outcome:
 
     A complete message that echoes the request with the positive
     service id wins wherever it appears; replies to other requests in
-    the same text are skipped. Otherwise the last negative response to
+    the same text are skipped. A ReadDataByIdentifier request for
+    several DIDs is answered by records for the supported ones only,
+    in request order and without length fields (ISO 14229-1, 10.2);
+    its positive payload is everything after the service id, the DID
+    echoes included. Otherwise the last negative response to
     the request's service other than responsePending is the answer. A
     reply holding nothing better falls back, in this order, to an
     incomplete message, a responsePending without a final answer,
@@ -112,15 +118,14 @@ def decode_reply(request: bytes, reply: AdapterReply) -> Outcome:
     Returns:
         The outcome of the request.
     """
-    positive_prefix = _positive_prefix(request)
     final_nrc: int | None = None
     pending = False
     incomplete = False
     for message in reply.messages:
         if not message.complete:
             incomplete = True
-        elif message.data.startswith(positive_prefix):
-            return Positive(message.data[len(positive_prefix) :])
+        elif (payload := _positive_payload(request, message.data)) is not None:
+            return Positive(payload)
         elif _is_negative(message.data, request[0]):
             if message.data[2] == RESPONSE_PENDING:
                 pending = True
@@ -139,8 +144,16 @@ def decode_reply(request: bytes, reply: AdapterReply) -> Outcome:
     return NoAnswer(NoAnswerReason.UNRECOGNIZED)
 
 
-def _positive_prefix(request: bytes) -> bytes:
-    return bytes([request[0] + _POSITIVE_OFFSET]) + request[1:]
+def _positive_payload(request: bytes, data: bytes) -> bytes | None:
+    service = bytes([request[0] + _POSITIVE_OFFSET])
+    dids = request[1:]
+    if request[0] == _READ_DATA_BY_IDENTIFIER and len(dids) > _DID_LENGTH:
+        requested = {dids[i : i + _DID_LENGTH] for i in range(0, len(dids), _DID_LENGTH)}
+        if data.startswith(service) and data[1 : 1 + _DID_LENGTH] in requested:
+            return data[1:]
+        return None
+    prefix = service + dids
+    return data[len(prefix) :] if data.startswith(prefix) else None
 
 
 def positive_replies(request: bytes, reply: AdapterReply) -> list[tuple[str, bytes]]:
@@ -158,11 +171,10 @@ def positive_replies(request: bytes, reply: AdapterReply) -> list[tuple[str, byt
     Returns:
         (header, payload) pairs, in the order their message arrived.
     """
-    positive_prefix = _positive_prefix(request)
     return [
-        (message.header, message.data[len(positive_prefix) :])
+        (message.header, payload)
         for message in reply.messages
-        if message.complete and message.data.startswith(positive_prefix)
+        if message.complete and (payload := _positive_payload(request, message.data)) is not None
     ]
 
 
