@@ -259,6 +259,98 @@ void main() {
       },
     );
 
+    test(
+      'a multi-DID positive reply keeps every byte after the response SID',
+      () async {
+        final results = <ProbeResult>[];
+        executor.results.listen(results.add);
+
+        executor.deliverOneShotResult(
+          _exchange(
+            signalId: 'ecu1_22f18902a10311',
+            rawResponseText: '77A 10 08 62 F1 89 01 03 11\n77A 21 AB CD',
+          ),
+        );
+        await Future<void>.delayed(Duration.zero);
+
+        expect(results.single.status, isA<ProbeOk>());
+        expect(results.single.payload, [
+          0xF1,
+          0x89,
+          0x01,
+          0x03,
+          0x11,
+          0xAB,
+          0xCD,
+        ]);
+        expect(results.single.responderHeader, '77A');
+      },
+    );
+
+    test(
+      'a multi-DID positive reply may start with any requested DID',
+      () async {
+        final results = <ProbeResult>[];
+        executor.results.listen(results.add);
+
+        executor.deliverOneShotResult(
+          _exchange(
+            signalId: 'ecu1_22f18902a10311',
+            rawResponseText: '77A 04 62 03 11 2A',
+          ),
+        );
+        await Future<void>.delayed(Duration.zero);
+
+        expect(results.single.status, isA<ProbeOk>());
+        expect(results.single.payload, [0x03, 0x11, 0x2A]);
+      },
+    );
+
+    test(
+      'a multi-DID reply not starting with a requested DID is no positive reply',
+      () async {
+        final results = <ProbeResult>[];
+        executor.results.listen(results.add);
+
+        executor.deliverOneShotResult(
+          _exchange(
+            signalId: 'ecu1_22f18902a10311',
+            rawResponseText: '77A 04 62 F1 97 2A',
+          ),
+        );
+        await Future<void>.delayed(Duration.zero);
+
+        expect(results.single.status, isA<ProbeNoData>());
+      },
+    );
+
+    test('a multi-DID negative reply decodes into ProbeNrc', () async {
+      final results = <ProbeResult>[];
+      executor.results.listen(results.add);
+
+      executor.deliverOneShotResult(
+        _exchange(
+          signalId: 'ecu1_22f18902a10311',
+          rawResponseText: '77A 03 7F22 13',
+        ),
+      );
+      await Future<void>.delayed(Duration.zero);
+
+      expect((results.single.status as ProbeNrc).code, 0x13);
+    });
+
+    test('a single-DID reply still has to echo the requested DID', () async {
+      final results = <ProbeResult>[];
+      executor.results.listen(results.add);
+
+      executor.deliverOneShotResult(
+        _exchange(signalId: 'ecu1_22f189', rawResponseText: '77A 04 62F197 01'),
+      );
+      await Future<void>.delayed(Duration.zero);
+
+      expect(results.single.status, isA<ProbeNoData>());
+    });
+
     test('a negative reply decodes into ProbeNrc with its code', () async {
       final results = <ProbeResult>[];
       executor.results.listen(results.add);

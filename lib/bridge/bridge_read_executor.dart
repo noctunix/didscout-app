@@ -233,10 +233,7 @@ ProbeResult _toProbeResult(ObdSignalExchangeMessage result) {
   final command = commandOf(result.signalId);
   final parsed = parseIsotp(command, rawResponseText);
   final expectedSid = int.parse(command.substring(0, 2), radix: 16);
-  final positivePrefix = [
-    expectedSid + 0x40,
-    ..._hexToBytes(command.substring(2)),
-  ];
+  final positivePayloadOf = _positivePayloadReader(expectedSid, command);
 
   int? nrcCode;
   String? nrcHeader;
@@ -252,9 +249,9 @@ ProbeResult _toProbeResult(ObdSignalExchangeMessage result) {
       nrcHeader = message.header;
       continue;
     }
-    if (positivePayload == null && _startsWith(data, positivePrefix)) {
-      positivePayload = Uint8List.fromList(data.sublist(positivePrefix.length));
-      positiveHeader = message.header;
+    if (positivePayload == null) {
+      positivePayload = positivePayloadOf(data);
+      if (positivePayload != null) positiveHeader = message.header;
     }
   }
   if (nrcCode != null) {
@@ -279,6 +276,38 @@ ProbeResult _toProbeResult(ObdSignalExchangeMessage result) {
     status: const ProbeNoData(),
     at: at,
   );
+}
+
+/// Returns a function that extracts the payload of a positive reply to
+/// [command] (service [sid]) from one reassembled message, or null if the
+/// message is no such reply. For a single DID or any other service that is
+/// everything after the echoed request; for a ReadDataByIdentifier of
+/// several DIDs it is everything after the response SID, DID echoes
+/// included, and the reply must start with one of the requested DIDs.
+Uint8List? Function(Uint8List data) _positivePayloadReader(
+  int sid,
+  String command,
+) {
+  final request = _hexToBytes(command.substring(2));
+  if (sid == 0x22 && request.length > 2) {
+    // ISO 14229-1:2013 §10.2: the positive response carries one
+    // <DID><dataRecord> pair per supported DID, in request order, with no
+    // length fields, so only the first DID echo can be checked here.
+    final dids = [
+      for (var i = 0; i + 1 < request.length; i += 2)
+        (request[i], request[i + 1]),
+    ];
+    return (data) =>
+        data.length >= 3 &&
+            data[0] == sid + 0x40 &&
+            dids.contains((data[1], data[2]))
+        ? Uint8List.fromList(data.sublist(1))
+        : null;
+  }
+  final prefix = [sid + 0x40, ...request];
+  return (data) => _startsWith(data, prefix)
+      ? Uint8List.fromList(data.sublist(prefix.length))
+      : null;
 }
 
 List<int> _hexToBytes(String hex) => [
