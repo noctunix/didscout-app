@@ -912,7 +912,7 @@ void main() {
         ..liveStateResult = _liveStateWithSpeed(0);
       persistedState = doorState(discovered);
       final controller = makeController(clock: clock);
-      controller.addPhase(MarkerPhase.stand);
+      controller.addPhase(MarkerPhase.park);
       await controller.start();
       await waitFor(() => controller.experimentSuggestions.isNotEmpty);
       return controller;
@@ -921,7 +921,7 @@ void main() {
     test('nothing is suggested before the vehicle is known to stand', () async {
       persistedState = doorState({'2A00'});
       final controller = makeController();
-      controller.addPhase(MarkerPhase.stand);
+      controller.addPhase(MarkerPhase.park);
 
       await controller.start();
       expect(controller.experimentSuggestions, isEmpty);
