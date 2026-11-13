@@ -28,11 +28,16 @@ const List<(int, int)> discoveryPriorityRanges = [
 /// its own GNSS receiver for emergency calls) and infotainment (`773`)
 /// are searched for a vehicle position; where they keep it is not known,
 /// so they get the measurement ranges their scan has not reached yet.
-/// New ranges go at the end of a list: an ECU keeps its scan position
-/// then.
+/// Climate (`767`) is searched for the half-degree outside and inside
+/// temperatures the car displays (`F446` resolves whole degrees only),
+/// from where its scan stopped; the tyre pressure ECU (`70B`) around its
+/// known `18A0`-`18A3` and from where its scan stopped. New ranges go at
+/// the end of a list: an ECU keeps its scan position then.
 const Map<String, List<(int, int)>> targetedDiscoverRanges = {
   '753': [(0x0100, 0x0FFF), (0x1000, 0x2FFF)],
   '773': [(0x1000, 0x2FFF)],
+  '767': [(0x08C2, 0x0FFF), (0x1000, 0x2FFF)],
+  '70B': [(0x1800, 0x18FF), (0x0392, 0x0FFF)],
   '742': [(0x2600, 0x27FF), (0x4700, 0x47FF)],
   '18DA0FF1': [(0x1800, 0x18FF)],
   '17FC007B': [
