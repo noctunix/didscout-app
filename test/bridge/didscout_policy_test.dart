@@ -165,6 +165,41 @@ void main() {
       expect(policy.allows('22F40D'), isTrue);
     });
 
+    test('a ReadDataByIdentifier of two or three distinct DIDs is allowed', () {
+      expect(policy.allows('22F40DF446'), isTrue);
+      expect(policy.allows('22F40DF4460311'), isTrue);
+    });
+
+    test('a ReadDataByIdentifier of more than three DIDs is rejected', () {
+      expect(policy.allows('22F40DF44603111E10'), isFalse);
+    });
+
+    test('a ReadDataByIdentifier with a partial DID is rejected', () {
+      expect(policy.allows('22'), isFalse);
+      expect(policy.allows('22F4'), isFalse);
+      expect(policy.allows('22F40DF4'), isFalse);
+      expect(policy.allows('22F40DF44603'), isFalse);
+    });
+
+    test('a repeated DID is rejected', () {
+      expect(policy.allows('22F40DF40D'), isFalse);
+      expect(policy.allows('22F40D0311F40D'), isFalse);
+    });
+
+    test('a VIN or serial number DID is rejected at any position', () {
+      for (final command in [
+        '22F190',
+        '22F802',
+        '22F18C',
+        '22F190F40D',
+        '22F40DF802',
+        '22F40D0311F18C',
+        '22F40DF1900311',
+      ]) {
+        expect(policy.allows(command), isFalse, reason: command);
+      }
+    });
+
     test('any other service is rejected', () {
       expect(policy.allows('0304'), isFalse);
       expect(policy.allows('2E0100'), isFalse);
@@ -173,14 +208,14 @@ void main() {
   });
 
   group('combined with the hard guard', () {
-    test('a VIN read passes this policy but is still blocked by HardGuard', () {
-      expect(policy.allows('22F190'), isTrue);
+    test('a VIN or ECU serial read is blocked by the filter', () {
       expect(allowedThroughFilter('22F190'), isFalse);
+      expect(allowedThroughFilter('22F18C'), isFalse);
+      expect(allowedThroughFilter('22F40DF802'), isFalse);
     });
 
-    test('an ECU serial read is still blocked by HardGuard', () {
-      expect(policy.allows('22F18C'), isTrue);
-      expect(allowedThroughFilter('22F18C'), isFalse);
+    test('a three-DID read passes both layers', () {
+      expect(allowedThroughFilter('22F40DF4460311'), isTrue);
     });
 
     test('a plan command allowed by both layers passes through the filter', () {

@@ -1,5 +1,7 @@
 import 'package:obdbridge/obdbridge.dart';
 
+import '../discovery/did_order.dart';
+
 /// didscout's own [CommandPolicy], layered under [HardGuard] (which still
 /// rejects VIN/serial reads and any non-read service regardless of this
 /// policy). Deliberately narrower than [HardGuard]'s own allow-list:
@@ -11,7 +13,9 @@ import 'package:obdbridge/obdbridge.dart';
 ///   29-bit physical pattern `18DAxxF1`/`18DAF1xx`, the 29-bit VW/Audi
 ///   physical pattern `17FC00xx`/`17FE00xx`, and the functional broadcast
 ///   headers `7DF`/`18DB33F1`,
-/// - mode 01 reads and UDS ReadDataByIdentifier (`22`) reads.
+/// - mode 01 reads and UDS ReadDataByIdentifier (`22`) reads of one to
+///   [HardGuard.maxDidsPerRead] distinct DIDs, none of them a VIN DID or
+///   the ECU serial number DID.
 class DidscoutPolicy implements CommandPolicy {
   static final RegExp _hex = RegExp(r'^[0-9A-F]+$');
   static final RegExp _headerCommand = RegExp(
@@ -60,10 +64,23 @@ class DidscoutPolicy implements CommandPolicy {
       case '01':
         return normalizedCommand.length == 4;
       case '22':
-        return normalizedCommand.length == 6;
+        return _allowsReadDataByIdentifier(normalizedCommand.substring(2));
       default:
         return false;
     }
+  }
+
+  static bool _allowsReadDataByIdentifier(String didHex) {
+    if (didHex.isEmpty ||
+        didHex.length % 4 != 0 ||
+        didHex.length > 4 * HardGuard.maxDidsPerRead) {
+      return false;
+    }
+    final dids = [
+      for (var i = 0; i < didHex.length; i += 4) didHex.substring(i, i + 4),
+    ];
+    return dids.toSet().length == dids.length &&
+        !dids.any((did) => vinDids.contains(did) || did == serialNumberDid);
   }
 
   static bool _allowsAdapterCommand(String normalized) {
