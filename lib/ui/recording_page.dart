@@ -568,9 +568,7 @@ class _PhaseButtonGrid extends StatelessWidget {
   final RecordingController controller;
 
   static const _phases = [
-    (MarkerPhase.drive, 'Drive', Icons.directions_car),
     (MarkerPhase.charge, 'Charge', Icons.ev_station),
-    (MarkerPhase.stand, 'Stand', Icons.hourglass_empty),
     (MarkerPhase.park, 'Park', Icons.local_parking),
   ];
 

@@ -25,15 +25,15 @@ class ExperimentCard extends StatelessWidget {
   final void Function(ReadingQuantity quantity) onEnterReading;
 
   /// Whether the card shows for [controller]: while recording, with a
-  /// run to show or in a phase the owner set for standing or charging.
+  /// run to show or in a parking or charging phase the owner set.
   /// The phase rather than the speed decides, so the card does not come
   /// and go while the vehicle creeps.
   static bool visibleFor(RecordingController controller) =>
       controller.phase == RecordingPhase.recording &&
       (controller.experimentRun != null ||
           switch (controller.markers.currentPhase) {
-            MarkerPhase.stand || MarkerPhase.park || MarkerPhase.charge => true,
-            MarkerPhase.drive || null => false,
+            MarkerPhase.park || MarkerPhase.charge => true,
+            MarkerPhase.stand || MarkerPhase.drive || null => false,
           });
 
   String _targets(Experiment experiment) => [

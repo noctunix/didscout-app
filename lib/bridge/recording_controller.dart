@@ -475,6 +475,38 @@ class RecordingController extends ChangeNotifier {
   /// just because speed hasn't been read recently.
   bool get isStationary => _isStationary(_now());
 
+  /// Start of the current unbroken run of fresh zero-speed readings, or
+  /// null while the vehicle moves or its speed is unknown.
+  DateTime? _stationarySince;
+
+  /// How long the vehicle must stay stationary before an automatic
+  /// [MarkerPhase.stand] marker is recorded.
+  static const Duration standAfter = Duration(seconds: 60);
+
+  /// Records [MarkerPhase.drive] on a fresh speed above zero and
+  /// [MarkerPhase.stand] once the vehicle has stood still for
+  /// [standAfter]. A manual park or charge phase is only ended by driving
+  /// off. [readAt] is the reception time of a speed reading not seen
+  /// before, or null when this poll brought none.
+  void _updateAutomaticPhase(int? speedKmh, DateTime? readAt) {
+    if (speedKmh == null) {
+      _stationarySince = null;
+      return;
+    }
+    if (readAt == null) return;
+    final current = markers.currentPhase;
+    if (speedKmh > 0) {
+      _stationarySince = null;
+      if (current != MarkerPhase.drive) addPhase(MarkerPhase.drive);
+      return;
+    }
+    final since = _stationarySince ??= readAt;
+    if ((current == null || current == MarkerPhase.drive) &&
+        readAt.difference(since) >= standAfter) {
+      addPhase(MarkerPhase.stand);
+    }
+  }
+
   bool _isStationary(DateTime now) {
     final readAt = _speedReadAt;
     if (_liveInfo.speedKmh != 0 || readAt == null) return false;
@@ -1731,6 +1763,7 @@ class RecordingController extends ChangeNotifier {
       int? storedEnergyWh;
       double? batteryTempC;
       double? chargePowerKw;
+      DateTime? newSpeedReadAt;
       for (final exchange in state.exchanges) {
         if (exchange.transport != ObdTransportStatusMessage.ok ||
             exchange.rawResponseText == null) {
@@ -1754,6 +1787,7 @@ class RecordingController extends ChangeNotifier {
         switch (exchange.signalId) {
           case 'module7_22f40d':
             speedKmh = decodeSpeedKmh(payload);
+            if (receivedAt != _speedReadAt) newSpeedReadAt = receivedAt;
             _speedReadAt = receivedAt;
           case 'module7_22f446':
             outsideTempC = decodeOutsideTempC(payload);
@@ -1778,9 +1812,11 @@ class RecordingController extends ChangeNotifier {
         batteryTempC: batteryTempC,
         chargePowerKw: chargePowerKw,
       );
+      _updateAutomaticPhase(speedKmh, newSpeedReadAt);
     } catch (_) {
       _liveInfo = LiveVehicleInfo.empty;
       _speedReadAt = null;
+      _stationarySince = null;
       _linkState = ObdLinkStateValueMessage.disconnected;
     }
     notifyListeners();

@@ -771,6 +771,139 @@ void main() {
     });
   });
 
+  group('automatic phases', () {
+    final base = DateTime.utc(2026, 1, 1, 12);
+    late DateTime clockNow;
+
+    /// A speed reading of [kmh] received [age] before [clockNow]; a null
+    /// [age] omits the receive time.
+    ObdLiveStateMessage speedState(
+      int kmh, {
+      Duration? age = Duration.zero,
+    }) => ObdLiveStateMessage(
+      link: ObdLinkStateMessage(state: ObdLinkStateValueMessage.connected),
+      timebaseId: 't1',
+      exchanges: [
+        ObdSignalExchangeMessage(
+          signalId: 'module7_22f40d',
+          transport: ObdTransportStatusMessage.ok,
+          rawResponseText:
+              '18DAF104 04 62 F4 0D ${kmh.toRadixString(16).padLeft(2, '0')}',
+          receivedAtEpochMs: age == null
+              ? null
+              : clockNow.subtract(age).millisecondsSinceEpoch,
+        ),
+      ],
+    );
+
+    /// Moves the clock to [offset] after [base], serves a speed reading of
+    /// [kmh] received at that moment and lets one poll run.
+    Future<void> readSpeed(
+      int kmh, {
+      required Duration at,
+      Duration? age = Duration.zero,
+    }) async {
+      clockNow = base.add(at);
+      fakeNative.liveStateResult = speedState(kmh, age: age);
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+    }
+
+    List<MarkerPhase> phases() => [
+      for (final marker in controller.markers.markers)
+        if (marker is PhaseMarker) marker.phase,
+    ];
+
+    setUp(() async {
+      clockNow = base;
+      fakeNative.liveStateResult = speedState(0);
+      controller = RecordingController(
+        requestRuntimePermissions: (_) async {},
+        bridge: ObdBridge(DidscoutPolicy(), nativeApi: fakeNative),
+        recordingsDirectory: () async => tempDir,
+        sessionIdFactory: () => 'fixed-session-id',
+        clock: () => clockNow,
+        tickInterval: const Duration(milliseconds: 1),
+        loadSettings: () async => const AppSettings.defaultValues().copyWith(
+          scoutWhileRecording: false,
+        ),
+      );
+      await controller.start();
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+    });
+
+    tearDown(() async {
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      await controller.stop();
+    });
+
+    test('a speed above zero starts the drive phase once', () async {
+      await readSpeed(30, at: const Duration(seconds: 10));
+      await readSpeed(35, at: const Duration(seconds: 20));
+
+      expect(phases(), [MarkerPhase.drive]);
+    });
+
+    test('standing for 60 s adds stand, standing for less does not', () async {
+      await readSpeed(30, at: const Duration(seconds: 1));
+      await readSpeed(0, at: const Duration(seconds: 10));
+      await readSpeed(0, at: const Duration(seconds: 40));
+      await readSpeed(0, at: const Duration(seconds: 69));
+      expect(phases(), [MarkerPhase.drive]);
+
+      await readSpeed(0, at: const Duration(seconds: 70));
+      expect(phases(), [MarkerPhase.drive, MarkerPhase.stand]);
+
+      await readSpeed(0, at: const Duration(seconds: 100));
+      expect(phases(), [MarkerPhase.drive, MarkerPhase.stand]);
+    });
+
+    test('a short stop is restarted by moving', () async {
+      await readSpeed(0, at: const Duration(seconds: 10));
+      await readSpeed(0, at: const Duration(seconds: 40));
+      await readSpeed(5, at: const Duration(seconds: 50));
+      await readSpeed(0, at: const Duration(seconds: 60));
+      await readSpeed(0, at: const Duration(seconds: 100));
+
+      expect(phases(), [MarkerPhase.drive]);
+    });
+
+    test('stand never replaces a manual park or charge', () async {
+      controller.addPhase(MarkerPhase.park);
+      await readSpeed(0, at: const Duration(seconds: 10));
+      await readSpeed(0, at: const Duration(seconds: 80));
+      expect(phases(), [MarkerPhase.park]);
+
+      controller.addPhase(MarkerPhase.charge);
+      await readSpeed(0, at: const Duration(seconds: 160));
+      expect(phases(), [MarkerPhase.park, MarkerPhase.charge]);
+    });
+
+    test('driving off ends a manual park', () async {
+      controller.addPhase(MarkerPhase.park);
+      await readSpeed(12, at: const Duration(seconds: 10));
+
+      expect(phases(), [MarkerPhase.park, MarkerPhase.drive]);
+    });
+
+    test(
+      'a stale or undated speed adds no marker and resets standing',
+      () async {
+        await readSpeed(0, at: const Duration(seconds: 10));
+        await readSpeed(
+          20,
+          at: const Duration(seconds: 70),
+          age: const Duration(seconds: 51),
+        );
+        await readSpeed(20, at: const Duration(seconds: 80), age: null);
+        expect(phases(), isEmpty);
+
+        await readSpeed(0, at: const Duration(seconds: 90));
+        await readSpeed(0, at: const Duration(seconds: 120));
+        expect(phases(), isEmpty);
+      },
+    );
+  });
+
   group('connection status', () {
     test('connected link while recording reports connected', () async {
       fakeNative.liveStateResult = _liveStateWithLink(

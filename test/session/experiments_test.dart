@@ -105,16 +105,18 @@ void main() {
       );
     });
 
-    test('suggests nothing in the drive phase, even when stationary', () {
-      expect(
-        suggestedExperiments(
-          phase: MarkerPhase.drive,
-          stationary: true,
-          answeringRequestHeaders: allHeaders,
-          completedCounts: const {},
-        ),
-        isEmpty,
-      );
+    test('suggests nothing in the automatic phases, even when stationary', () {
+      for (final phase in [MarkerPhase.drive, MarkerPhase.stand]) {
+        expect(
+          suggestedExperiments(
+            phase: phase,
+            stationary: true,
+            answeringRequestHeaders: allHeaders,
+            completedCounts: const {},
+          ),
+          isEmpty,
+        );
+      }
     });
 
     test('filters by phase', () {
@@ -127,7 +129,7 @@ void main() {
         ),
       );
 
-      final standOrPark = [
+      final parked = [
         'charge-flap-left',
         'charge-flap-right',
         'door-driver',
@@ -150,8 +152,7 @@ void main() {
         'drive-select',
         'recuperation-level',
       ];
-      expect(idsIn(MarkerPhase.stand), standOrPark);
-      expect(idsIn(MarkerPhase.park), standOrPark);
+      expect(idsIn(MarkerPhase.park), parked);
       expect(idsIn(MarkerPhase.charge), [
         'charge-flap-left',
         'charge-flap-right',
@@ -189,14 +190,14 @@ void main() {
         'lock',
         'tailgate',
       ]);
-      expect(idsFor(MarkerPhase.stand, const {'70C'}), [
+      expect(idsFor(MarkerPhase.park, const {'70C'}), [
         'steering-wheel-heating',
       ]);
       expect(idsFor(MarkerPhase.charge, const {'742'}), ['preconditioning']);
       expect(idsFor(MarkerPhase.park, const {'18DA06F1'}), [
         'recuperation-level',
       ]);
-      expect(idsFor(MarkerPhase.stand, const {'18DA0FF1'}), [
+      expect(idsFor(MarkerPhase.park, const {'18DA0FF1'}), [
         'drive-select',
         'recuperation-level',
       ]);
@@ -216,7 +217,7 @@ void main() {
       expect(
         _ids(
           suggestedExperiments(
-            phase: MarkerPhase.stand,
+            phase: MarkerPhase.park,
             stationary: true,
             answeringRequestHeaders: const {'767', '74C'},
             completedCounts: const {

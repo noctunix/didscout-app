@@ -443,9 +443,11 @@ void main() {
         isInMutuallyExclusiveGroup: true,
       ),
     );
+    expect(find.widgetWithText(FilledButton, 'Drive'), findsNothing);
+    expect(find.widgetWithText(FilledButton, 'Stand'), findsNothing);
     expect(
-      tester.getSemantics(find.widgetWithText(FilledButton, 'Drive')),
-      isSemantics(label: 'Drive', isSelected: false),
+      tester.getSemantics(find.widgetWithText(FilledButton, 'Park')),
+      isSemantics(label: 'Park', isSelected: false),
     );
   });
 
@@ -964,10 +966,10 @@ void main() {
       expect(find.text('Experiments'), findsNothing);
     });
 
-    testWidgets('shown while recording in a standing phase; starts once '
-        'the vehicle stands', (tester) async {
+    testWidgets('shown while recording in the park phase; leaves with the '
+        'drive phase once the vehicle moves', (tester) async {
       final fakeNative = _FakeNativeObdApi()
-        ..speedResponse = '${_module7ResponseHeader}0462F40D1E';
+        ..speedResponse = '${_module7ResponseHeader}0462F40D00';
       final controller = _fakeController(
         fakeNative: fakeNative,
         tickInterval: const Duration(milliseconds: 1),
@@ -983,7 +985,7 @@ void main() {
           },
         ),
       );
-      controller.addPhase(MarkerPhase.stand);
+      controller.addPhase(MarkerPhase.park);
       await pumpPage(tester, controller: controller);
       await _startRecording(tester, controller);
       Future<void> poll() async {
@@ -994,21 +996,15 @@ void main() {
       }
 
       await poll();
-      expect(controller.liveInfo.speedKmh, 30);
-      expect(find.text('Experiments'), findsOneWidget);
-      expect(find.text('Starts when the vehicle stands still'), findsOneWidget);
-      expect(
-        tester
-            .widget<FilledButton>(find.widgetWithText(FilledButton, 'Start'))
-            .onPressed,
-        isNull,
-      );
-
-      fakeNative.speedResponse = '${_module7ResponseHeader}0462F40D00';
-      await poll();
+      expect(controller.liveInfo.speedKmh, 0);
       expect(find.text('Experiments'), findsOneWidget);
       expect(find.text('Driver door'), findsOneWidget);
       expect(find.text('Reads Door FL'), findsOneWidget);
+
+      fakeNative.speedResponse = '${_module7ResponseHeader}0462F40D1E';
+      await poll();
+      expect(controller.markers.currentPhase, MarkerPhase.drive);
+      expect(find.text('Experiments'), findsNothing);
 
       await controller.stop();
       await tester.pumpAndSettle();
@@ -1053,7 +1049,7 @@ void main() {
           _experiment('door-driver'),
           _experiment('climate-setpoint'),
         ]
-        ..addPhase(MarkerPhase.stand);
+        ..addPhase(MarkerPhase.park);
       await pumpPage(tester, controller: controller);
       Future<void> tap(Finder finder) async {
         await tester.ensureVisible(finder);

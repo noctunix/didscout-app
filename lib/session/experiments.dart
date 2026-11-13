@@ -48,9 +48,10 @@ class Experiment {
   final ReadingQuantity? followUp;
 }
 
-const Set<MarkerPhase> _stationary = {MarkerPhase.stand, MarkerPhase.park};
-const Set<MarkerPhase> _stationaryOrCharging = {
-  MarkerPhase.stand,
+// Only manually confirmed phases: the automatic stand phase also starts at
+// a red light, where no experiment may ask the driver to act.
+const Set<MarkerPhase> _parked = {MarkerPhase.park};
+const Set<MarkerPhase> _parkedOrCharging = {
   MarkerPhase.park,
   MarkerPhase.charge,
 };
@@ -63,7 +64,7 @@ const List<Experiment> experimentCatalog = [
     title: 'Left charge flap',
     instruction: 'Open the left charge flap and leave it open.',
     undoInstruction: 'Close the left charge flap.',
-    phases: _stationaryOrCharging,
+    phases: _parkedOrCharging,
     targetHeaders: ['17FC0082'],
   ),
   Experiment(
@@ -71,7 +72,7 @@ const List<Experiment> experimentCatalog = [
     title: 'Right charge flap',
     instruction: 'Open the right charge flap and leave it open.',
     undoInstruction: 'Close the right charge flap.',
-    phases: _stationaryOrCharging,
+    phases: _parkedOrCharging,
     targetHeaders: ['17FC0083'],
   ),
   Experiment(
@@ -79,7 +80,7 @@ const List<Experiment> experimentCatalog = [
     title: 'Driver door',
     instruction: 'Open the driver door and leave it open.',
     undoInstruction: 'Close the driver door.',
-    phases: _stationaryOrCharging,
+    phases: _parkedOrCharging,
     targetHeaders: ['74A'],
   ),
   Experiment(
@@ -87,7 +88,7 @@ const List<Experiment> experimentCatalog = [
     title: 'Passenger door',
     instruction: 'Open the front passenger door and leave it open.',
     undoInstruction: 'Close the front passenger door.',
-    phases: _stationaryOrCharging,
+    phases: _parkedOrCharging,
     targetHeaders: ['74B'],
   ),
   Experiment(
@@ -95,7 +96,7 @@ const List<Experiment> experimentCatalog = [
     title: 'Rear left door',
     instruction: 'Open the rear left door and leave it open.',
     undoInstruction: 'Close the rear left door.',
-    phases: _stationaryOrCharging,
+    phases: _parkedOrCharging,
     targetHeaders: ['73E'],
   ),
   Experiment(
@@ -103,7 +104,7 @@ const List<Experiment> experimentCatalog = [
     title: 'Rear right door',
     instruction: 'Open the rear right door and leave it open.',
     undoInstruction: 'Close the rear right door.',
-    phases: _stationaryOrCharging,
+    phases: _parkedOrCharging,
     targetHeaders: ['73F'],
   ),
   Experiment(
@@ -111,7 +112,7 @@ const List<Experiment> experimentCatalog = [
     title: 'Driver window',
     instruction: 'Lower the driver window a little.',
     undoInstruction: 'Raise the driver window again.',
-    phases: _stationary,
+    phases: _parked,
     targetHeaders: ['74A'],
   ),
   Experiment(
@@ -119,7 +120,7 @@ const List<Experiment> experimentCatalog = [
     title: 'Cabin temperature',
     instruction: 'Raise the cabin temperature setpoint by 3 °C.',
     undoInstruction: 'Lower the cabin temperature setpoint by 3 °C again.',
-    phases: _stationaryOrCharging,
+    phases: _parkedOrCharging,
     targetHeaders: ['767'],
     followUp: ReadingQuantity.insideTemp,
   ),
@@ -128,7 +129,7 @@ const List<Experiment> experimentCatalog = [
     title: 'A/C',
     instruction: 'Switch the A/C off, or on if it is off.',
     undoInstruction: 'Switch the A/C back the way it was.',
-    phases: _stationaryOrCharging,
+    phases: _parkedOrCharging,
     targetHeaders: ['767'],
   ),
   Experiment(
@@ -136,7 +137,7 @@ const List<Experiment> experimentCatalog = [
     title: 'Fan',
     instruction: 'Set the fan to maximum.',
     undoInstruction: 'Set the fan back to where it was.',
-    phases: _stationaryOrCharging,
+    phases: _parkedOrCharging,
     targetHeaders: ['767'],
   ),
   Experiment(
@@ -146,7 +147,7 @@ const List<Experiment> experimentCatalog = [
         'Start climate or battery preconditioning in the vehicle or the '
         'app.',
     undoInstruction: 'Stop the preconditioning.',
-    phases: _stationaryOrCharging,
+    phases: _parkedOrCharging,
     targetHeaders: ['767', '742', '17FC007B'],
   ),
   Experiment(
@@ -154,7 +155,7 @@ const List<Experiment> experimentCatalog = [
     title: 'Seat heating',
     instruction: 'Switch the driver seat heating to the highest level.',
     undoInstruction: 'Switch the driver seat heating off.',
-    phases: _stationaryOrCharging,
+    phases: _parkedOrCharging,
     targetHeaders: ['74C'],
   ),
   Experiment(
@@ -162,7 +163,7 @@ const List<Experiment> experimentCatalog = [
     title: 'Steering wheel heating',
     instruction: 'Switch the steering wheel heating on.',
     undoInstruction: 'Switch the steering wheel heating off.',
-    phases: _stationaryOrCharging,
+    phases: _parkedOrCharging,
     targetHeaders: ['767', '70C'],
   ),
   Experiment(
@@ -170,7 +171,7 @@ const List<Experiment> experimentCatalog = [
     title: 'Rear window heating',
     instruction: 'Switch the rear window heating on.',
     undoInstruction: 'Switch the rear window heating off.',
-    phases: _stationaryOrCharging,
+    phases: _parkedOrCharging,
     targetHeaders: ['767', '70E'],
   ),
   Experiment(
@@ -178,7 +179,7 @@ const List<Experiment> experimentCatalog = [
     title: 'Low beam',
     instruction: 'Switch the low beam on.',
     undoInstruction: 'Switch the low beam off.',
-    phases: _stationaryOrCharging,
+    phases: _parkedOrCharging,
     targetHeaders: ['70E'],
   ),
   Experiment(
@@ -186,7 +187,7 @@ const List<Experiment> experimentCatalog = [
     title: 'Hazard lights',
     instruction: 'Switch the hazard lights on.',
     undoInstruction: 'Switch the hazard lights off.',
-    phases: _stationaryOrCharging,
+    phases: _parkedOrCharging,
     targetHeaders: ['70E'],
   ),
   Experiment(
@@ -194,7 +195,7 @@ const List<Experiment> experimentCatalog = [
     title: 'Lock and unlock',
     instruction: 'Lock the car with the key or the app.',
     undoInstruction: 'Unlock the car.',
-    phases: _stationary,
+    phases: _parked,
     targetHeaders: ['70E', '74A', '74B'],
   ),
   Experiment(
@@ -202,7 +203,7 @@ const List<Experiment> experimentCatalog = [
     title: 'Tailgate',
     instruction: 'Open the tailgate and leave it open.',
     undoInstruction: 'Close the tailgate.',
-    phases: _stationary,
+    phases: _parked,
     targetHeaders: ['17FC008B', '70E'],
   ),
   Experiment(
@@ -210,7 +211,7 @@ const List<Experiment> experimentCatalog = [
     title: 'Wireless phone charger',
     instruction: 'Place a phone on the wireless charging pad.',
     undoInstruction: 'Take the phone off the pad.',
-    phases: _stationary,
+    phases: _parked,
     targetHeaders: ['17FC00A5'],
   ),
   Experiment(
@@ -218,7 +219,7 @@ const List<Experiment> experimentCatalog = [
     title: 'Driving mode',
     instruction: 'Switch to another driving mode.',
     undoInstruction: 'Switch back to the previous driving mode.',
-    phases: _stationary,
+    phases: _parked,
     targetHeaders: ['18DA0FF1', '710'],
   ),
   Experiment(
@@ -226,7 +227,7 @@ const List<Experiment> experimentCatalog = [
     title: 'Recuperation level',
     instruction: 'Change the recuperation level by one step.',
     undoInstruction: 'Set the recuperation level back to where it was.',
-    phases: _stationary,
+    phases: _parked,
     targetHeaders: ['18DA0FF1', '18DA07F1', '18DA06F1'],
   ),
   Experiment(
