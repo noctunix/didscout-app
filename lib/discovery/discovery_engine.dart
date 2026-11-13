@@ -44,6 +44,10 @@ Duration noDataAsleepPause(int streak) {
       : maxNoDataAsleepPauseDuration;
 }
 
+/// Multi-DID calibration reads without a usable answer after which an
+/// ECU's [EcuInfo.multiDid] is given up as unsupported.
+const int maxMultiDidCalibrationFailures = 3;
+
 /// Default per-step addition to a slice's result-wait deadline (see
 /// [DiscoveryEngine.batchDeadlinePerStep]).
 const Duration defaultBatchDeadlinePerStep = Duration(seconds: 2);
@@ -136,6 +140,49 @@ enum _BatchSource {
 
   /// DIDs an earlier batch sent but never got an answer for.
   unansweredRetry,
+}
+
+/// One ECU's prepared slice of a round: what [DiscoveryEngine._nextBatchFor]
+/// picked, plus how its DIDs are split into steps.
+class _Slice {
+  _Slice({
+    required this.ecuId,
+    required this.dids,
+    required this.source,
+    required this.rawAdvance,
+    required this.groups,
+    required this.calibration,
+  });
+
+  final String ecuId;
+  final List<String> dids;
+  final _BatchSource source;
+  final int rawAdvance;
+
+  /// [dids] split into steps, in order: one DID per step.
+  final List<List<String>> groups;
+
+  /// The DIDs of this slice's multi-DID calibration read -- two known
+  /// negatives, then the reference DID it must answer first -- or null.
+  final List<String>? calibration;
+
+  String signalIdOf(List<String> stepDids) =>
+      signalIdFor(ecuId, commandOf(stepDids));
+
+  static String commandOf(List<String> stepDids) => '22${stepDids.join()}';
+}
+
+/// What a calibration read says about an ECU's multi-DID support.
+enum _CalibrationOutcome {
+  supported,
+  unsupported,
+
+  /// No usable answer; counts toward [maxMultiDidCalibrationFailures].
+  failed,
+
+  /// A sleep signature: counts as [failed] unless the slice itself looked
+  /// asleep, in which case it says nothing about multi-DID support.
+  failedUnlessAsleep,
 }
 
 /// One ECU's batch currently out with [DiscoveryEngine.executor], for
@@ -430,12 +477,11 @@ class DiscoveryEngine {
     List<String> ecuIds,
     DateTime now,
   ) async {
-    final prepared =
-        <String, ({List<String> dids, _BatchSource source, int rawAdvance})>{};
+    final prepared = <_Slice>[];
     for (final ecuId in ecuIds) {
       final next = _nextBatchFor(ecuId);
       if (next != null) {
-        prepared[ecuId] = next;
+        prepared.add(_planSlice(ecuId, next));
       }
     }
     if (prepared.isEmpty) {
@@ -444,29 +490,29 @@ class DiscoveryEngine {
 
     final modules = <ProbeModule>[];
     final steps = <ProbeStep>[];
-    final signalIdsByEcu = <String, List<String>>{};
     final completers = <String, Completer<ProbeResult>>{};
-    for (final entry in prepared.entries) {
-      final ecu = state.ecus[entry.key]!;
+    for (final slice in prepared) {
+      final ecu = state.ecus[slice.ecuId]!;
       modules.add(
         ProbeModule(
-          id: entry.key,
+          id: slice.ecuId,
           requestHeader: ecu.requestHeader,
           responseHeader: ecu.responseHeader,
           protocol: ecu.protocol,
         ),
       );
-      final signalIds = <String>[];
-      for (final did in entry.value.dids) {
-        final signalId = signalIdFor(entry.key, '22$did');
-        signalIds.add(signalId);
+      for (final stepDids in [...slice.groups, ?slice.calibration]) {
+        final signalId = slice.signalIdOf(stepDids);
         completers[signalId] = Completer<ProbeResult>();
-        steps.add(ProbeStep(signalId: signalId, command: '22$did'));
+        steps.add(
+          ProbeStep(signalId: signalId, command: _Slice.commandOf(stepDids)),
+        );
       }
-      signalIdsByEcu[entry.key] = signalIds;
     }
     _pending.addAll(completers);
-    _beginBatch(prepared.keys.toList(), prepared.values.first.dids);
+    _beginBatch([
+      for (final slice in prepared) slice.ecuId,
+    ], prepared.first.dids);
 
     var queuedAhead = 0;
     while (true) {
@@ -494,18 +540,80 @@ class DiscoveryEngine {
 
     final deadline = _deadlineFor(queuedAhead + steps.length);
     return [
-      for (final entry in prepared.entries)
-        _awaitAndFinalizeSlice(
-          ecuId: entry.key,
-          dids: entry.value.dids,
-          source: entry.value.source,
-          rawAdvance: entry.value.rawAdvance,
-          signalIds: signalIdsByEcu[entry.key]!,
-          completers: completers,
-          deadline: deadline,
-          now: now,
-        ),
+      for (final slice in prepared)
+        _awaitAndFinalizeSlice(slice, completers, deadline, now),
     ];
+  }
+
+  /// Splits [next], [ecuId]'s next batch, into steps, one DID each; a
+  /// scan-order slice of an ECU still [MultiDidSupport.unknown] also
+  /// carries a calibration read when [_calibrationDids] finds one.
+  _Slice _planSlice(
+    String ecuId,
+    ({List<String> dids, _BatchSource source, int rawAdvance}) next,
+  ) {
+    final ecu = state.ecus[ecuId]!;
+    final scan = next.source == _BatchSource.scanOrder;
+    return _Slice(
+      ecuId: ecuId,
+      dids: next.dids,
+      source: next.source,
+      rawAdvance: next.rawAdvance,
+      groups: [
+        for (final did in next.dids) [did],
+      ],
+      calibration: scan && ecu.multiDid == MultiDidSupport.unknown
+          ? _calibrationDids(ecuId, ecu)
+          : null,
+    );
+  }
+
+  /// The DIDs of a multi-DID calibration read for [ecu], in request order:
+  /// the two DIDs closest below its scan position that are known negatives
+  /// (scanned, and neither discovered, conditional, unanswered, slow nor
+  /// oversized), then a discovered reference DID, an identification DID
+  /// (F18x/F19x) where there is one. A compliant ECU omits the negatives
+  /// from its reply (ISO 14229-1:2013 §10.2), so the reply starts with the
+  /// reference DID. Null while [ecu] has no such reference or negatives.
+  List<String>? _calibrationDids(String ecuId, EcuInfo ecu) {
+    final references =
+        ecu.discovered
+            .where(
+              (did) =>
+                  !vinDids.contains(did) &&
+                  did != serialNumberDid &&
+                  !ecu.slow.contains(did) &&
+                  !ecu.oversized.contains(did) &&
+                  !ecu.conditional.contains(did),
+            )
+            .toList()
+          ..sort();
+    final reference =
+        references
+            .where((did) => did.startsWith('F18') || did.startsWith('F19'))
+            .firstOrNull ??
+        references.firstOrNull;
+    if (reference == null) {
+      return null;
+    }
+    final order = _orderFor(ecuId, ecu.discoverRanges);
+    final negatives = <String>[];
+    for (
+      var i = min(ecu.scanPosition, order.length) - 1;
+      i >= 0 && negatives.length < 2;
+      i--
+    ) {
+      final did = hex4(order[i]);
+      if (!ecu.discovered.contains(did) &&
+          !ecu.conditional.contains(did) &&
+          !ecu.unanswered.contains(did) &&
+          !ecu.retryQueue.contains(did) &&
+          !ecu.slow.contains(did) &&
+          !ecu.oversized.contains(did)) {
+        negatives.add(did);
+      }
+    }
+    return negatives.length < 2 ? null : [...negatives.reversed, reference];
   }
 
   /// Awaits one ECU's own slice of a round up to [deadline] (each slice
@@ -513,17 +621,18 @@ class DiscoveryEngine {
   /// round), then finalizes it. Registers the
   /// slice in [_inFlight] for [scoutStatus] and [pump]'s own in-flight
   /// check, and always removes it again before returning.
-  Future<List<String>> _awaitAndFinalizeSlice({
-    required String ecuId,
-    required List<String> dids,
-    required _BatchSource source,
-    required int rawAdvance,
-    required List<String> signalIds,
-    required Map<String, Completer<ProbeResult>> completers,
-    required Duration deadline,
-    required DateTime now,
-  }) async {
-    _inFlight[ecuId] = _InFlightSlice(
+  Future<List<String>> _awaitAndFinalizeSlice(
+    _Slice slice,
+    Map<String, Completer<ProbeResult>> completers,
+    Duration deadline,
+    DateTime now,
+  ) async {
+    final calibration = slice.calibration;
+    final signalIds = [
+      for (final stepDids in [...slice.groups, ?calibration])
+        slice.signalIdOf(stepDids),
+    ];
+    _inFlight[slice.ecuId] = _InFlightSlice(
       signalIds: signalIds,
       submittedAt: _clock(),
     );
@@ -531,13 +640,18 @@ class DiscoveryEngine {
       for (final signalId in signalIds)
         _awaitStepOrDeadline(signalId, completers[signalId]!, deadline),
     ]);
-    _inFlight.remove(ecuId);
+    _inFlight.remove(slice.ecuId);
     if (_suspended) {
       // Cancelled: no result is an answer, and this engine never gets
       // another chance to retry this slice -- nothing to finalize.
       return const [];
     }
-    return _finalizeSlice(ecuId, dids, source, rawAdvance, results, now);
+    return _finalizeSlice(
+      slice,
+      results.sublist(0, slice.groups.length),
+      calibration == null ? null : results.last,
+      now,
+    );
   }
 
   Duration _deadlineFor(int queuedSteps) =>
@@ -1036,29 +1150,39 @@ class DiscoveryEngine {
     }
   }
 
-  /// Applies one ECU's completed slice of a round ([dids]/[source], from
-  /// [_nextBatchFor]) to its state. Every entry of [results] (same order
-  /// as [dids]) with a vehicle-side answer ([_isAnswer]) is booked via
-  /// [_finalizeAnsweredDid]; [source]'s own queue or [EcuInfo.scanPosition]
-  /// then advances. A [source] of [_BatchSource.scanOrder] also queues
-  /// every entry without an answer into [EcuInfo.unanswered], so it is
-  /// read again rather than lost; [_BatchSource.conditionalRetry] and
-  /// [_BatchSource.unansweredRetry] simply leave such an entry in its own
+  /// Applies one ECU's completed [slice] of a round to its state.
+  /// [stepResults] holds one entry per [_Slice.groups] step, in order, and
+  /// [calibrationResult] the slice's calibration read, if it had one.
+  ///
+  /// Every DID with a vehicle-side answer ([_isAnswer]) is booked via [_finalizeAnsweredDid]; [_Slice.source]'s
+  /// own queue or [EcuInfo.scanPosition] advances. A
+  /// [_BatchSource.scanOrder] slice also queues every DID without an
+  /// answer into [EcuInfo.unanswered], so it is read again rather than
+  /// lost; [_BatchSource.conditionalRetry] and
+  /// [_BatchSource.unansweredRetry] simply leave such a DID in its own
   /// queue for the next pull. Asleep/no-data detection ([batchIsAsleep]/
-  /// [batchLooksNoDataAsleep]) runs over the answered entries only, before
+  /// [batchLooksNoDataAsleep]) runs over the answered DIDs only, before
   /// any of this: a slice with none answered changes nothing, and one
   /// that looks asleep is left exactly as queued, to be read again once
   /// the ECU wakes rather than counted as checked while it couldn't
-  /// possibly have meant it. Returns the DIDs found OK.
+  /// possibly have meant it. The
+  /// calibration result is applied either way ([_applyCalibration]).
+  /// Returns the DIDs found OK.
   List<String> _finalizeSlice(
-    String ecuId,
-    List<String> dids,
-    _BatchSource source,
-    int rawAdvance,
-    List<ProbeResult?> results,
+    _Slice slice,
+    List<ProbeResult?> stepResults,
+    ProbeResult? calibrationResult,
     DateTime now,
   ) {
+    final ecuId = slice.ecuId;
     final ecu = state.ecus[ecuId]!;
+    final calibration = slice.calibration;
+    final calibrationOutcome = calibration == null
+        ? null
+        : _calibrationOutcome(calibration.last, calibrationResult);
+
+    final dids = slice.dids;
+    final results = stepResults;
     final answeredDids = <String>[];
     final answeredResults = <ProbeResult>[];
     final missingDids = <String>[];
@@ -1092,6 +1216,7 @@ class DiscoveryEngine {
       );
     }
     if (answeredResults.isEmpty) {
+      _applyCalibration(ecu, ecuId, calibrationOutcome, sliceAsleep: false);
       return const [];
     }
 
@@ -1106,18 +1231,21 @@ class DiscoveryEngine {
       ecu.noDataStreak += 1;
       ecu.asleepUntil = now.add(noDataAsleepPause(ecu.noDataStreak));
       _logEvent(ScoutEventKind.asleep, ecuId: ecuId, detail: 'no data');
+      _applyCalibration(ecu, ecuId, calibrationOutcome, sliceAsleep: true);
       return const [];
     }
     ecu.noDataStreak = 0;
     if (representative && batchIsAsleep(statusCounts, answeredResults.length)) {
       ecu.asleepUntil = now.add(asleepPauseDuration);
       _logEvent(ScoutEventKind.asleep, ecuId: ecuId);
+      _applyCalibration(ecu, ecuId, calibrationOutcome, sliceAsleep: true);
       return const [];
     }
+    _applyCalibration(ecu, ecuId, calibrationOutcome, sliceAsleep: false);
 
-    switch (source) {
+    switch (slice.source) {
       case _BatchSource.scanOrder:
-        ecu.scanPosition += rawAdvance;
+        ecu.scanPosition += slice.rawAdvance;
         for (final did in missingDids) {
           if (!ecu.unanswered.contains(did)) {
             ecu.unanswered.add(did);
@@ -1140,6 +1268,67 @@ class DiscoveryEngine {
       );
     }
     return newlyFound;
+  }
+
+  /// Reads a calibration read's [result] for an ECU whose calibration
+  /// asked for [reference] after two known negatives.
+  static _CalibrationOutcome _calibrationOutcome(
+    String reference,
+    ProbeResult? result,
+  ) {
+    switch (result?.status) {
+      case ProbeOk():
+        final payload = result!.payload;
+        return payload != null &&
+                payload.length >= 2 &&
+                hex4((payload[0] << 8) | payload[1]) == reference
+            ? _CalibrationOutcome.supported
+            : _CalibrationOutcome.unsupported;
+      case ProbeNoData() || ProbeNrc(code: 0x11):
+        return _CalibrationOutcome.failedUnlessAsleep;
+      // busyRepeatRequest and responsePending are transient by definition;
+      // conditionsNotCorrect may concern the reference DID alone.
+      case ProbeNrc(code: 0x21 || 0x22 || 0x78):
+        return _CalibrationOutcome.failed;
+      case ProbeNrc():
+        return _CalibrationOutcome.unsupported;
+      default:
+        return _CalibrationOutcome.failed;
+    }
+  }
+
+  /// Applies [outcome], if any, to [ecu]'s [EcuInfo.multiDid];
+  /// [sliceAsleep] tells whether the calibration read's slice looked
+  /// asleep.
+  void _applyCalibration(
+    EcuInfo ecu,
+    String ecuId,
+    _CalibrationOutcome? outcome, {
+    required bool sliceAsleep,
+  }) {
+    switch (outcome) {
+      case null:
+        return;
+      case _CalibrationOutcome.supported:
+        _setMultiDid(ecu, ecuId, MultiDidSupport.supported);
+      case _CalibrationOutcome.unsupported:
+        _setMultiDid(ecu, ecuId, MultiDidSupport.unsupported);
+      case _CalibrationOutcome.failedUnlessAsleep when sliceAsleep:
+        return;
+      case _CalibrationOutcome.failed || _CalibrationOutcome.failedUnlessAsleep:
+        ecu.multiDidCalibrationFailures += 1;
+        if (ecu.multiDidCalibrationFailures >= maxMultiDidCalibrationFailures) {
+          _setMultiDid(ecu, ecuId, MultiDidSupport.unsupported);
+        }
+    }
+  }
+
+  void _setMultiDid(EcuInfo ecu, String ecuId, MultiDidSupport support) {
+    if (ecu.multiDid == support) {
+      return;
+    }
+    ecu.multiDid = support;
+    _logEvent(ScoutEventKind.multiDid, ecuId: ecuId, detail: support.name);
   }
 
   /// Reads one batch of [ecuId]'s discovery work and fully awaits its

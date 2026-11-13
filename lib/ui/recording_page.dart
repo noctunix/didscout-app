@@ -889,6 +889,7 @@ class _ScoutEventRow extends StatelessWidget {
       ScoutEventKind.oversizedDid => 'oversized DID quarantined',
       ScoutEventKind.enqueueRejected => 'enqueue rejected',
       ScoutEventKind.inventoryStep => 'inventory step',
+      ScoutEventKind.multiDid => 'multi-DID reads',
     };
     final parts = [
       kind,

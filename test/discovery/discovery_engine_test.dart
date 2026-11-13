@@ -2567,4 +2567,214 @@ void main() {
       },
     );
   });
+
+  group('multi-DID reads', () {
+    EcuInfo testEcu({
+      List<(int, int)> ranges = const [(0x2A00, 0x2AFF)],
+      MultiDidSupport multiDid = MultiDidSupport.unknown,
+    }) => EcuInfo(
+      requestHeader: '7A1',
+      responseHeader: '7A9',
+      protocol: 6,
+      discoverRanges: ranges,
+      multiDid: multiDid,
+    );
+
+    DiscoveryEngine buildEngine(FakeExecutor executor, DiscoveryState state) =>
+        DiscoveryEngine(executor: executor, state: state, onHit: (_, _, _) {});
+
+    /// Runs batches until the first [length] DIDs of the scan order are
+    /// read and nothing is left to re-read.
+    Future<void> scanRange(
+      DiscoveryEngine engine,
+      EcuInfo ecu,
+      int length,
+    ) async {
+      for (var batch = 0; batch < 100; batch++) {
+        if (ecu.scanPosition >= length && ecu.unanswered.isEmpty) {
+          return;
+        }
+        await engine.runDiscoveryBatch('test', now);
+      }
+      fail('the range was not scanned within 100 batches');
+    }
+
+    final truth = <String, List<int>>{
+      '2A03': [0x00, 0x01],
+      '2A04': [0x00, 0x02],
+      '2A10': [0x00, 0x03],
+      '2A47': [0x00, 0x04],
+      '2A48': [0x00, 0x05],
+      '2A49': [0x00, 0x06],
+      '2A80': [0x00, 0x07],
+      '2AFF': [0x00, 0x08],
+    };
+
+    test('a compliant ECU calibrates supported', () async {
+      final executor = FakeExecutor()..respond = simulatedEcu(truth, at: now);
+      final state = DiscoveryState();
+      final ecu = state.ecus['test'] = testEcu();
+      final engine = buildEngine(executor, state);
+
+      await engine.runDiscoveryBatch('test', now);
+      expect(executor.submittedSteps.map((s) => s.command.length).toSet(), {
+        6,
+      }, reason: 'no calibration before a reference DID is discovered');
+
+      await engine.runDiscoveryBatch('test', now);
+      expect(
+        executor.submittedSteps.last.command,
+        '222A0E2A0F2A03',
+        reason:
+            'two known negatives below the scan position, then the '
+            'reference DID',
+      );
+      expect(ecu.multiDid, MultiDidSupport.supported);
+
+      engine.dispose();
+    });
+
+    test('an ECU answering NRC 31 when any requested DID is unsupported '
+        'calibrates unsupported and keeps single reads', () async {
+      final executor = FakeExecutor()
+        ..respond = simulatedEcu(
+          truth,
+          at: now,
+          behavior: MultiDidBehavior.rejectsAnyUnsupported,
+        );
+      final state = DiscoveryState();
+      final ecu = state.ecus['test'] = testEcu();
+      final engine = buildEngine(executor, state);
+
+      await scanRange(engine, ecu, 256);
+
+      expect(ecu.multiDid, MultiDidSupport.unsupported);
+      expect(ecu.discovered, truth.keys.toSet());
+      expect(
+        executor.submittedSteps.where((s) => s.command.length > 6),
+        hasLength(1),
+        reason: 'only the calibration read carries several DIDs',
+      );
+
+      engine.dispose();
+    });
+
+    test('an ECU answering NRC 13 to a calibration read calibrates '
+        'unsupported, and nothing is missed', () async {
+      final executor = FakeExecutor()
+        ..respond = simulatedEcu(
+          truth,
+          at: now,
+          behavior: MultiDidBehavior.rejectsMultiple,
+        );
+      final state = DiscoveryState();
+      final ecu = state.ecus['test'] = testEcu();
+      final engine = buildEngine(executor, state);
+
+      await scanRange(engine, ecu, 256);
+
+      expect(ecu.multiDid, MultiDidSupport.unsupported);
+      expect(ecu.discovered, truth.keys.toSet());
+
+      engine.dispose();
+    });
+
+    test('calibration reads without a usable answer count, and the third '
+        'one gives up on multi-DID reads', () async {
+      final executor = FakeExecutor();
+      final compliant = simulatedEcu(truth, at: now);
+      executor.respond = (step) => step.command.length > 6
+          ? ProbeResult(
+              signalId: step.signalId,
+              status: const ProbeTimeout(),
+              at: now,
+            )
+          : compliant(step);
+      final state = DiscoveryState();
+      final ecu = state.ecus['test'] = testEcu()
+        ..discovered = {'2A03'}
+        ..scanPosition = 16;
+      final engine = buildEngine(executor, state);
+
+      await engine.runDiscoveryBatch('test', now);
+      expect(executor.submittedSteps.last.command, '222A0E2A0F2A03');
+      expect(ecu.multiDid, MultiDidSupport.unknown);
+      expect(ecu.multiDidCalibrationFailures, 1);
+
+      await engine.runDiscoveryBatch('test', now);
+      await engine.runDiscoveryBatch('test', now);
+
+      expect(ecu.multiDidCalibrationFailures, 3);
+      expect(ecu.multiDid, MultiDidSupport.unsupported);
+      final before = executor.submittedSteps.length;
+      await engine.runDiscoveryBatch('test', now);
+      expect(
+        executor.submittedSteps.skip(before).map((s) => s.command.length),
+        everyElement(6),
+      );
+
+      engine.dispose();
+    });
+
+    test('a calibration NO DATA in a slice that looks asleep does not '
+        'count', () async {
+      final executor = FakeExecutor();
+      final state = DiscoveryState();
+      final ecu = state.ecus['test'] = testEcu()
+        ..discovered = {'2A03'}
+        ..scanPosition = 16;
+      final engine = buildEngine(executor, state);
+
+      await engine.runDiscoveryBatch('test', now);
+
+      expect(executor.submittedSteps.last.command, '222A0E2A0F2A03');
+      expect(ecu.asleepUntil, isNotNull);
+      expect(ecu.multiDidCalibrationFailures, 0);
+      expect(ecu.multiDid, MultiDidSupport.unknown);
+
+      engine.dispose();
+    });
+
+    test('a calibration reply that does not start with the reference DID '
+        'calibrates unsupported', () async {
+      final executor = FakeExecutor();
+      final compliant = simulatedEcu(truth, at: now);
+      executor.respond = (step) => step.command.length > 6
+          ? ProbeResult(
+              signalId: step.signalId,
+              status: const ProbeOk(),
+              payload: const [0x2A, 0x0E, 0x00],
+              at: now,
+            )
+          : compliant(step);
+      final state = DiscoveryState();
+      final ecu = state.ecus['test'] = testEcu()
+        ..discovered = {'2A03'}
+        ..scanPosition = 16;
+      final engine = buildEngine(executor, state);
+
+      await engine.runDiscoveryBatch('test', now);
+
+      expect(ecu.multiDid, MultiDidSupport.unsupported);
+
+      engine.dispose();
+    });
+
+    test('the calibration reference prefers an identification DID and never '
+        'uses a slow, oversized or conditional one', () async {
+      final executor = FakeExecutor();
+      final state = DiscoveryState();
+      state.ecus['test'] = testEcu()
+        ..discovered = {'2A03', 'F187', 'F189'}
+        ..slow = {'F187'}
+        ..scanPosition = 16;
+      final engine = buildEngine(executor, state);
+
+      await engine.runDiscoveryBatch('test', now);
+
+      expect(executor.submittedSteps.last.command, '222A0E2A0FF189');
+
+      engine.dispose();
+    });
+  });
 }

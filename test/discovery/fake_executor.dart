@@ -80,3 +80,62 @@ class FakeExecutor implements ReadExecutor {
 /// itself has already returned; a test that wants to see a round's
 /// results applied awaits this once before inspecting state.
 Future<void> settleDiscovery() => Future<void>.delayed(Duration.zero);
+
+/// How [simulatedEcu] answers a ReadDataByIdentifier of several DIDs.
+enum MultiDidBehavior {
+  /// Omits unsupported DIDs, NRC 31 only if none is supported.
+  compliant,
+
+  /// NRC 31 as soon as any requested DID is unsupported.
+  rejectsAnyUnsupported,
+
+  /// NRC 13 to any request carrying more than one DID.
+  rejectsMultiple,
+}
+
+/// The DIDs a `22` [command] reads.
+List<String> didsOf(String command) => [
+  for (var i = 2; i < command.length; i += 4) command.substring(i, i + 4),
+];
+
+/// A [FakeExecutor.respond] for one ECU that supports exactly the DIDs in
+/// [records] (DID to data record), shaped like [BridgeReadExecutor]'s
+/// parsed results: a single-DID payload is the data record alone, a
+/// multi-DID payload every DID echo and record after the response SID.
+ProbeResult Function(ProbeStep step) simulatedEcu(
+  Map<String, List<int>> records, {
+  required DateTime at,
+  MultiDidBehavior behavior = MultiDidBehavior.compliant,
+}) => (step) {
+  final dids = didsOf(step.command);
+  final supported = dids.where(records.containsKey).toList();
+  ProbeResult result(ProbeStatus status, [List<int>? payload]) => ProbeResult(
+    signalId: step.signalId,
+    status: status,
+    payload: payload,
+    at: at,
+  );
+  if (dids.length == 1) {
+    return supported.isEmpty
+        ? result(const ProbeNrc(0x31))
+        : result(const ProbeOk(), records[dids.single]);
+  }
+  switch (behavior) {
+    case MultiDidBehavior.rejectsMultiple:
+      return result(const ProbeNrc(0x13));
+    case MultiDidBehavior.rejectsAnyUnsupported
+        when supported.length < dids.length:
+      return result(const ProbeNrc(0x31));
+    case _:
+      if (supported.isEmpty) {
+        return result(const ProbeNrc(0x31));
+      }
+      return result(const ProbeOk(), [
+        for (final did in supported) ...[
+          int.parse(did.substring(0, 2), radix: 16),
+          int.parse(did.substring(2), radix: 16),
+          ...records[did]!,
+        ],
+      ]);
+  }
+};

@@ -37,6 +37,10 @@ enum ScoutEventKind {
 
   /// One ECU (re)discovery inventory sweep finished.
   inventoryStep,
+
+  /// An ECU's multi-DID read support was settled; the detail names the
+  /// new `MultiDidSupport`.
+  multiDid,
 }
 
 /// One entry in the scouting event log.
