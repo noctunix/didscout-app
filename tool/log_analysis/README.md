@@ -45,6 +45,10 @@ uv run didscout-logs series bms 1E10 --decode 'u16@0*0.125-40' \
 
 # The one-shot testplan check's probes: outcomes and the latest decode.
 uv run didscout-logs testplan --sessions 0123abcd
+
+# DIDs that could carry the GNSS position, ranked by how well the distance
+# between decoded positions matches the distance driven. Prints no coordinates.
+uv run didscout-logs gps --min-steps 20 --top 10
 ```
 
 ### How the commands decide
@@ -68,6 +72,19 @@ uv run didscout-logs testplan --sessions 0123abcd
   the owner takes the action back and is left out). The markers do not name the target ECUs, so every
   module read in both windows is listed; `~` marks a DID that changed
   within the before window on its own.
+- **gps**: for every DID (VIN and serial DIDs excluded) and every pair of
+  32-bit signed values 4 or 8 bytes apart, in both byte orders and at the
+  scales 1e-5, 1e-6, 1e-7, 1/3600000 and 180/2^31, the haversine distance
+  between consecutive positive samples of a session is compared with the
+  trapezoidal integral of the speed (`module7` `F40D`, byte 0, km/h) over
+  the same interval. Steps whose interval is not covered by speed samples
+  or spans more than 60 s between two of them are skipped. A pair needs
+  `--min-steps` usable steps (default 10), non-constant values inside
+  [-90, 90] and [-180, 180], and must move less than 0.05 km in every
+  step where less than 0.05 km was driven. Pairs are ranked by the
+  90th-percentile absolute difference (nearest rank), then the median;
+  `ratio` is summed straight-line over summed driven distance, a bit below
+  1 for a real position. Decoded coordinates are never printed.
 - **series** `--decode` takes `<u|s><bits>@<offset>[*<scale>][<+|-><add>]`,
   big-endian, bits 8/16/24/32.
 - **testplan**: a mode 01 functional reply is decoded per responding

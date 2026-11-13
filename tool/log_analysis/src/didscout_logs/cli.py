@@ -18,6 +18,7 @@ from didscout_logs.experiments import (
 )
 from didscout_logs.failures import describe_read, find_bursts, group_failures
 from didscout_logs.fit import Alias, fit_candidates, select_readings
+from didscout_logs.gps import find_gps_candidates
 from didscout_logs.series import DecodeSpec, did_series, parse_decode_spec
 from didscout_logs.sessions import LogError, Session, load_sessions, session_created_ms
 from didscout_logs.table import format_local, format_utc, render_table
@@ -215,6 +216,20 @@ def _parser() -> argparse.ArgumentParser:
         "latest positive reply's payload with its decode, where one is known.",
     )
     testplan.set_defaults(command=_run_testplan)
+
+    gps = commands.add_parser(
+        "gps",
+        parents=[common],
+        help="DIDs whose payload could be the vehicle's GNSS position",
+        description="Rank 32-bit latitude/longitude layouts by how well the distance "
+        "between consecutive decoded positions matches the distance driven according to "
+        "the speed (module7 F40D). No decoded coordinate is ever printed.",
+    )
+    gps.add_argument(
+        "--min-steps", type=int, default=10, help="fewest usable steps per pair (default: 10)"
+    )
+    gps.add_argument("--top", type=int, default=20, help="candidates to print (default: 20)")
+    gps.set_defaults(command=_run_gps)
     return parser
 
 
@@ -486,3 +501,37 @@ def _describe_latest(probe: Probe, latest: tuple[HeaderReply, ...]) -> str:
     if not latest:
         return "-"
     return "; ".join(f"{hr.header} {describe_payload(probe, hr.payload)}" for hr in latest)
+
+
+def _run_gps(args: argparse.Namespace) -> list[str]:
+    candidates = find_gps_candidates(_sessions(args), min_steps=args.min_steps)
+    if not candidates:
+        return ["no position candidates"]
+    rows = [
+        [
+            c.module,
+            c.did,
+            str(c.lat_offset),
+            str(c.lon_offset),
+            c.order,
+            c.scale.label,
+            str(c.steps),
+            f"{c.ratio:.3f}",
+            f"{c.median_error_km:.4f}",
+            f"{c.p90_error_km:.4f}",
+        ]
+        for c in candidates[: args.top]
+    ]
+    header = [
+        "module",
+        "DID",
+        "lat offset",
+        "lon offset",
+        "order",
+        "scale",
+        "steps",
+        "ratio",
+        "median err km",
+        "p90 err km",
+    ]
+    return render_table(header, rows, right={2, 3, 6, 7, 8, 9})
