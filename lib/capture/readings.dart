@@ -167,16 +167,16 @@ double? decodeChargePowerKw(Uint8List payload) {
 
 /// Estimates the state of charge the vehicle displays from
 /// [storedEnergyWh] (`222AB8`) and returns it in percent, clamped to 0-100.
-/// Not a decoded DID: a fit of the owner's typed SoC readings on this one
-/// vehicle (74 readings, 9-96 %, battery 9-50 °C). Below 33 °C the stored
+/// Not a decoded DID: a fit of the owner's SoC readings on this one
+/// vehicle (87 readings, 11-91 %, battery 8-50 °C). Below 30 °C the stored
 /// energy reads lower than the display suggests, so [batteryTempC] (°C),
-/// when given, keeps the estimate within 1.5 percentage points of the
-/// display; without it, the error reaches 5.
+/// when given, keeps the estimate within about 2 percentage points of the
+/// display; without it, the error reaches 6.
 int estimateSocPercent(int storedEnergyWh, {num? batteryTempC}) {
   final soc = batteryTempC == null
-      ? storedEnergyWh * 0.00107967 + 4.7633
-      : storedEnergyWh * 0.00109775 +
-            1.4812 -
-            0.301022 * min(batteryTempC - 33, 0);
+      ? storedEnergyWh * 0.00109691 + 4.0087
+      : storedEnergyWh * 0.00109961 +
+            2.7449 -
+            0.290149 * min(batteryTempC - 30, 0);
   return soc.round().clamp(0, 100);
 }

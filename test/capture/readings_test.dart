@@ -93,24 +93,24 @@ void main() {
   group('estimateSocPercent', () {
     // Energy, battery temperature and the display value of real readings.
     test('with battery temp., matches the display', () {
-      // 59322 Wh at 50.1 degC, display 67 %.
-      expect(estimateSocPercent(59322, batteryTempC: 50.1), 67);
-      // 37310 Wh at 9 degC, display 50 %.
-      expect(estimateSocPercent(37310, batteryTempC: 9), 50);
-      // 82635 Wh at 30.2 degC, display 93 %.
-      expect(estimateSocPercent(82635, batteryTempC: 30.2), 93);
+      // 63125 Wh at 47.6 degC, display 72 %.
+      expect(estimateSocPercent(63125, batteryTempC: 47.6), 72);
+      // 46400 Wh at 19.6 degC, display 57 %.
+      expect(estimateSocPercent(46400, batteryTempC: 19.6), 57);
+      // 20321 Wh at 20.4 degC, display 28 %.
+      expect(estimateSocPercent(20321, batteryTempC: 20.4), 28);
     });
 
     test('the same energy reads higher with a cold battery only', () {
-      // 37310 * 0.00109775 + 1.4812 = 42.438; below 33 degC plus
-      // 0.301022 per K: 24 K -> 49.663.
-      expect(estimateSocPercent(37310, batteryTempC: 40), 42);
-      expect(estimateSocPercent(37310, batteryTempC: 33), 42);
+      // 37310 * 0.00109961 + 2.7449 = 43.772; below 30 degC plus
+      // 0.290149 per K: 21 K -> 49.865.
+      expect(estimateSocPercent(37310, batteryTempC: 40), 44);
+      expect(estimateSocPercent(37310, batteryTempC: 30), 44);
       expect(estimateSocPercent(37310, batteryTempC: 9), 50);
     });
 
     test('without battery temp., uses the energy-only fit', () {
-      // 61075 * 0.00107967 + 4.7633 = 70.704
+      // 61075 * 0.00109691 + 4.0087 = 71.002
       expect(estimateSocPercent(61075), 71);
     });
 
