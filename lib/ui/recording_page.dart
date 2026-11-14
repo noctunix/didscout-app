@@ -405,7 +405,16 @@ num? _liveValueFor(
   // Rounded to whole units, as the vehicle's displays show them.
   ReadingQuantity.batteryTemp => info.batteryTempC?.round(),
   ReadingQuantity.chargePower => info.chargePowerKw?.round(),
-  ReadingQuantity.insideTemp || ReadingQuantity.chargePowerMax => null,
+  ReadingQuantity.insideTemp ||
+  ReadingQuantity.chargePowerMax ||
+  ReadingQuantity.tyrePressureFl ||
+  ReadingQuantity.tyrePressureFr ||
+  ReadingQuantity.tyrePressureRl ||
+  ReadingQuantity.tyrePressureRr ||
+  ReadingQuantity.tyreTempFl ||
+  ReadingQuantity.tyreTempFr ||
+  ReadingQuantity.tyreTempRl ||
+  ReadingQuantity.tyreTempRr => null,
 };
 
 /// Human-readable status line and icon for [RecordingPhase].

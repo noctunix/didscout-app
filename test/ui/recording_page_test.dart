@@ -670,6 +670,35 @@ void main() {
       expect(marker.source, ReadingSource.stepped);
     });
 
+    testWidgets('tyre tiles appear only while driving and their pressure '
+        'steppers move by 0.1 bar without rounding noise', (tester) async {
+      final controller = _fakeController();
+      await pumpPage(tester, controller: controller);
+      expect(find.text('Pressure front left'), findsNothing);
+
+      controller.addPhase(MarkerPhase.drive);
+      await tester.pump();
+      await openTile(tester, 'Pressure front left');
+      await tester.enterText(find.byType(TextField), '2.3');
+      await tester.pump();
+      await tester.tap(find.byTooltip('Increase by 0.1'));
+      await tester.pumpAndSettle();
+      expect(
+        tester.widget<TextField>(find.byType(TextField)).controller!.text,
+        '2.4',
+      );
+      await tester.tap(find.byTooltip('Decrease by 0.1'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('Decrease by 0.1'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+      await tester.pumpAndSettle();
+
+      final marker = controller.markers.markers.last as ReadingMarker;
+      expect(marker.quantity, ReadingQuantity.tyrePressureFl);
+      expect(marker.value, 2.2);
+    });
+
     testWidgets('without a value to prefill, the sheet opens empty and '
         'Save and the steppers stay disabled until a number is typed', (
       tester,

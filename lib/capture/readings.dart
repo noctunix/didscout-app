@@ -19,6 +19,18 @@ enum ReadingQuantity {
   chargePowerMax,
 
   odometer,
+
+  /// Tyre pressure and temperature as the MMI shows them per wheel (front
+  /// left, front right, rear left, rear right); it only updates above
+  /// about 25 km/h.
+  tyrePressureFl,
+  tyrePressureFr,
+  tyrePressureRl,
+  tyrePressureRr,
+  tyreTempFl,
+  tyreTempFr,
+  tyreTempRl,
+  tyreTempRr,
 }
 
 extension ReadingQuantityWire on ReadingQuantity {
@@ -31,6 +43,14 @@ extension ReadingQuantityWire on ReadingQuantity {
     ReadingQuantity.chargePower => 'charge_power',
     ReadingQuantity.chargePowerMax => 'charge_power_max',
     ReadingQuantity.odometer => 'odometer',
+    ReadingQuantity.tyrePressureFl => 'tyre_pressure_fl',
+    ReadingQuantity.tyrePressureFr => 'tyre_pressure_fr',
+    ReadingQuantity.tyrePressureRl => 'tyre_pressure_rl',
+    ReadingQuantity.tyrePressureRr => 'tyre_pressure_rr',
+    ReadingQuantity.tyreTempFl => 'tyre_temp_fl',
+    ReadingQuantity.tyreTempFr => 'tyre_temp_fr',
+    ReadingQuantity.tyreTempRl => 'tyre_temp_rl',
+    ReadingQuantity.tyreTempRr => 'tyre_temp_rr',
   };
 
   String get label => switch (this) {
@@ -42,6 +62,14 @@ extension ReadingQuantityWire on ReadingQuantity {
     ReadingQuantity.chargePower => 'Charging power (now)',
     ReadingQuantity.chargePowerMax => 'Max. charging power',
     ReadingQuantity.odometer => 'Odometer',
+    ReadingQuantity.tyrePressureFl => 'Pressure front left',
+    ReadingQuantity.tyrePressureFr => 'Pressure front right',
+    ReadingQuantity.tyrePressureRl => 'Pressure rear left',
+    ReadingQuantity.tyrePressureRr => 'Pressure rear right',
+    ReadingQuantity.tyreTempFl => 'Temp. front left',
+    ReadingQuantity.tyreTempFr => 'Temp. front right',
+    ReadingQuantity.tyreTempRl => 'Temp. rear left',
+    ReadingQuantity.tyreTempRr => 'Temp. rear right',
   };
 
   String get unit => switch (this) {
@@ -53,6 +81,14 @@ extension ReadingQuantityWire on ReadingQuantity {
     ReadingQuantity.chargePower => 'kW',
     ReadingQuantity.chargePowerMax => 'kW',
     ReadingQuantity.odometer => 'km',
+    ReadingQuantity.tyrePressureFl ||
+    ReadingQuantity.tyrePressureFr ||
+    ReadingQuantity.tyrePressureRl ||
+    ReadingQuantity.tyrePressureRr => 'bar',
+    ReadingQuantity.tyreTempFl ||
+    ReadingQuantity.tyreTempFr ||
+    ReadingQuantity.tyreTempRl ||
+    ReadingQuantity.tyreTempRr => '°C',
   };
 
   /// [unit] spelled out for screen readers.
@@ -60,7 +96,15 @@ extension ReadingQuantityWire on ReadingQuantity {
     ReadingQuantity.soc => 'percent',
     ReadingQuantity.batteryTemp ||
     ReadingQuantity.outsideTemp ||
-    ReadingQuantity.insideTemp => 'degrees Celsius',
+    ReadingQuantity.insideTemp ||
+    ReadingQuantity.tyreTempFl ||
+    ReadingQuantity.tyreTempFr ||
+    ReadingQuantity.tyreTempRl ||
+    ReadingQuantity.tyreTempRr => 'degrees Celsius',
+    ReadingQuantity.tyrePressureFl ||
+    ReadingQuantity.tyrePressureFr ||
+    ReadingQuantity.tyrePressureRl ||
+    ReadingQuantity.tyrePressureRr => 'bar',
     ReadingQuantity.range || ReadingQuantity.odometer => 'kilometres',
     ReadingQuantity.chargePower ||
     ReadingQuantity.chargePowerMax => 'kilowatts',
@@ -70,9 +114,29 @@ extension ReadingQuantityWire on ReadingQuantity {
   /// entry sheet's steppers move by.
   num get displayStep => switch (this) {
     ReadingQuantity.outsideTemp || ReadingQuantity.insideTemp => 0.5,
+    ReadingQuantity.tyrePressureFl ||
+    ReadingQuantity.tyrePressureFr ||
+    ReadingQuantity.tyrePressureRl ||
+    ReadingQuantity.tyrePressureRr => 0.1,
     _ => 1,
   };
+
+  /// Whether this is a per-wheel tyre value.
+  bool get isTyre => name.startsWith('tyre');
 }
+
+/// The tyre quantities in display order: the four pressures, then the four
+/// temperatures, each front left, front right, rear left, rear right.
+const List<ReadingQuantity> tyreQuantities = [
+  ReadingQuantity.tyrePressureFl,
+  ReadingQuantity.tyrePressureFr,
+  ReadingQuantity.tyrePressureRl,
+  ReadingQuantity.tyrePressureRr,
+  ReadingQuantity.tyreTempFl,
+  ReadingQuantity.tyreTempFr,
+  ReadingQuantity.tyreTempRl,
+  ReadingQuantity.tyreTempRr,
+];
 
 /// Where a [ReadingMarker]'s value came from: the numeric keypad, the
 /// steppers, or the entry sheet's prefilled value saved unchanged.

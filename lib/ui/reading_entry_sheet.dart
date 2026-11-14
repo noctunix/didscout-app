@@ -88,7 +88,11 @@ class _ReadingEntrySheetState extends State<_ReadingEntrySheet> {
   bool get _signed => switch (widget.quantity) {
     ReadingQuantity.batteryTemp ||
     ReadingQuantity.outsideTemp ||
-    ReadingQuantity.insideTemp => true,
+    ReadingQuantity.insideTemp ||
+    ReadingQuantity.tyreTempFl ||
+    ReadingQuantity.tyreTempFr ||
+    ReadingQuantity.tyreTempRl ||
+    ReadingQuantity.tyreTempRr => true,
     _ => false,
   };
 
@@ -100,7 +104,8 @@ class _ReadingEntrySheetState extends State<_ReadingEntrySheet> {
   void _step(num base, num delta) {
     setState(() {
       _lastEdit = ReadingSource.stepped;
-      _text.text = formatReadingValue(base + delta);
+      // Rounded so 0.1 steps do not print binary noise such as 2.4000000000000004.
+      _text.text = formatReadingValue(((base + delta) * 100).round() / 100);
     });
   }
 

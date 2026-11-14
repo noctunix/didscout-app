@@ -140,6 +140,10 @@ void main() {
     expect(ReadingQuantity.chargePower.wireName, 'charge_power');
     expect(ReadingQuantity.chargePowerMax.wireName, 'charge_power_max');
     expect(ReadingQuantity.odometer.wireName, 'odometer');
+    expect(ReadingQuantity.tyrePressureFl.wireName, 'tyre_pressure_fl');
+    expect(ReadingQuantity.tyrePressureRr.wireName, 'tyre_pressure_rr');
+    expect(ReadingQuantity.tyreTempFr.wireName, 'tyre_temp_fr');
+    expect(ReadingQuantity.tyreTempRl.wireName, 'tyre_temp_rl');
   });
 
   test('spokenUnit spells out each unit', () {
@@ -149,6 +153,7 @@ void main() {
         '°C' => 'degrees Celsius',
         'km' => 'kilometres',
         'kW' => 'kilowatts',
+        'bar' => 'bar',
         _ => fail('unexpected unit ${quantity.unit}'),
       });
     }

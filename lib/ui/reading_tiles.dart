@@ -72,31 +72,47 @@ class ReadingTiles extends StatelessWidget {
     onTap: () => onTap(quantity),
   );
 
+  List<Widget> _rows(List<ReadingQuantity> quantities) => [
+    for (var i = 0; i < quantities.length; i += 2) ...[
+      if (i > 0) const SizedBox(height: 12),
+      IntrinsicHeight(
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Expanded(child: _tile(quantities[i])),
+            const SizedBox(width: 12),
+            Expanded(
+              child: i + 1 < quantities.length
+                  ? _tile(quantities[i + 1])
+                  : const SizedBox.shrink(),
+            ),
+          ],
+        ),
+      ),
+    ],
+  ];
+
   @override
-  Widget build(BuildContext context) {
-    final quantities = _tileQuantities(phase);
-    return Column(
-      children: [
-        for (var i = 0; i < quantities.length; i += 2) ...[
-          if (i > 0) const SizedBox(height: 12),
-          IntrinsicHeight(
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Expanded(child: _tile(quantities[i])),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: i + 1 < quantities.length
-                      ? _tile(quantities[i + 1])
-                      : const SizedBox.shrink(),
-                ),
-              ],
+  Widget build(BuildContext context) => Column(
+    children: [
+      ..._rows(_tileQuantities(phase)),
+      if (phase == MarkerPhase.drive) ...[
+        const SizedBox(height: 16),
+        Align(
+          alignment: Alignment.centerLeft,
+          child: Semantics(
+            header: true,
+            child: Text(
+              'Tyres (MMI updates above 25 km/h)',
+              style: Theme.of(context).textTheme.titleSmall,
             ),
           ),
-        ],
+        ),
+        const SizedBox(height: 8),
+        ..._rows(tyreQuantities),
       ],
-    );
-  }
+    ],
+  );
 }
 
 /// What a tile shows below its label: the value ([number] and, unless
