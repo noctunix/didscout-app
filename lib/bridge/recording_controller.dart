@@ -105,6 +105,14 @@ const String _bmsModuleId = 'vag29-7B';
 const String _bmsRequestHeader = '17FC007B';
 const String _bmsResponseHeader = '17FE007B';
 
+/// The tyre pressure monitor. The vehicle only updates its tyre data above
+/// about 25 km/h; below that the reads answer NO DATA.
+const String _tyresModuleId = 'tyres';
+const String _tyresRequestHeader = '70B';
+const String _tyresResponseHeader = '775';
+const List<String> _tyresDids = ['18A0', '18A1', '18A2', '18A3'];
+const int _tyresDidIntervalMs = 30000;
+
 /// Added to [AppSettings.readTimeoutMs] for [_bmsModuleId]'s own read
 /// deadline: recordings show this BMS still answering NRC `0x78`
 /// (responsePending) a second time right at the plan's own deadline,
@@ -2066,9 +2074,19 @@ class RecordingController extends ChangeNotifier {
       readDeadlineMs: settings.readTimeoutMs + _bmsReadDeadlineExtraMs,
     );
 
+    final tyres = ObdModuleMessage(
+      moduleId: _tyresModuleId,
+      protocol: ObdProtocol.elevenBitCan.wireValue,
+      setup: buildModuleSetupCommands(
+        protocol: ObdProtocol.elevenBitCan,
+        requestHeader: _tyresRequestHeader,
+        responseHeader: _tyresResponseHeader,
+      ),
+    );
+
     final recordKnown =
         settings.recordingMode == RecordingMode.scoutAndRecordKnown;
-    final fixedModules = [module7, module8, module6, bms];
+    final fixedModules = [module7, module8, module6, bms, tyres];
     final fixedModuleIds = {for (final module in fixedModules) module.moduleId};
     final knownModules = [
       ...fixedModules,
@@ -2108,6 +2126,14 @@ class RecordingController extends ChangeNotifier {
         responseHeader: _bmsResponseHeader,
         intervalMs: _bmsExtraDidIntervalMs,
       ),
+      for (final did in _tyresDids)
+        ObdStepMessage(
+          signalId: signalIdFor(_tyresModuleId, '22$did'),
+          moduleId: _tyresModuleId,
+          command: '22$did',
+          responseHeader: _tyresResponseHeader,
+          intervalMs: _tyresDidIntervalMs,
+        ),
       if (recordKnown) ...[
         ObdStepMessage(
           signalId: 'module7_22f449',

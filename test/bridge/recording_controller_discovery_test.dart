@@ -532,10 +532,10 @@ void main() {
       responseHeader: '77A',
       protocol: 6,
     );
-    const tyres = ProbeModule(
-      id: 'tyres',
-      requestHeader: '70B',
-      responseHeader: '775',
+    const cluster = ProbeModule(
+      id: 'cluster',
+      requestHeader: '714',
+      responseHeader: '77E',
       protocol: 6,
     );
     const doorFrontLeft = ProbeModule(
@@ -571,7 +571,7 @@ void main() {
     );
     await submit([gateway, doorFrontLeft, sweep, gateway]);
     await waitFor(() => _sidecarModulesLines(sidecar).length == 1);
-    await submit([gateway, tyres]);
+    await submit([gateway, cluster]);
     await waitFor(() => _sidecarModulesLines(sidecar).length == 2);
     await controller.stop();
 
@@ -585,7 +585,7 @@ void main() {
     expect(DateTime.parse(modulesLine['at'] as String).isUtc, isTrue);
     expect(_sidecarModulesLines(sidecar), [
       [entry('gateway', '710', '77A')],
-      [entry('tyres', '70B', '775')],
+      [entry('cluster', '714', '77E')],
     ]);
 
     await controller.start();

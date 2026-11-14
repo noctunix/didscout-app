@@ -115,10 +115,14 @@ void main() {
       'vag29-7B_221e10',
       'vag29-7B_2206c7',
       'vag29-7B_2206c8',
+      'tyres_2218a0',
+      'tyres_2218a1',
+      'tyres_2218a2',
+      'tyres_2218a3',
     ];
 
     test('reads only speed, energy, range, odometer, outside temp., '
-        'charging power, battery temp. and the BMS curve-fit DIDs', () {
+        'charging power, battery temp., tyres and the BMS curve-fit DIDs', () {
       expect(scoutOnlyPlan.steps.map((s) => s.signalId), baseSignalIds);
       final intervals = {
         for (final s in scoutOnlyPlan.steps) s.signalId: s.intervalMs,
@@ -131,6 +135,7 @@ void main() {
       expect(intervals['vag29-7B_221e10'], 30000);
       expect(intervals['vag29-7B_2206c7'], 30000);
       expect(intervals['vag29-7B_2206c8'], 30000);
+      expect(intervals['tyres_2218a0'], 30000);
     });
 
     test('every command passes the hard guard and the app policy', () {
@@ -237,7 +242,7 @@ void main() {
 
     test('plans only the fixed modules', () {
       final moduleIds = scoutOnlyPlan.modules.map((m) => m.moduleId).toSet();
-      expect(moduleIds, {'module7', 'module8', 'module6', 'vag29-7B'});
+      expect(moduleIds, {'module7', 'module8', 'module6', 'vag29-7B', 'tyres'});
     });
 
     test('adds discovered DIDs when keepSamplingFoundDids is on', () {
