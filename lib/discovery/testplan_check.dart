@@ -1,13 +1,16 @@
 /// A fixed, one-shot probe catalogue testing standing hypotheses about
 /// what this vehicle platform answers beyond its own discovered DIDs:
-/// the classic mode 01 PIDs, their OBDonUDS equivalents, and a handful of
-/// manufacturer-specific hypotheses (gateway, tyre pressure). Runs once
+/// the classic mode 01 PIDs, their OBDonUDS equivalents, a handful of
+/// manufacturer-specific hypotheses (gateway, tyre pressure) and every
+/// known ECU's stored fault codes. Runs once
 /// shortly after a recording connects and once more per vehicle phase
 /// change, never resending a probe the vehicle already answered.
 library;
 
 import 'dart:async';
 
+import '../bridge/didscout_policy.dart' show DidscoutPolicy;
+import '../bridge/vag_ppe_plan_data.dart' show vagPpeModules;
 import '../session/session_markers.dart' show MarkerPhase;
 import 'inventory.dart' show ecu11ReceiveFilter, ecu11ReceiveMask;
 import 'probe.dart';
@@ -27,11 +30,12 @@ const Duration testplanDeadlinePerStep = Duration(seconds: 2);
 /// same phase -- long enough for the adapter to reconnect.
 const Duration testplanRetryDelay = Duration(seconds: 30);
 
-/// The three probe groups the catalogue runs in order.
+/// The probe groups the catalogue runs in order.
 enum TestplanGroup {
   mode01('Mode 01'),
   obdOnUds('OBDonUDS'),
-  hypotheses('Hypotheses');
+  hypotheses('Hypotheses'),
+  faultMemory('Fault memory');
 
   const TestplanGroup(this.label);
 
@@ -228,12 +232,54 @@ List<TestplanProbe> _hypothesesProbes() => [
     ),
 ];
 
+/// ECUs outside the vag-ppe profile whose fault memory is read as well:
+/// the 29-bit engine/e-motor ECU, the battery management and the VW/Audi
+/// `17FC00xx` control units.
+const List<(String, String, String)> _extraFaultMemoryEcus = [
+  ('module7', '18DA04F1', '18DAF104'),
+  ('bms', '17FC007B', '17FE007B'),
+  ('vag29-82', '17FC0082', '17FE0082'),
+  ('vag29-83', '17FC0083', '17FE0083'),
+  ('vag29-8B', '17FC008B', '17FE008B'),
+  ('vag29-A5', '17FC00A5', '17FE00A5'),
+  ('vag29-B3', '17FC00B3', '17FE00B3'),
+  ('vag29-CE', '17FC00CE', '17FE00CE'),
+];
+
+TestplanProbe _faultMemoryProbe(
+  String ecuId,
+  String requestHeader,
+  String responseHeader,
+  int protocol,
+) => TestplanProbe(
+  group: TestplanGroup.faultMemory,
+  moduleId: 'testplanDtc-$ecuId',
+  requestHeader: requestHeader,
+  responseHeader: responseHeader,
+  protocol: protocol,
+  command: DidscoutPolicy.readDtcByStatusMaskCommand,
+  description: 'Stored fault codes of $ecuId',
+);
+
+List<TestplanProbe> _faultMemoryProbes() => [
+  for (final spec in vagPpeModules)
+    _faultMemoryProbe(
+      spec.id,
+      spec.request,
+      spec.response,
+      int.parse(spec.protocol),
+    ),
+  for (final (id, request, response) in _extraFaultMemoryEcus)
+    _faultMemoryProbe(id, request, response, request.length == 3 ? 6 : 7),
+];
+
 /// The fixed testplan probe catalogue, in run order: mode 01 first, then
-/// OBDonUDS, then the manufacturer hypotheses.
+/// OBDonUDS, then the manufacturer hypotheses, then the fault memories.
 List<TestplanProbe> testplanProbes() => [
   ..._mode01Probes(),
   ..._obdOnUdsAllProbes(),
   ..._hypothesesProbes(),
+  ..._faultMemoryProbes(),
 ];
 
 /// How a [TestplanProbe]'s most recent run ended up, for the card.

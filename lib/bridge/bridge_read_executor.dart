@@ -304,6 +304,14 @@ Uint8List? Function(Uint8List data) _positivePayloadReader(
         ? Uint8List.fromList(data.sublist(1))
         : null;
   }
+  if (sid == 0x19) {
+    // The positive reply echoes the sub-function but carries the ECU's own
+    // status availability mask where the request had its status mask.
+    final prefix = [sid + 0x40, request.first];
+    return (data) => _startsWith(data, prefix)
+        ? Uint8List.fromList(data.sublist(prefix.length))
+        : null;
+  }
   final prefix = [sid + 0x40, ...request];
   return (data) => _startsWith(data, prefix)
       ? Uint8List.fromList(data.sublist(prefix.length))

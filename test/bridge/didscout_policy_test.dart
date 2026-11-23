@@ -201,6 +201,23 @@ void main() {
       }
     });
 
+    test('only the all-status-bits fault memory read is allowed', () {
+      expect(policy.allows('1902FF'), isTrue);
+      for (final command in [
+        '1901FF',
+        '190208',
+        '190A',
+        '1902',
+        '1902FFFF',
+        '1904123456FF',
+        '1906123456FF',
+        '14FFFFFF',
+        '0400',
+      ]) {
+        expect(policy.allows(command), isFalse, reason: command);
+      }
+    });
+
     test('any other service is rejected', () {
       expect(policy.allows('0304'), isFalse);
       expect(policy.allows('2E0100'), isFalse);
@@ -213,6 +230,13 @@ void main() {
       expect(allowedThroughFilter('22F190'), isFalse);
       expect(allowedThroughFilter('22F18C'), isFalse);
       expect(allowedThroughFilter('22F40DF802'), isFalse);
+    });
+
+    test('the fault memory read passes both layers, clearing it neither', () {
+      expect(allowedThroughFilter('1902FF'), isTrue);
+      expect(allowedThroughFilter('14FFFFFF'), isFalse);
+      expect(allowedThroughFilter('1401'), isFalse);
+      expect(allowedThroughFilter('04'), isFalse);
     });
 
     test('a three-DID read passes both layers', () {

@@ -339,6 +339,23 @@ void main() {
       expect((results.single.status as ProbeNrc).code, 0x13);
     });
 
+    test('a fault memory reply decodes with the ECU\'s own availability '
+        'mask, whatever it is', () async {
+      final results = <ProbeResult>[];
+      executor.results.listen(results.add);
+
+      executor.deliverOneShotResult(
+        _exchange(
+          signalId: 'ecu1_1902ff',
+          rawResponseText: '77A 07 59 02 2F 01 23 45 28',
+        ),
+      );
+      await Future<void>.delayed(Duration.zero);
+
+      expect(results.single.status, isA<ProbeOk>());
+      expect(results.single.payload, [0x2F, 0x01, 0x23, 0x45, 0x28]);
+    });
+
     test('a single-DID reply still has to echo the requested DID', () async {
       final results = <ProbeResult>[];
       executor.results.listen(results.add);

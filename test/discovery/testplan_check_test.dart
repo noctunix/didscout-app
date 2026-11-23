@@ -25,14 +25,29 @@ void main() {
       }
     });
 
-    test('every command is mode 01 or UDS ReadDataByIdentifier', () {
+    test('every command is mode 01, UDS ReadDataByIdentifier or the one '
+        'fault-memory read', () {
       for (final probe in testplanProbes()) {
         expect(
-          probe.command.startsWith('01') || probe.command.startsWith('22'),
+          probe.command.startsWith('01') ||
+              probe.command.startsWith('22') ||
+              probe.command == '1902FF',
           isTrue,
           reason: probe.signalId,
         );
       }
+    });
+
+    test('reads every fault memory exactly once, on a distinct header', () {
+      final faultMemory = [
+        for (final probe in testplanProbes())
+          if (probe.group == TestplanGroup.faultMemory) probe,
+      ];
+      expect(faultMemory, isNotEmpty);
+      expect(faultMemory.map((probe) => probe.command).toSet(), {'1902FF'});
+      final headers = faultMemory.map((probe) => probe.requestHeader).toList();
+      expect(headers.toSet(), hasLength(headers.length));
+      expect(headers, containsAll(['710', '17FC007B', '18DA04F1']));
     });
 
     test('every probe and its module setup passes DidscoutPolicy', () {

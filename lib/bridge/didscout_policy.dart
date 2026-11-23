@@ -15,8 +15,13 @@ import '../discovery/did_order.dart';
 ///   headers `7DF`/`18DB33F1`,
 /// - mode 01 reads and UDS ReadDataByIdentifier (`22`) reads of one to
 ///   [HardGuard.maxDidsPerRead] distinct DIDs, none of them a VIN DID or
-///   the ECU serial number DID.
+///   the ECU serial number DID,
+/// - the one ReadDTCInformation request `1902FF` (every stored fault code
+///   with its status byte).
 class DidscoutPolicy implements CommandPolicy {
+  /// UDS ReadDTCInformation, reportDTCByStatusMask with every status bit.
+  static const String readDtcByStatusMaskCommand = '1902FF';
+
   static final RegExp _hex = RegExp(r'^[0-9A-F]+$');
   static final RegExp _headerCommand = RegExp(
     r'^(ATSH|ATCRA|ATFCSH)([0-9A-F]+)$',
@@ -65,6 +70,8 @@ class DidscoutPolicy implements CommandPolicy {
         return normalizedCommand.length == 4;
       case '22':
         return _allowsReadDataByIdentifier(normalizedCommand.substring(2));
+      case '19':
+        return normalizedCommand == readDtcByStatusMaskCommand;
       default:
         return false;
     }
