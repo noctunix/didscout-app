@@ -105,6 +105,11 @@ const String _bmsModuleId = 'vag29-7B';
 const String _bmsRequestHeader = '17FC007B';
 const String _bmsResponseHeader = '17FE007B';
 
+/// How often the gateway's 12 V battery DID `2AF7` (voltage, current,
+/// state of charge) is read: often enough to see a drain between two
+/// recordings, rare enough to cost nothing.
+const int _battery12vIntervalMs = 600000;
+
 /// The tyre pressure monitor. The vehicle only updates its tyre data above
 /// about 25 km/h; below that the reads answer NO DATA.
 const String _tyresModuleId = 'tyres';
@@ -2125,6 +2130,13 @@ class RecordingController extends ChangeNotifier {
         command: '2206C8',
         responseHeader: _bmsResponseHeader,
         intervalMs: _bmsExtraDidIntervalMs,
+      ),
+      ObdStepMessage(
+        signalId: signalIdFor('module6', '222AF7'),
+        moduleId: 'module6',
+        command: '222AF7',
+        responseHeader: _module6ResponseHeader,
+        intervalMs: _battery12vIntervalMs,
       ),
       for (final did in _tyresDids)
         ObdStepMessage(

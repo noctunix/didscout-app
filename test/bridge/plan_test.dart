@@ -115,6 +115,7 @@ void main() {
       'vag29-7B_221e10',
       'vag29-7B_2206c7',
       'vag29-7B_2206c8',
+      'module6_222af7',
       'tyres_2218a0',
       'tyres_2218a1',
       'tyres_2218a2',
@@ -135,6 +136,7 @@ void main() {
       expect(intervals['vag29-7B_221e10'], 30000);
       expect(intervals['vag29-7B_2206c7'], 30000);
       expect(intervals['vag29-7B_2206c8'], 30000);
+      expect(intervals['module6_222af7'], 600000);
       expect(intervals['tyres_2218a0'], 30000);
     });
 
