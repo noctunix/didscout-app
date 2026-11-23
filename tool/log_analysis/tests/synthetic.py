@@ -77,6 +77,25 @@ class SessionLog:
             one_shot=one_shot,
         )
 
+    def command_read(
+        self,
+        module: str,
+        command_hex: str,
+        at_ms: float,
+        reply_text: str,
+        *,
+        transport: str = "ok",
+    ) -> None:
+        self._append_read(
+            module,
+            command_hex.lower(),
+            at_ms,
+            reply_text,
+            transport=transport,
+            duration_ms=100,
+            one_shot=True,
+        )
+
     def mode1_read(
         self,
         module: str,

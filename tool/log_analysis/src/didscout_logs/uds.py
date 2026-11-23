@@ -10,6 +10,7 @@ NEGATIVE_RESPONSE: Final = 0x7F
 RESPONSE_PENDING: Final = 0x78
 _POSITIVE_OFFSET: Final = 0x40
 _READ_DATA_BY_IDENTIFIER: Final = 0x22
+_READ_DTC_INFORMATION: Final = 0x19
 _DID_LENGTH: Final = 2
 _SHOWN_BYTES: Final = 12
 
@@ -152,7 +153,9 @@ def _positive_payload(request: bytes, data: bytes) -> bytes | None:
         if data.startswith(service) and data[1 : 1 + _DID_LENGTH] in requested:
             return data[1:]
         return None
-    prefix = service + dids
+    # A fault memory reply echoes the sub-function, but its mask byte is
+    # the ECU's availability mask, not the requested one.
+    prefix = service + (dids[:1] if request[0] == _READ_DTC_INFORMATION else dids)
     return data[len(prefix) :] if data.startswith(prefix) else None
 
 

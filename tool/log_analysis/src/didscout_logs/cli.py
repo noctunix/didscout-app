@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Final
 
+from didscout_logs.dtc import fault_memories
 from didscout_logs.experiments import (
     STEP_BEFORE,
     DidChange,
@@ -217,6 +218,17 @@ def _parser() -> argparse.ArgumentParser:
     )
     testplan.set_defaults(command=_run_testplan)
 
+    dtc = commands.add_parser(
+        "dtc",
+        parents=[common, module_filter],
+        help="the stored fault codes the app read from each ECU",
+        description="Every UDS 0x19 0x02 read of the selected sessions: per ECU the "
+        "outcome and, for a positive reply, the status availability mask and each fault "
+        "code with its status flags. An ECU with an empty memory answers positively "
+        "without codes.",
+    )
+    dtc.set_defaults(command=_run_dtc)
+
     gps = commands.add_parser(
         "gps",
         parents=[common],
@@ -304,6 +316,28 @@ def _run_fit(args: argparse.Namespace) -> list[str]:
     ]
     header = ["module", "DID", "feature", "n", "r", "a", "b", "p90", "max"]
     return [summary, "", *render_table(header, rows, right={3, 4, 5, 6, 7, 8})]
+
+
+def _run_dtc(args: argparse.Namespace) -> list[str]:
+    memories = [
+        memory
+        for memory in fault_memories(_sessions(args))
+        if not args.modules or memory.module in args.modules
+    ]
+    if not memories:
+        return ["no fault memory reads"]
+    lines: list[str] = []
+    for memory in memories:
+        if memory.availability_mask is None:
+            lines.append(f"{memory.session[:8]}  {memory.module}: {memory.outcome}")
+            continue
+        summary = f"{len(memory.dtcs)} fault codes" if memory.dtcs else "empty"
+        lines.append(
+            f"{memory.session[:8]}  {memory.module}: {summary} "
+            f"(status mask {memory.availability_mask:02X})"
+        )
+        lines.extend(f"    {dtc.code}  {','.join(dtc.status) or '-'}" for dtc in memory.dtcs)
+    return lines
 
 
 def _run_timeouts(args: argparse.Namespace) -> list[str]:
